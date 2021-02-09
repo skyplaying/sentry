@@ -91,6 +91,7 @@ register_strategy_config(
         "with_context_line_file_origin_bug": True,
         "trim_message": True,
         "with_exception_value_fallback": True,
+        "use_package_fallback": False,
     },
 )
 
@@ -143,6 +144,7 @@ register_strategy_config(
         "with_context_line_file_origin_bug": False,
         "trim_message": False,
         "with_exception_value_fallback": False,
+        "use_package_fallback": False,
     },
 )
 
@@ -173,4 +175,18 @@ register_strategy_config(
         * Initial version
     """,
     hidden=True,
+)
+
+
+register_strategy_config(
+    id="nativeunknown:2021-02-09",
+    base="newstyle:2019-10-29",
+    risk=RISK_LEVEL_HIGH,
+    changelog="""
+        * Initial version
+    """,
+    hidden=True,
+    initial_context={
+        "use_package_fallback": True,
+    },
 )
