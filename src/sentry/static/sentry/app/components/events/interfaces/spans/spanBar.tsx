@@ -21,6 +21,7 @@ import {
   MINIMAP_SPAN_BAR_HEIGHT,
   NUM_OF_SPANS_FIT_IN_MINI_MAP,
 } from './header';
+import * as ScrollbarManager from './scrollbarManager';
 import SpanDetail from './spanDetail';
 import {
   getHatchPattern,
@@ -497,7 +498,13 @@ class SpanBar extends React.Component<SpanBarProps, SpanBarState> {
     );
   }
 
-  renderTitle() {
+  renderTitle(
+    scrollbarManagerChildrenProps: ScrollbarManager.ScrollbarManagerChildrenProps
+  ) {
+    const {
+      generateContentSpanBarRef,
+      generateScrollableSpanBarRef,
+    } = scrollbarManagerChildrenProps;
     const {span, treeDepth, spanErrors} = this.props;
 
     const operationName = getSpanOperation(span) ? (
@@ -513,20 +520,22 @@ class SpanBar extends React.Component<SpanBarProps, SpanBarState> {
     const left = treeDepth * (TOGGLE_BORDER_BOX / 2) + MARGIN_LEFT;
 
     return (
-      <SpanBarTitleContainer>
-        {this.renderSpanTreeToggler({left})}
-        <SpanBarTitle
-          style={{
-            left: `${left}px`,
-            width: '100%',
-          }}
-        >
-          <span>
-            {operationName}
-            {description}
-          </span>
-        </SpanBarTitle>
-      </SpanBarTitleContainer>
+      <ScrollableSpanBar ref={generateScrollableSpanBarRef()}>
+        <SpanBarTitleContainer ref={generateContentSpanBarRef()}>
+          {this.renderSpanTreeToggler({left})}
+          <SpanBarTitle
+            style={{
+              left: `${left}px`,
+              width: '100%',
+            }}
+          >
+            <span>
+              {operationName}
+              {description}
+            </span>
+          </SpanBarTitle>
+        </SpanBarTitleContainer>
+      </ScrollableSpanBar>
     );
   }
 
@@ -785,9 +794,11 @@ class SpanBar extends React.Component<SpanBarProps, SpanBarState> {
   }
 
   renderHeader({
+    scrollbarManagerChildrenProps,
     dividerHandlerChildrenProps,
   }: {
     dividerHandlerChildrenProps: DividerHandlerManager.DividerHandlerManagerChildrenProps;
+    scrollbarManagerChildrenProps: ScrollbarManager.ScrollbarManagerChildrenProps;
   }) {
     const {span, spanBarColour, spanBarHatch, spanNumber} = this.props;
     const startTimestamp: number = span.start_timestamp;
@@ -812,7 +823,7 @@ class SpanBar extends React.Component<SpanBarProps, SpanBarState> {
             this.toggleDisplayDetail();
           }}
         >
-          {this.renderTitle()}
+          {this.renderTitle(scrollbarManagerChildrenProps)}
         </SpanRowCell>
         {this.renderDivider(dividerHandlerChildrenProps)}
         <SpanRowCell
@@ -888,15 +899,23 @@ class SpanBar extends React.Component<SpanBarProps, SpanBarState> {
         showBorder={this.state.showDetail}
         data-test-id="span-row"
       >
-        <DividerHandlerManager.Consumer>
-          {(
-            dividerHandlerChildrenProps: DividerHandlerManager.DividerHandlerManagerChildrenProps
-          ) =>
-            this.renderHeader({
-              dividerHandlerChildrenProps,
-            })
-          }
-        </DividerHandlerManager.Consumer>
+        <ScrollbarManager.Consumer>
+          {scrollbarManagerChildrenProps => {
+            return (
+              <DividerHandlerManager.Consumer>
+                {(
+                  dividerHandlerChildrenProps: DividerHandlerManager.DividerHandlerManagerChildrenProps
+                ) =>
+                  this.renderHeader({
+                    dividerHandlerChildrenProps,
+                    scrollbarManagerChildrenProps,
+                  })
+                }
+              </DividerHandlerManager.Consumer>
+            );
+          }}
+        </ScrollbarManager.Consumer>
+
         {this.renderDetail({isVisible: isSpanVisible})}
       </SpanRow>
     );
@@ -1001,6 +1020,15 @@ export const SpanBarTitle = styled('div')`
   display: flex;
   flex: 1;
   align-items: center;
+`;
+
+const ScrollableSpanBar = styled('div')`
+  position: relative;
+  /* increase span bar height such that the horizontal scrollbar is out of view */
+  height: ${SPAN_ROW_HEIGHT + 50}px;
+  /* for virtual scrollbar */
+  overflow-y: hidden;
+  overflow-x: scroll;
 `;
 
 type TogglerTypes = OmitHtmlDivProps<{
