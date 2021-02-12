@@ -191,7 +191,7 @@ type Props = {
    */
   rootClassName?: string;
 
-  css?: any;
+  css?: React.CSSProperties;
 } & Pick<
   ListProps,
   'virtualizedHeight' | 'virtualizedLabelHeight' | 'itemSize' | 'onScroll'

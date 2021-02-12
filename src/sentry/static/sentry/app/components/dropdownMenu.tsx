@@ -12,7 +12,7 @@ type GetActorArgs = {
   className?: string;
 };
 
-type GetMenuArgs = {
+export type GetMenuArgs = {
   onClick?: (e: React.MouseEvent<Element>) => void;
   onMouseEnter?: (e: React.MouseEvent<Element>) => void;
   onMouseLeave?: (e: React.MouseEvent<Element>) => void;
@@ -28,7 +28,7 @@ type ActorProps = {
   onKeyDown: (e: React.KeyboardEvent<Element>) => void;
 };
 
-type MenuProps = {
+export type MenuProps = {
   onClick: (e: React.MouseEvent<Element>) => void;
   onMouseEnter: (e: React.MouseEvent<Element>) => void;
   onMouseLeave: (e: React.MouseEvent<Element>) => void;
@@ -37,14 +37,14 @@ type MenuProps = {
 export type GetActorPropsFn = (opts?: GetActorArgs) => ActorProps;
 type GetMenuPropsFn = (opts?: GetMenuArgs) => MenuProps;
 
-type RenderProps = {
+export type RenderProps = {
   isOpen: boolean;
   getRootProps: Function;
   getActorProps: GetActorPropsFn;
   getMenuProps: GetMenuPropsFn;
   actions: {
-    open: Function;
-    close: Function;
+    open: () => void;
+    close: () => void;
   };
 };
 
