@@ -14,7 +14,7 @@ type NotifyOptions = {
 };
 
 type Props = {
-  stackView: STACK_VIEW;
+  stackView?: STACK_VIEW;
   stackType?: STACK_TYPE;
   platform?: string;
   stacktrace?: ExceptionValue['stacktrace'];

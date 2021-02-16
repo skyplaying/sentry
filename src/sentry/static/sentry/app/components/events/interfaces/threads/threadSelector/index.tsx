@@ -33,7 +33,7 @@ const ThreadSelector = ({threads, event, activeThread, onChange}: Props) => {
     let crashedInfo: undefined | EntryData;
 
     if (thread.crashed) {
-      crashedInfo = getThreadException(thread, event);
+      crashedInfo = getThreadException(event, thread);
     }
 
     return {

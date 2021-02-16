@@ -13,7 +13,7 @@ type ThreadInfo = {
 };
 
 function filterThreadInfo(thread: Thread, event: Event): ThreadInfo {
-  const stacktrace = getThreadStacktrace(thread, event, false);
+  const stacktrace = getThreadStacktrace(event, false, thread);
   const threadInfo: ThreadInfo = {};
 
   if (!stacktrace) {

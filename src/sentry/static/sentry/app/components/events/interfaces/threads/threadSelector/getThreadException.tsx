@@ -1,11 +1,10 @@
 import {ExceptionType} from 'app/types';
 import {Event} from 'app/types/event';
 import {Thread} from 'app/types/events';
-import {defined} from 'app/utils';
 
 function getThreadException(
-  thread: Thread,
-  event: Event
+  event: Event,
+  thread?: Thread
 ): Required<ExceptionType> | undefined {
   const exceptionEntry = event.entries.find(entry => entry.type === 'exception');
 
@@ -16,19 +15,25 @@ function getThreadException(
   const exceptionData = exceptionEntry.data as ExceptionType;
   const exceptionDataValues = exceptionData.values;
 
-  if (!exceptionDataValues?.length) {
+  if (!exceptionDataValues?.length || !thread) {
     return undefined;
   }
 
-  if (exceptionDataValues.length === 1 && !defined(exceptionDataValues[0].threadId)) {
-    if (!exceptionDataValues[0].stacktrace) {
-      return undefined;
-    }
+  const matchedStacktraceAndExceptionThread = exceptionDataValues.find(
+    exceptionDataValue =>
+      exceptionDataValue.threadId === thread.id && exceptionDataValue.stacktrace
+  );
+
+  if (matchedStacktraceAndExceptionThread) {
     return exceptionData as Required<ExceptionType>;
   }
 
-  for (const exc of exceptionDataValues) {
-    if (exc.threadId === thread.id && exc.stacktrace) {
+  if (thread.crashed) {
+    const exceptionHasAtLeastOneStacktrace = !!exceptionDataValues.find(
+      exceptionDataValue => exceptionDataValue.stacktrace
+    );
+
+    if (!!exceptionHasAtLeastOneStacktrace) {
       return exceptionData as Required<ExceptionType>;
     }
   }

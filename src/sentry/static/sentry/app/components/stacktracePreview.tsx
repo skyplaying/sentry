@@ -93,7 +93,7 @@ class StacktracePreview extends React.Component<Props, State> {
       return undefined;
     }
 
-    const bestThreadStacktrace = getThreadStacktrace(bestThread, event, false);
+    const bestThreadStacktrace = getThreadStacktrace(event, false, bestThread);
 
     if (bestThreadStacktrace) {
       return bestThreadStacktrace;
