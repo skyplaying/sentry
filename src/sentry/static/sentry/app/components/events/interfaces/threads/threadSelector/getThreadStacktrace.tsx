@@ -8,7 +8,8 @@ function getThreadStacktrace(
   event: Event,
   raw: boolean,
   thread?: Thread,
-  exception?: Required<ExceptionType>
+  exception?: Required<ExceptionType>,
+  checkException?: boolean
 ) {
   if (!thread) {
     return undefined;
@@ -16,7 +17,7 @@ function getThreadStacktrace(
 
   const threadException = exception ?? getThreadException(event, thread);
 
-  if (threadException) {
+  if (threadException && (checkException ?? true)) {
     const threadExceptionValues = threadException.values;
 
     const matchedStacktraceAndExceptionThread = threadExceptionValues.find(
