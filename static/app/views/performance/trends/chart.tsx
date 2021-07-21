@@ -1,4 +1,4 @@
-import React from 'react';
+import {Component} from 'react';
 import {browserHistory, withRouter} from 'react-router';
 import {WithRouterProps} from 'react-router/lib/withRouter';
 import {withTheme} from '@emotion/react';
@@ -10,6 +10,7 @@ import ReleaseSeries from 'app/components/charts/releaseSeries';
 import TransitionChart from 'app/components/charts/transitionChart';
 import TransparentLoadingMask from 'app/components/charts/transparentLoadingMask';
 import {getParams} from 'app/components/organizations/globalSelectionHeader/getParams';
+import {t} from 'app/locale';
 import {EventsStatsData, OrganizationSummary, Project} from 'app/types';
 import {Series} from 'app/types/echarts';
 import {getUtcToLocalDateObject} from 'app/utils/dates';
@@ -76,8 +77,7 @@ function getLegend(trendFunction: string) {
     data: [
       {
         name: 'Baseline',
-        icon:
-          'path://M180 1000 l0 -40 200 0 200 0 0 40 0 40 -200 0 -200 0 0 -40z, M810 1000 l0 -40 200 0 200 0 0 40 0 40 -200 0 -200 0 0 -40zm, M1440 1000 l0 -40 200 0 200 0 0 40 0 40 -200 0 -200 0 0 -40z',
+        icon: 'path://M180 1000 l0 -40 200 0 200 0 0 40 0 40 -200 0 -200 0 0 -40z, M810 1000 l0 -40 200 0 200 0 0 40 0 40 -200 0 -200 0 0 -40zm, M1440 1000 l0 -40 200 0 200 0 0 40 0 40 -200 0 -200 0 0 -40z',
       },
       {
         name: 'Releases',
@@ -159,12 +159,40 @@ function getIntervalLine(
       {coord: [seriesLine, transaction.aggregate_range_1]},
     ],
   ];
+  previousPeriod.markLine.tooltip = {
+    formatter: () => {
+      return [
+        '<div class="tooltip-series tooltip-series-solo">',
+        '<div>',
+        `<span class="tooltip-label"><strong>${t('Past Baseline')}</strong></span>`,
+        // p50() coerces the axis to be time based
+        tooltipFormatter(transaction.aggregate_range_1, 'p50()'),
+        '</div>',
+        '</div>',
+        '<div class="tooltip-arrow"></div>',
+      ].join('');
+    },
+  } as any;
   currentPeriod.markLine.data = [
     [
       {value: 'Present', coord: [seriesLine, transaction.aggregate_range_2]},
       {coord: [seriesEnd, transaction.aggregate_range_2]},
     ],
   ];
+  currentPeriod.markLine.tooltip = {
+    formatter: () => {
+      return [
+        '<div class="tooltip-series tooltip-series-solo">',
+        '<div>',
+        `<span class="tooltip-label"><strong>${t('Present Baseline')}</strong></span>`,
+        // p50() coerces the axis to be time based
+        tooltipFormatter(transaction.aggregate_range_2, 'p50()'),
+        '</div>',
+        '</div>',
+        '<div class="tooltip-arrow"></div>',
+      ].join('');
+    },
+  } as any;
   periodDividingLine.markLine = {
     data: [
       {
@@ -201,7 +229,7 @@ function getIntervalLine(
   return additionalLineSeries;
 }
 
-class Chart extends React.Component<Props> {
+class Chart extends Component<Props> {
   handleLegendSelectChanged = legendChange => {
     const {location, trendChangeType} = this.props;
     const {selected} = legendChange;

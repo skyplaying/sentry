@@ -7,7 +7,7 @@ from sentry.options import (
     FLAG_REQUIRED,
     register,
 )
-from sentry.utils.types import Bool, Dict, Int, Sequence, String
+from sentry.utils.types import Any, Bool, Dict, Int, Sequence, String
 
 # Cache
 # register('cache.backend', flags=FLAG_NOSTORE)
@@ -109,6 +109,14 @@ register(
     default={"url": "http://localhost:3021"},
     flags=FLAG_ALLOW_EMPTY | FLAG_PRIORITIZE_DISK,
 )
+
+# The ratio of requests for which the new stackwalking method should be compared against the old one
+register("symbolicator.compare_stackwalking_methods_rate", default=0.0)
+
+# Killswitch for symbolication sources, based on a list of source IDs. Meant to be used in extreme
+# situations where it is preferable to break symbolication in a few places as opposed to letting
+# it break everywhere.
+register("symbolicator.ignored_sources", type=Sequence, default=(), flags=FLAG_ALLOW_EMPTY)
 
 # Backend chart rendering via chartcuterie
 register("chart-rendering.enabled", default=False, flags=FLAG_ALLOW_EMPTY | FLAG_PRIORITIZE_DISK)
@@ -308,10 +316,44 @@ register("store.race-free-group-creation-force-disable", default=False)
 
 
 # Killswitch for dropping events if they were to create groups
-register("store.load-shed-group-creation-projects", type=Sequence, default=[])
+register("store.load-shed-group-creation-projects", type=Any, default=[])
 
-# Killswitch for dropping events in ingest consumer or really anywhere
-register("store.load-shed-pipeline-projects", type=Sequence, default=[])
+# Killswitch for dropping events in ingest consumer
+register("store.load-shed-pipeline-projects", type=Any, default=[])
 
 # Switch for more performant project counter incr
 register("store.projectcounter-modern-upsert-sample-rate", default=0.0)
+
+# Run an experimental grouping config in background for performance analysis
+register("store.background-grouping-config-id", default=None)
+
+# Fraction of events that will pass through background grouping
+register("store.background-grouping-sample-rate", default=0.0)
+
+# True if background grouping should run before secondary and primary grouping
+register("store.background-grouping-before", default=False)
+
+# Killswitch for dropping events in ingest consumer (after parsing them)
+register("store.load-shed-parsed-pipeline-projects", type=Any, default=[])
+
+# Killswitch for dropping events in process_event
+register("store.load-shed-process-event-projects", type=Any, default=[])
+
+# Killswitch for dropping events in symbolicate_event
+register("store.load-shed-symbolicate-event-projects", type=Any, default=[])
+
+# Store release files bundled as zip files
+register("processing.save-release-archives", default=False)  # unused
+
+# Minimum number of files in an archive. Small archives are extracted and its contents
+# are stored as separate release files.
+register("processing.release-archive-min-files", default=10)
+
+# Try to read release artifacts from zip archives
+register("processing.use-release-archives-sample-rate", default=0.0)  # unused
+
+# All Relay options (statically authenticated Relays can be registered here)
+register("relay.static_auth", default={}, flags=FLAG_NOSTORE)
+
+# Post process forwarder gets data from Kafka headers
+register("post-process-forwarder:kafka-headers", default=False)

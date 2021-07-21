@@ -1,4 +1,4 @@
-import React from 'react';
+import {Component, Fragment} from 'react';
 import * as ReactRouter from 'react-router';
 import {browserHistory} from 'react-router';
 import {withTheme} from '@emotion/react';
@@ -32,6 +32,7 @@ import {defined} from 'app/utils';
 import {trackAnalyticsEvent} from 'app/utils/analytics';
 import {decodeScalar} from 'app/utils/queryString';
 import {Theme} from 'app/utils/theme';
+import {QueryResults} from 'app/utils/tokenizeSearch';
 import withApi from 'app/utils/withApi';
 import {
   getSessionTermDescription,
@@ -66,13 +67,14 @@ type Props = {
   hasTransactions: boolean;
   visibleCharts: string[];
   projectId?: string;
+  query?: string;
 };
 
 type State = {
   totalValues: number | null;
 };
 
-class ProjectCharts extends React.Component<Props, State> {
+class ProjectCharts extends Component<Props, State> {
   state: State = {
     totalValues: null,
   };
@@ -264,18 +266,21 @@ class ProjectCharts extends React.Component<Props, State> {
   };
 
   render() {
-    const {
-      api,
-      router,
-      location,
-      organization,
-      theme,
-      projectId,
-      hasSessions,
-    } = this.props;
+    const {api, router, location, organization, theme, projectId, hasSessions, query} =
+      this.props;
     const {totalValues} = this.state;
     const hasDiscover = organization.features.includes('discover-basic');
     const displayMode = this.displayMode;
+
+    let apdexYAxis: string;
+    let apdexPerformanceTerm: PERFORMANCE_TERM;
+    if (organization.features.includes('project-transaction-threshold')) {
+      apdexPerformanceTerm = PERFORMANCE_TERM.APDEX_NEW;
+      apdexYAxis = 'apdex()';
+    } else {
+      apdexPerformanceTerm = PERFORMANCE_TERM.APDEX;
+      apdexYAxis = `apdex(${organization.apdexThreshold})`;
+    }
 
     return (
       <Panel>
@@ -283,14 +288,17 @@ class ProjectCharts extends React.Component<Props, State> {
           {!defined(hasSessions) ? (
             <LoadingPanel />
           ) : (
-            <React.Fragment>
+            <Fragment>
               {displayMode === DisplayModes.APDEX && (
                 <ProjectBaseEventsChart
                   title={t('Apdex')}
-                  help={getTermHelp(organization, PERFORMANCE_TERM.APDEX)}
-                  query="event.type:transaction"
-                  yAxis={`apdex(${organization.apdexThreshold})`}
-                  field={[`apdex(${organization.apdexThreshold})`]}
+                  help={getTermHelp(organization, apdexPerformanceTerm)}
+                  query={new QueryResults([
+                    'event.type:transaction',
+                    query ?? '',
+                  ]).formatString()}
+                  yAxis={apdexYAxis}
+                  field={[apdexYAxis]}
                   api={api}
                   router={router}
                   organization={organization}
@@ -302,7 +310,10 @@ class ProjectCharts extends React.Component<Props, State> {
                 <ProjectBaseEventsChart
                   title={t('Failure Rate')}
                   help={getTermHelp(organization, PERFORMANCE_TERM.FAILURE_RATE)}
-                  query="event.type:transaction"
+                  query={new QueryResults([
+                    'event.type:transaction',
+                    query ?? '',
+                  ]).formatString()}
                   yAxis="failure_rate()"
                   field={[`failure_rate()`]}
                   api={api}
@@ -316,7 +327,10 @@ class ProjectCharts extends React.Component<Props, State> {
                 <ProjectBaseEventsChart
                   title={t('Transactions Per Minute')}
                   help={getTermHelp(organization, PERFORMANCE_TERM.TPM)}
-                  query="event.type:transaction"
+                  query={new QueryResults([
+                    'event.type:transaction',
+                    query ?? '',
+                  ]).formatString()}
                   yAxis="tpm()"
                   field={[`tpm()`]}
                   api={api}
@@ -331,7 +345,10 @@ class ProjectCharts extends React.Component<Props, State> {
                 (hasDiscover ? (
                   <ProjectBaseEventsChart
                     title={t('Number of Errors')}
-                    query="!event.type:transaction"
+                    query={new QueryResults([
+                      '!event.type:transaction',
+                      query ?? '',
+                    ]).formatString()}
                     yAxis="count()"
                     field={[`count()`]}
                     api={api}
@@ -354,7 +371,10 @@ class ProjectCharts extends React.Component<Props, State> {
               {displayMode === DisplayModes.TRANSACTIONS && (
                 <ProjectBaseEventsChart
                   title={t('Number of Transactions')}
-                  query="event.type:transaction"
+                  query={new QueryResults([
+                    'event.type:transaction',
+                    query ?? '',
+                  ]).formatString()}
                   yAxis="count()"
                   field={[`count()`]}
                   api={api}
@@ -376,6 +396,7 @@ class ProjectCharts extends React.Component<Props, State> {
                   organization={organization}
                   onTotalValuesChange={this.handleTotalValuesChange}
                   displayMode={displayMode}
+                  query={query}
                 />
               )}
               {displayMode === DisplayModes.SESSIONS && (
@@ -387,15 +408,16 @@ class ProjectCharts extends React.Component<Props, State> {
                   onTotalValuesChange={this.handleTotalValuesChange}
                   displayMode={displayMode}
                   disablePrevious
+                  query={query}
                 />
               )}
-            </React.Fragment>
+            </Fragment>
           )}
         </ChartContainer>
         <ChartControls>
           {/* if hasSessions is not yet defined, it means that request is still in progress and we can't decide what default chart to show */}
           {defined(hasSessions) ? (
-            <React.Fragment>
+            <Fragment>
               <InlineContainer>
                 <SectionHeading>{this.summaryHeading}</SectionHeading>
                 <SectionValue>
@@ -412,7 +434,7 @@ class ProjectCharts extends React.Component<Props, State> {
                   onChange={this.handleDisplayModeChange}
                 />
               </InlineContainer>
-            </React.Fragment>
+            </Fragment>
           ) : (
             <Placeholder height="34px" />
           )}

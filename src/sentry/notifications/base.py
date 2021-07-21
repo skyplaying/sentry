@@ -1,4 +1,4 @@
-from typing import Any, Mapping, MutableMapping, Set
+from typing import Any, Mapping, MutableMapping, Optional, Set
 
 from sentry.models import Group, Project, User
 from sentry.types.integrations import ExternalProviders
@@ -29,6 +29,9 @@ class BaseNotification:
     def get_reference(self) -> Any:
         raise NotImplementedError
 
+    def get_reply_reference(self) -> Optional[Any]:
+        return None
+
     def should_email(self) -> bool:
         return True
 
@@ -45,3 +48,18 @@ class BaseNotification:
         self, user: User, extra_context: Mapping[str, Any]
     ) -> MutableMapping[str, Any]:
         return {}
+
+    def get_notification_title(self) -> str:
+        raise NotImplementedError
+
+    @property
+    def fine_tuning_key(self) -> str:
+        return ""
+
+    @property
+    def is_message_issue_unfurl(self) -> bool:
+        return False
+
+    def get_message_description(self) -> Any:
+        context = getattr(self, "context", None)
+        return context["text_description"] if context else None

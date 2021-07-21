@@ -1,4 +1,4 @@
-import React from 'react';
+import * as React from 'react';
 
 import ExternalLink from 'app/components/links/externalLink';
 import {t, tct} from 'app/locale';
@@ -136,5 +136,20 @@ export function getSortLabel(key: string) {
     case IssueSortOptions.DATE:
     default:
       return t('Last Seen');
+  }
+}
+
+export enum IssueDisplayOptions {
+  EVENTS = 'events',
+  SESSIONS = 'sessions',
+}
+
+export function getDisplayLabel(key: IssueDisplayOptions) {
+  switch (key) {
+    case IssueDisplayOptions.SESSIONS:
+      return t('Events as %');
+    case IssueDisplayOptions.EVENTS:
+    default:
+      return t('Event Count');
   }
 }

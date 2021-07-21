@@ -1,15 +1,25 @@
-import React from 'react';
+import {Component, Fragment} from 'react';
 import styled from '@emotion/styled';
 
+import {addErrorMessage} from 'app/actionCreators/indicator';
 import {ModalRenderProps} from 'app/actionCreators/modal';
 import {Client} from 'app/api';
 import Alert from 'app/components/alert';
 import Button from 'app/components/button';
+import Link from 'app/components/links/link';
 import LoadingIndicator from 'app/components/loadingIndicator';
 import {Panel, PanelBody} from 'app/components/panels';
 import {IconCheckmark, IconNot} from 'app/icons';
-import {t} from 'app/locale';
-import {CodeOwners, Organization, Project, RepositoryProjectPathConfig} from 'app/types';
+import {t, tct} from 'app/locale';
+import space from 'app/styles/space';
+import {
+  CodeOwners,
+  Integration,
+  Organization,
+  Project,
+  RepositoryProjectPathConfig,
+} from 'app/types';
+import {getIntegrationIcon} from 'app/utils/integrationUtil';
 import withApi from 'app/utils/withApi';
 import Form from 'app/views/settings/components/forms/form';
 import SelectField from 'app/views/settings/components/forms/selectField';
@@ -19,12 +29,13 @@ type Props = {
   organization: Organization;
   project: Project;
   codeMappings: RepositoryProjectPathConfig[];
+  integrations: Integration[];
   onSave: (data: CodeOwners) => void;
 } & ModalRenderProps;
 
 type State = {
   codeownerFile: CodeOwnerFile | null;
-  codeMappingId: number | null;
+  codeMappingId: string | null;
   isLoading: boolean;
   error: boolean;
   errorJSON: {raw?: string} | null;
@@ -36,7 +47,7 @@ type CodeOwnerFile = {
   html_url: string;
 };
 
-class AddCodeOwnerModal extends React.Component<Props, State> {
+class AddCodeOwnerModal extends Component<Props, State> {
   state: State = {
     codeownerFile: null,
     codeMappingId: null,
@@ -45,7 +56,7 @@ class AddCodeOwnerModal extends React.Component<Props, State> {
     errorJSON: null,
   };
 
-  fetchFile = async (codeMappingId: number) => {
+  fetchFile = async (codeMappingId: string) => {
     const {organization} = this.props;
     this.setState({
       codeMappingId,
@@ -70,24 +81,34 @@ class AddCodeOwnerModal extends React.Component<Props, State> {
   addFile = async () => {
     const {organization, project, codeMappings} = this.props;
     const {codeownerFile, codeMappingId} = this.state;
+
     if (codeownerFile) {
+      const postData: {
+        codeMappingId: string | null;
+        raw: string;
+      } = {
+        codeMappingId,
+        raw: codeownerFile.raw,
+      };
+
       try {
         const data = await this.props.api.requestPromise(
           `/projects/${organization.slug}/${project.slug}/codeowners/`,
           {
             method: 'POST',
-            data: {
-              codeMappingId,
-              raw: codeownerFile.raw,
-            },
+            data: postData,
           }
         );
         const codeMapping = codeMappings.find(
           mapping => mapping.id === codeMappingId?.toString()
         );
         this.handleAddedFile({...data, codeMapping});
-      } catch (_err) {
-        this.setState({error: true, errorJSON: _err.responseJSON, isLoading: false});
+      } catch (err) {
+        if (err.responseJSON.raw) {
+          this.setState({error: true, errorJSON: err.responseJSON, isLoading: false});
+        } else {
+          addErrorMessage(t(Object.values(err.responseJSON).flat().join(' ')));
+        }
       }
     }
   };
@@ -103,7 +124,7 @@ class AddCodeOwnerModal extends React.Component<Props, State> {
         <SourceFileBody>
           <IconCheckmark size="md" isCircled color="green200" />
           {codeownerFile.filepath}
-          <Button size="small" href={codeownerFile.html_url}>
+          <Button size="small" href={codeownerFile.html_url} target="_blank">
             {t('Preview File')}
           </Button>
         </SourceFileBody>
@@ -111,11 +132,38 @@ class AddCodeOwnerModal extends React.Component<Props, State> {
     );
   }
 
-  errorMessage() {
-    const {errorJSON} = this.state;
+  errorMessage(baseUrl) {
+    const {errorJSON, codeMappingId} = this.state;
+    const {codeMappings} = this.props;
+    const codeMapping = codeMappings.find(mapping => mapping.id === codeMappingId);
+    const {integrationId, provider} = codeMapping as RepositoryProjectPathConfig;
+    const errActors = errorJSON?.raw?.[0].split('\n').map(el => <p>{el}</p>);
     return (
       <Alert type="error" icon={<IconNot size="md" />}>
-        <p>{errorJSON?.raw?.[0]}</p>
+        {errActors}
+        {codeMapping && (
+          <p>
+            {tct(
+              'Configure [userMappingsLink:User Mappings] or [teamMappingsLink:Team Mappings] for any missing associations.',
+              {
+                userMappingsLink: (
+                  <Link
+                    to={`${baseUrl}/${provider?.key}/${integrationId}/?tab=userMappings&referrer=add-codeowners`}
+                  />
+                ),
+                teamMappingsLink: (
+                  <Link
+                    to={`${baseUrl}/${provider?.key}/${integrationId}/?tab=teamMappings&referrer=add-codeowners`}
+                  />
+                ),
+              }
+            )}
+          </p>
+        )}
+        {tct(
+          '[addAndSkip:Add and Skip Missing Associations] will add your codeowner file and skip any rules that having missing associations. You can add associations later for any skipped rules.',
+          {addAndSkip: <strong>Add and Skip Missing Associations</strong>}
+        )}
       </Alert>
     );
   }
@@ -124,11 +172,9 @@ class AddCodeOwnerModal extends React.Component<Props, State> {
     const {codeMappingId, isLoading} = this.state;
     if (isLoading) {
       return (
-        <Panel>
-          <NoSourceFileBody>
-            <LoadingIndicator mini />
-          </NoSourceFileBody>
-        </Panel>
+        <Container>
+          <LoadingIndicator mini />
+        </Container>
       );
     }
     if (!codeMappingId) {
@@ -138,10 +184,10 @@ class AddCodeOwnerModal extends React.Component<Props, State> {
       <Panel>
         <NoSourceFileBody>
           {codeMappingId ? (
-            <React.Fragment>
+            <Fragment>
               <IconNot size="md" color="red200" />
               {t('No codeowner file found.')}
-            </React.Fragment>
+            </Fragment>
           ) : null}
         </NoSourceFileBody>
       </Panel>
@@ -149,15 +195,36 @@ class AddCodeOwnerModal extends React.Component<Props, State> {
   }
 
   render() {
-    const {Header, Body, Footer, closeModal} = this.props;
+    const {Header, Body, Footer} = this.props;
     const {codeownerFile, error, errorJSON} = this.state;
-    const {codeMappings} = this.props;
+    const {codeMappings, integrations, organization} = this.props;
+    const baseUrl = `/settings/${organization.slug}/integrations`;
+
     return (
-      <React.Fragment>
-        <Header closeButton onHide={closeModal}>
-          <h4>{t('Add Code Owner File')}</h4>
-        </Header>
+      <Fragment>
+        <Header closeButton>{t('Add Code Owner File')}</Header>
         <Body>
+          {!codeMappings.length && (
+            <Fragment>
+              <div>
+                {t(
+                  "Configure code mapping to add your CODEOWNERS file. Select the integration you'd like to use for mapping:"
+                )}
+              </div>
+              <IntegrationsList>
+                {integrations.map(integration => (
+                  <Button
+                    key={integration.id}
+                    type="button"
+                    to={`${baseUrl}/${integration.provider.key}/${integration.id}/?tab=codeMappings&referrer=add-codeowners`}
+                  >
+                    {getIntegrationIcon(integration.provider.key)}
+                    <IntegrationName>{integration.name}</IntegrationName>
+                  </Button>
+                ))}
+              </IntegrationsList>
+            </Fragment>
+          )}
           {codeMappings.length > 0 && (
             <Form
               apiMethod="POST"
@@ -181,7 +248,7 @@ class AddCodeOwnerModal extends React.Component<Props, State> {
 
               <FileResult>
                 {codeownerFile ? this.sourceFile(codeownerFile) : this.noSourceFile()}
-                {error && errorJSON && this.errorMessage()}
+                {error && errorJSON && this.errorMessage(baseUrl)}
               </FileResult>
             </Form>
           )}
@@ -196,7 +263,7 @@ class AddCodeOwnerModal extends React.Component<Props, State> {
             {t('Add File')}
           </Button>
         </Footer>
-      </React.Fragment>
+      </Fragment>
     );
   }
 }
@@ -215,13 +282,27 @@ const NoSourceFileBody = styled(PanelBody)`
   display: grid;
   padding: 12px;
   grid-template-columns: 30px 1fr;
-  align-items: flex-start;
-  min-height: 150px;
+  align-items: center;
 `;
 const SourceFileBody = styled(PanelBody)`
   display: grid;
   padding: 12px;
   grid-template-columns: 30px 1fr 100px;
-  align-items: flex-start;
-  min-height: 150px;
+  align-items: center;
+`;
+
+const IntegrationsList = styled('div')`
+  display: grid;
+  grid-gap: ${space(1)};
+  justify-items: center;
+  margin-top: ${space(2)};
+`;
+
+const IntegrationName = styled('p')`
+  padding-left: 10px;
+`;
+
+const Container = styled('div')`
+  display: flex;
+  justify-content: center;
 `;

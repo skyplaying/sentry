@@ -1,10 +1,10 @@
-import React from 'react';
+import {cloneElement, Fragment} from 'react';
 import {RouteComponentProps} from 'react-router';
 import styled from '@emotion/styled';
 
 import {openInviteMembersModal} from 'app/actionCreators/modal';
-import AlertLink from 'app/components/alertLink';
 import Badge from 'app/components/badge';
+import Button from 'app/components/button';
 import ListLink from 'app/components/links/listLink';
 import NavTabs from 'app/components/navTabs';
 import {IconMail} from 'app/icons';
@@ -104,18 +104,28 @@ class OrganizationMembersWrapper extends AsyncView<Props, State> {
     } = this.props;
     const {requestList, inviteRequests} = this.state;
 
-    return (
-      <React.Fragment>
-        <SettingsPageHeader title="Members" />
+    const action = (
+      <Button
+        priority="primary"
+        size="small"
+        onClick={() =>
+          openInviteMembersModal({
+            onClose: () => {
+              this.fetchData();
+            },
+            source: 'members_settings',
+          })
+        }
+        data-test-id="email-invite"
+        icon={<IconMail />}
+      >
+        {t('Invite Members')}
+      </Button>
+    );
 
-        <AlertLink
-          data-test-id="email-invite"
-          icon={<IconMail />}
-          priority="info"
-          onClick={() => openInviteMembersModal({source: 'members_settings'})}
-        >
-          {t('Invite new members by email to join your organization')}
-        </AlertLink>
+    return (
+      <Fragment>
+        <SettingsPageHeader title="Members" action={action} />
 
         {this.showNavTabs && (
           <NavTabs underlined>
@@ -146,7 +156,7 @@ class OrganizationMembersWrapper extends AsyncView<Props, State> {
         )}
 
         {children &&
-          React.cloneElement(children, {
+          cloneElement(children, {
             requestList,
             inviteRequests,
             onRemoveInviteRequest: this.removeInviteRequest,
@@ -154,7 +164,7 @@ class OrganizationMembersWrapper extends AsyncView<Props, State> {
             onRemoveAccessRequest: this.removeAccessRequest,
             showInviteRequests: this.showInviteRequests,
           })}
-      </React.Fragment>
+      </Fragment>
     );
   }
 }

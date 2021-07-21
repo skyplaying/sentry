@@ -1,5 +1,3 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 import {initializeOrg} from 'sentry-test/initializeOrg';
 
@@ -348,14 +346,9 @@ describe('Quick Trace', function () {
       );
       const nodes = quickTrace.find('EventNode');
       expect(nodes.length).toEqual(6);
-      [
-        'Root',
-        '3 Ancestors',
-        'Parent',
-        'This Event',
-        '1 Child',
-        '3 Descendants',
-      ].forEach((text, i) => expect(nodes.at(i).text()).toEqual(text));
+      ['Root', '3 Ancestors', 'Parent', 'This Event', '1 Child', '3 Descendants'].forEach(
+        (text, i) => expect(nodes.at(i).text()).toEqual(text)
+      );
     });
   });
 

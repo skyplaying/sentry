@@ -12,6 +12,7 @@ from sentry.attachments import attachment_cache
 from sentry.constants import DEFAULT_STORE_NORMALIZER_ARGS
 from sentry.datascrubbing import scrub_data
 from sentry.eventstore.processing import event_processing_store
+from sentry.killswitches import killswitch_matches_context
 from sentry.models import Activity, Organization, Project, ProjectOption
 from sentry.stacktraces.processing import process_stacktraces, should_process_for_stacktraces
 from sentry.tasks.base import instrumented_task
@@ -125,8 +126,8 @@ def _do_preprocess_event(cache_key, data, start_time, event_id, process_task, pr
     from_reprocessing = process_task is process_event_from_reprocessing
 
     with metrics.timer("tasks.store.preprocess_event.organization.get_from_cache"):
-        project._organization_cache = Organization.objects.get_from_cache(
-            id=project.organization_id
+        project.set_cached_field_value(
+            "organization", Organization.objects.get_from_cache(id=project.organization_id)
         )
 
     if should_process_with_symbolicator(data):
@@ -207,6 +208,16 @@ def _do_symbolicate_event(cache_key, start_time, event_id, symbolicate_task, dat
     set_current_event_project(project_id)
 
     event_id = data["event_id"]
+
+    if killswitch_matches_context(
+        "store.load-shed-symbolicate-event-projects",
+        {
+            "project_id": project_id,
+            "event_id": event_id,
+            "platform": data.get("platform") or "null",
+        },
+    ):
+        return
 
     symbolication_function = get_symbolication_function(data)
 
@@ -396,12 +407,22 @@ def _do_process_event(
 
     event_id = data["event_id"]
 
+    if killswitch_matches_context(
+        "store.load-shed-process-event-projects",
+        {
+            "project_id": project_id,
+            "event_id": event_id,
+            "platform": data.get("platform") or "null",
+        },
+    ):
+        return
+
     with sentry_sdk.start_span(op="tasks.store.process_event.get_project_from_cache"):
         project = Project.objects.get_from_cache(id=project_id)
 
     with metrics.timer("tasks.store.process_event.organization.get_from_cache"):
-        project._organization_cache = Organization.objects.get_from_cache(
-            id=project.organization_id
+        project.set_cached_field_value(
+            "organization", Organization.objects.get_from_cache(id=project.organization_id)
         )
 
     has_changed = bool(data_has_changed)
@@ -445,7 +466,9 @@ def _do_process_event(
             with metrics.timer(
                 "tasks.store.datascrubbers.scrub", tags={"from_symbolicate": from_symbolicate}
             ):
-                new_data = safe_execute(scrub_data, project=project, event=data.data)
+                new_data = safe_execute(
+                    scrub_data, project=project, event=data.data, _with_transaction=False
+                )
 
                 # XXX(markus): When datascrubbing is finally "totally stable", we might want
                 # to drop the event if it crashes to avoid saving PII
@@ -675,7 +698,7 @@ def create_failed_event(
             type=issue["type"],
             data=issue["data"],
         )
-    event_processing_store.delete_by_key(cache_key)
+
     event_processing_store.delete_by_key(cache_key)
 
     return True

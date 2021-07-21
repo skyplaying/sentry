@@ -1,4 +1,4 @@
-import React from 'react';
+import * as React from 'react';
 import memoize from 'lodash/memoize';
 import partition from 'lodash/partition';
 import uniqBy from 'lodash/uniqBy';
@@ -127,7 +127,7 @@ class Projects extends React.Component<Props, State> {
     passthroughPlaceholderProject: true,
   };
 
-  state = {
+  state: State = {
     fetchedProjects: [],
     projectsFromStore: [],
     initiallyLoaded: false,
@@ -183,7 +183,7 @@ class Projects extends React.Component<Props, State> {
     this.setState({
       // placeholders for projects we need to fetch
       fetchedProjects: notInStore.map(slug => ({slug})),
-      // set initallyLoaded if any projects were fetched from store
+      // set initiallyLoaded if any projects were fetched from store
       initiallyLoaded: !!inStore.length,
       projectsFromStore,
     });

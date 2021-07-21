@@ -1,4 +1,4 @@
-import React from 'react';
+import {Component, Fragment} from 'react';
 import styled from '@emotion/styled';
 import {Location} from 'history';
 import pick from 'lodash/pick';
@@ -16,7 +16,7 @@ import {OrganizationSummary} from 'app/types';
 import {trackAnalyticsEvent} from 'app/utils/analytics';
 import {TRACING_FIELDS} from 'app/utils/discover/fields';
 import {decodeScalar} from 'app/utils/queryString';
-import {stringifyQueryObject, tokenizeSearch} from 'app/utils/tokenizeSearch';
+import {tokenizeSearch} from 'app/utils/tokenizeSearch';
 
 type Props = {
   organization: OrganizationSummary;
@@ -27,9 +27,18 @@ type Props = {
   end?: string;
 };
 
-class RelatedIssues extends React.Component<Props> {
+const EXCLUDE_TAG_KEYS = new Set([
+  // event type can be "transaction" but we're searching for issues
+  'event.type',
+  // the project is already determined by the transaction,
+  // and issue search does not support the project filter
+  'project',
+]);
+
+class RelatedIssues extends Component<Props> {
   getIssuesEndpoint() {
     const {transaction, organization, start, end, statsPeriod, location} = this.props;
+
     const queryParams = {
       start,
       end,
@@ -40,14 +49,15 @@ class RelatedIssues extends React.Component<Props> {
     };
     const currentFilter = tokenizeSearch(decodeScalar(location.query.query, ''));
     currentFilter.getTagKeys().forEach(tagKey => {
+      const searchKey = tagKey.startsWith('!') ? tagKey.substr(1) : tagKey;
       // Remove aggregates and transaction event fields
       if (
         // aggregates
-        tagKey.match(/\w+\(.*\)/) ||
+        searchKey.match(/\w+\(.*\)/) ||
         // transaction event fields
-        TRACING_FIELDS.includes(tagKey) ||
-        // event type can be "transaction" but we're searching for issues
-        tagKey === 'event.type'
+        TRACING_FIELDS.includes(searchKey) ||
+        // tags that we don't want to pass to pass to issue search
+        EXCLUDE_TAG_KEYS.has(searchKey)
       ) {
         currentFilter.removeTag(tagKey);
       }
@@ -58,7 +68,7 @@ class RelatedIssues extends React.Component<Props> {
       path: `/organizations/${organization.slug}/issues/`,
       queryParams: {
         ...queryParams,
-        query: stringifyQueryObject(currentFilter),
+        query: currentFilter.formatString(),
       },
     };
   }
@@ -104,7 +114,7 @@ class RelatedIssues extends React.Component<Props> {
     };
 
     return (
-      <React.Fragment>
+      <Fragment>
         <ControlsWrapper>
           <SectionHeading>{t('Related Issues')}</SectionHeading>
           <Button
@@ -129,7 +139,7 @@ class RelatedIssues extends React.Component<Props> {
             withPagination={false}
           />
         </TableWrapper>
-      </React.Fragment>
+      </Fragment>
     );
   }
 }

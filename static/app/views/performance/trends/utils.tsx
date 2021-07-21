@@ -1,4 +1,3 @@
-import React from 'react';
 import styled from '@emotion/styled';
 import {ASAP} from 'downsample/methods/ASAP';
 import {Location} from 'history';
@@ -69,7 +68,7 @@ export const TRENDS_FUNCTIONS: TrendFunction[] = [
   },
 ];
 
-export const TRENDS_PARAMETERS: TrendParameter[] = [
+const TRENDS_PARAMETERS: TrendParameter[] = [
   {
     label: 'Duration',
     column: TrendColumnField.DURATION,
@@ -91,6 +90,32 @@ export const TRENDS_PARAMETERS: TrendParameter[] = [
     column: TrendColumnField.CLS,
   },
 ];
+
+// TODO(perf): Merge with above after ops breakdown feature is mainlined.
+const SPANS_TRENDS_PARAMETERS: TrendParameter[] = [
+  {
+    label: 'Spans (http)',
+    column: TrendColumnField.SPANS_HTTP,
+  },
+  {
+    label: 'Spans (db)',
+    column: TrendColumnField.SPANS_DB,
+  },
+  {
+    label: 'Spans (browser)',
+    column: TrendColumnField.SPANS_BROWSER,
+  },
+  {
+    label: 'Spans (resource)',
+    column: TrendColumnField.SPANS_RESOURCE,
+  },
+];
+
+export function getTrendsParameters({canSeeSpanOpTrends} = {canSeeSpanOpTrends: false}) {
+  return canSeeSpanOpTrends
+    ? [...TRENDS_PARAMETERS, ...SPANS_TRENDS_PARAMETERS]
+    : [...TRENDS_PARAMETERS];
+}
 
 export const trendToColor = {
   [TrendChangeType.IMPROVED]: {
@@ -144,7 +169,7 @@ export function generateTrendFunctionAsString(
 ): string {
   return generateFieldAsString({
     kind: 'function',
-    function: [trendFunction as AggregationKey, trendParameter, undefined],
+    function: [trendFunction as AggregationKey, trendParameter, undefined, undefined],
   });
 }
 
@@ -233,7 +258,7 @@ function getQueryInterval(location: Location, eventView: TrendView) {
     period: statsPeriod,
   };
 
-  const intervalFromSmoothing = getInterval(datetimeSelection, true);
+  const intervalFromSmoothing = getInterval(datetimeSelection, 'high');
 
   return intervalFromQueryParam || intervalFromSmoothing;
 }

@@ -1,4 +1,4 @@
-import React from 'react';
+import * as React from 'react';
 import {browserHistory, withRouter, WithRouterProps} from 'react-router';
 import styled from '@emotion/styled';
 import * as Sentry from '@sentry/react';
@@ -308,6 +308,7 @@ class CreateProject extends React.Component<Props, State> {
             platform={platform}
             defaultCategory={this.defaultCategory}
             setPlatform={this.setPlatform}
+            organization={this.props.organization}
             showOther
           />
           <IssueAlertOptions

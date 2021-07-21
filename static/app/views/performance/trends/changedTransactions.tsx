@@ -1,4 +1,4 @@
-import React from 'react';
+import {Fragment} from 'react';
 import {browserHistory} from 'react-router';
 import styled from '@emotion/styled';
 import {Location, Query} from 'history';
@@ -26,7 +26,7 @@ import {AvatarProject, Organization, Project} from 'app/types';
 import {formatPercentage, getDuration} from 'app/utils/formatters';
 import TrendsDiscoverQuery from 'app/utils/performance/trends/trendsDiscoverQuery';
 import {decodeScalar} from 'app/utils/queryString';
-import {stringifyQueryObject, tokenizeSearch} from 'app/utils/tokenizeSearch';
+import {tokenizeSearch} from 'app/utils/tokenizeSearch';
 import withApi from 'app/utils/withApi';
 import withOrganization from 'app/utils/withOrganization';
 import withProjects from 'app/utils/withProjects';
@@ -165,7 +165,7 @@ function handleFilterTransaction(location: Location, transaction: string) {
 
   conditions.addTagValues('!transaction', [transaction]);
 
-  const query = stringifyQueryObject(conditions);
+  const query = conditions.formatString();
 
   browserHistory.push({
     pathname: location.pathname,
@@ -194,7 +194,7 @@ function handleFilterDuration(location: Location, value: number, symbol: FilterS
 
   conditions.addTagValues(durationTag, [`${symbol}${value}`]);
 
-  const query = stringifyQueryObject(conditions);
+  const query = conditions.formatString();
 
   browserHistory.push({
     pathname: location.pathname,
@@ -275,9 +275,9 @@ function ChangedTransactions(props: Props) {
                   }}
                 />
               ) : (
-                <React.Fragment>
+                <Fragment>
                   {transactionsList.length ? (
-                    <React.Fragment>
+                    <Fragment>
                       <ChartContainer>
                         <Chart
                           statsData={statsData}
@@ -313,13 +313,13 @@ function ChangedTransactions(props: Props) {
                           )}
                         />
                       ))}
-                    </React.Fragment>
+                    </Fragment>
                   ) : (
                     <StyledEmptyStateWarning small>
                       {t('No results')}
                     </StyledEmptyStateWarning>
                   )}
-                </React.Fragment>
+                </Fragment>
               )}
             </TrendsTransactionPanel>
             <Pagination pageLinks={pageLinks} onCursor={onCursor} />
@@ -431,10 +431,10 @@ function TrendsListItem(props: TrendsListItemProps) {
       <TransactionSummaryLink {...props} />
       <ItemTransactionPercentage>
         <Tooltip title={percentChangeExplanation}>
-          <React.Fragment>
+          <Fragment>
             {trendChangeType === TrendChangeType.REGRESSION ? '+' : ''}
             {formatPercentage(transaction.trend_percentage - 1, 0)}
-          </React.Fragment>
+          </Fragment>
         </Tooltip>
       </ItemTransactionPercentage>
       <DropdownLink
@@ -484,9 +484,9 @@ function TrendsListItem(props: TrendsListItemProps) {
         <CompareDurations {...props} />
       </ItemTransactionDurationChange>
       <ItemTransactionStatus color={color}>
-        <React.Fragment>
+        <Fragment>
           {transformValueDelta(transaction.trend_difference, trendChangeType)}
-        </React.Fragment>
+        </Fragment>
       </ItemTransactionStatus>
     </ListItemContainer>
   );
@@ -545,6 +545,7 @@ const ChartContainer = styled('div')`
 `;
 
 const StyledHeaderTitleLegend = styled(HeaderTitleLegend)`
+  border-radius: ${p => p.theme.borderRadius};
   padding: ${space(2)} ${space(3)};
 `;
 

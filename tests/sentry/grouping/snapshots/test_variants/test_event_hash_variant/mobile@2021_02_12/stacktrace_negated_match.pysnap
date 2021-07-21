@@ -1,5 +1,5 @@
 ---
-created: '2021-04-08T09:28:29.384272Z'
+created: '2021-07-07T15:30:53.034108Z'
 creator: sentry
 source: tests/sentry/grouping/test_variants.py
 ---
@@ -20,11 +20,11 @@ app-depth-1:
         value (ignored because stacktrace takes precedence)
           "Holy shit everything is on fire!"
 --------------------------------------------------------------------------
-app-depth-2:
+app-depth-max:
   hash: "eb87c1031dba55b67df86fb9fff59dc6"
-  tree_label: "<entire stacktrace>"
+  tree_label: "log_demo::main"
   component:
-    app-depth-2*
+    app-depth-max*
       exception*
         stacktrace*
           frame (ignored by stack trace rule (function:log_demo::* -group))
@@ -65,7 +65,7 @@ app-depth-2:
 --------------------------------------------------------------------------
 system:
   hash: "eb87c1031dba55b67df86fb9fff59dc6"
-  tree_label: "<entire stacktrace>"
+  tree_label: "log_demo::main"
   component:
     system*
       exception*

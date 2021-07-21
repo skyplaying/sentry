@@ -1,4 +1,4 @@
-import React from 'react';
+import * as React from 'react';
 import ReactDOM from 'react-dom';
 import {Manager, Popper, Reference} from 'react-popper';
 import styled from '@emotion/styled';
@@ -6,10 +6,15 @@ import color from 'color';
 import * as PopperJS from 'popper.js';
 
 import {IconEllipsis} from 'app/icons';
-import {t} from 'app/locale';
+import {t, tct} from 'app/locale';
 import space from 'app/styles/space';
+import {defined} from 'app/utils';
 import {TableDataRow} from 'app/utils/discover/discoverQuery';
-import {getAggregateAlias} from 'app/utils/discover/fields';
+import {
+  getAggregateAlias,
+  isEquationAlias,
+  isRelativeSpanOperationBreakdownField,
+} from 'app/utils/discover/fields';
 import {getDuration} from 'app/utils/formatters';
 import {QueryResults} from 'app/utils/tokenizeSearch';
 
@@ -23,6 +28,7 @@ export enum Actions {
   TRANSACTION = 'transaction',
   RELEASE = 'release',
   DRILLDOWN = 'drilldown',
+  EDIT_THRESHOLD = 'edit_threshold',
 }
 
 export function updateQuery(
@@ -135,7 +141,7 @@ class CellAction extends React.Component<Props, State> {
     this.menuEl = null;
   }
 
-  state = {
+  state: State = {
     isHovering: false,
     isOpen: false,
   };
@@ -190,6 +196,17 @@ class CellAction extends React.Component<Props, State> {
 
   renderMenuButtons() {
     const {dataRow, column, handleCellAction, allowActions} = this.props;
+
+    // Do not render context menu buttons for the span op breakdown field.
+    if (isRelativeSpanOperationBreakdownField(column.name)) {
+      return null;
+    }
+
+    // Do not render context menu buttons for the equation fields until we can query on them
+    if (isEquationAlias(column.name)) {
+      return null;
+    }
+
     const fieldAlias = getAggregateAlias(column.name);
 
     let value = dataRow[fieldAlias];
@@ -308,6 +325,25 @@ class CellAction extends React.Component<Props, State> {
           onClick={() => handleCellAction(Actions.DRILLDOWN, value)}
         >
           {t('View Stacks')}
+        </ActionItem>
+      );
+    }
+
+    if (
+      column.column.kind === 'function' &&
+      column.column.function[0] === 'user_misery' &&
+      defined(dataRow.project_threshold_config)
+    ) {
+      addMenuItem(
+        Actions.EDIT_THRESHOLD,
+        <ActionItem
+          key="edit_threshold"
+          data-test-id="edit-threshold"
+          onClick={() => handleCellAction(Actions.EDIT_THRESHOLD, value)}
+        >
+          {tct('Edit threshold ([threshold]ms)', {
+            threshold: dataRow.project_threshold_config[1],
+          })}
         </ActionItem>
       );
     }

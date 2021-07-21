@@ -1,5 +1,5 @@
 ---
-created: '2021-03-12T14:08:29.562344Z'
+created: '2021-06-30T15:56:04.216970Z'
 creator: sentry
 source: tests/sentry/grouping/test_variants.py
 ---
@@ -15,11 +15,11 @@ app-depth-1:
           function*
             "jipJipManagementApplication"
 --------------------------------------------------------------------------
-app-depth-2:
+app-depth-max:
   hash: "be15ca3d511b96918e087c4f42503ca2"
-  tree_label: "<entire stacktrace>"
+  tree_label: "jipJipManagementApplication"
   component:
-    app-depth-2*
+    app-depth-max*
       stacktrace*
         frame*
           module* (removed codegen marker)
@@ -29,7 +29,7 @@ app-depth-2:
 --------------------------------------------------------------------------
 system:
   hash: "be15ca3d511b96918e087c4f42503ca2"
-  tree_label: "<entire stacktrace>"
+  tree_label: "jipJipManagementApplication"
   component:
     system*
       stacktrace*

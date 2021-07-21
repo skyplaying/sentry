@@ -1,5 +1,5 @@
 ---
-created: '2021-04-08T09:28:26.595063Z'
+created: '2021-07-07T15:30:52.474533Z'
 creator: sentry
 source: tests/sentry/grouping/test_variants.py
 ---
@@ -26,7 +26,7 @@ app-depth-1:
 --------------------------------------------------------------------------
 app-depth-2:
   hash: "a5af2577d4caca8f983657c5d1919e14"
-  tree_label: "post | ... | __getitem__"
+  tree_label: "__getitem__ | handle | post"
   component:
     app-depth-2*
       exception*
@@ -63,11 +63,11 @@ app-depth-2:
         value (ignored because stacktrace takes precedence)
           "\"'user'\""
 --------------------------------------------------------------------------
-app-depth-3:
+app-depth-max:
   hash: "a5af2577d4caca8f983657c5d1919e14"
-  tree_label: "<entire stacktrace>"
+  tree_label: "__getitem__ | handle | post"
   component:
-    app-depth-3*
+    app-depth-max*
       exception*
         stacktrace*
           frame (ignored by stack trace rule (path:**/release_webhook.py v-group))
@@ -167,7 +167,7 @@ app-depth-3:
 --------------------------------------------------------------------------
 system:
   hash: "a5af2577d4caca8f983657c5d1919e14"
-  tree_label: "<entire stacktrace>"
+  tree_label: "__getitem__ | handle | post"
   component:
     system*
       exception*

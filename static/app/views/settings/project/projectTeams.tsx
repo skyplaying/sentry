@@ -1,4 +1,4 @@
-import React from 'react';
+import * as React from 'react';
 import {WithRouterProps} from 'react-router';
 import {css} from '@emotion/react';
 import styled from '@emotion/styled';
@@ -126,7 +126,6 @@ class ProjectTeams extends AsyncView<Props, State> {
       params.projectId
     );
     const {projectTeams} = this.state;
-    const selectedTeams = projectTeams?.map(({slug}) => slug) ?? [];
 
     const menuHeader = (
       <StyledTeamsLabel>
@@ -152,7 +151,7 @@ class ProjectTeams extends AsyncView<Props, State> {
         <SettingsPageHeader title={t('%s Teams', params.projectId)} />
         <TeamSelect
           organization={organization}
-          selectedTeams={selectedTeams}
+          selectedTeams={projectTeams ?? []}
           onAddTeam={this.handleAdd}
           onRemoveTeam={this.handleRemove}
           menuHeader={menuHeader}

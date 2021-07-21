@@ -1,5 +1,5 @@
 ---
-created: '2021-04-08T09:28:25.549331Z'
+created: '2021-06-30T16:44:00.591611Z'
 creator: sentry
 source: tests/sentry/grouping/test_variants.py
 ---
@@ -26,7 +26,7 @@ app-depth-1:
 --------------------------------------------------------------------------
 app-depth-2:
   hash: "133db3f366b1327dab4e661f66dfb961"
-  tree_label: "safe_execute | ... | raise_for_status"
+  tree_label: "raise_for_status | send_notification | safe_execute"
   component:
     app-depth-2*
       exception*
@@ -63,11 +63,11 @@ app-depth-2:
         value (ignored because stacktrace takes precedence)
           "<int> Client Error: Too Many Requests for url: <url>"
 --------------------------------------------------------------------------
-app-depth-3:
+app-depth-max:
   hash: "133db3f366b1327dab4e661f66dfb961"
-  tree_label: "<entire stacktrace>"
+  tree_label: "raise_for_status | send_notification | safe_execute"
   component:
-    app-depth-3*
+    app-depth-max*
       exception*
         stacktrace*
           frame*
@@ -105,13 +105,13 @@ app-depth-3:
 default:
   hash: null
   component:
-    default (exception of app-depth-1/app-depth-2/app-depth-3/system takes precedence)
-      message (exception of app-depth-1/app-depth-2/app-depth-3/system takes precedence)
+    default (exception of app-depth-1/app-depth-2/app-depth-max/system takes precedence)
+      message (exception of app-depth-1/app-depth-2/app-depth-max/system takes precedence)
         "%s.process_error"
 --------------------------------------------------------------------------
 system:
   hash: "133db3f366b1327dab4e661f66dfb961"
-  tree_label: "<entire stacktrace>"
+  tree_label: "raise_for_status | send_notification | safe_execute"
   component:
     system*
       exception*

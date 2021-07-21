@@ -1,5 +1,5 @@
 ---
-created: '2021-03-12T14:08:30.946033Z'
+created: '2021-06-30T15:56:05.330352Z'
 creator: sentry
 source: tests/sentry/grouping/test_variants.py
 ---
@@ -15,11 +15,11 @@ app-depth-1:
           function*
             "fn"
 --------------------------------------------------------------------------
-app-depth-2:
+app-depth-max:
   hash: "538bdfd8d7bb2495d0d6429c3689a420"
-  tree_label: "<entire stacktrace>"
+  tree_label: "fn"
   component:
-    app-depth-2*
+    app-depth-max*
       stacktrace*
         frame*
           module* (removed codegen marker)
@@ -29,7 +29,7 @@ app-depth-2:
 --------------------------------------------------------------------------
 system:
   hash: "538bdfd8d7bb2495d0d6429c3689a420"
-  tree_label: "<entire stacktrace>"
+  tree_label: "fn"
   component:
     system*
       stacktrace*

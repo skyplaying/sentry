@@ -1,10 +1,13 @@
-import React from 'react';
+import * as React from 'react';
 import {Link} from 'react-router';
 import styled from '@emotion/styled';
 
 import Badge from 'app/components/badge';
 import FeatureBadge from 'app/components/featureBadge';
 import HookOrDefault from 'app/components/hookOrDefault';
+import Tooltip from 'app/components/tooltip';
+import {t} from 'app/locale';
+import space from 'app/styles/space';
 
 type Props = {
   to: React.ComponentProps<Link>['to'];
@@ -21,13 +24,24 @@ const SettingsNavItem = ({badge, label, index, id, ...props}: Props) => {
     defaultComponent: ({children}) => <React.Fragment>{children}</React.Fragment>,
   });
 
-  const renderedBadge =
-    badge === 'new' ? <FeatureBadge type="new" /> : <Badge text={badge} />;
+  let renderedBadge;
+  if (badge === 'new') {
+    renderedBadge = <FeatureBadge type="new" />;
+  } else if (badge === 'beta') {
+    renderedBadge = <FeatureBadge type="beta" />;
+  } else if (badge === 'warning') {
+    renderedBadge = (
+      <Tooltip title={t('This settings needs review')} position="right">
+        <StyledBadge text={badge} type="warning" />
+      </Tooltip>
+    );
+  } else {
+    renderedBadge = <StyledBadge text={badge} />;
+  }
 
   return (
     <StyledNavItem onlyActiveOnIndex={index} activeClassName="active" {...props}>
       <LabelHook id={id}>{label}</LabelHook>
-
       {badge ? renderedBadge : null}
     </StyledNavItem>
   );
@@ -78,6 +92,14 @@ const StyledNavItem = styled(Link)`
     background: transparent;
     border-radius: 0 2px 2px 0;
   }
+`;
+
+const StyledBadge = styled(Badge)`
+  font-weight: 400;
+  height: auto;
+  line-height: 1;
+  font-size: ${p => p.theme.fontSizeExtraSmall};
+  padding: 3px ${space(0.75)};
 `;
 
 export default SettingsNavItem;

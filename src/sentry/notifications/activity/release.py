@@ -1,11 +1,10 @@
 from typing import Any, Iterable, List, Mapping, MutableMapping, Optional, Set
 
-from sentry.models import Activity, Project, User
+from sentry.models import Activity, CommitFileChange, Project, User
 from sentry.notifications.utils import (
     get_commits_for_release,
     get_deploy,
     get_environment_for_deploy,
-    get_file_count,
     get_group_counts_by_project,
     get_projects,
     get_release,
@@ -29,8 +28,8 @@ class ReleaseActivityNotification(ActivityNotification):
         self.email_list: Set[str] = set()
         self.user_ids: Set[int] = set()
         self.deploy = get_deploy(activity)
-
         self.release = get_release(activity, self.organization)
+
         if not self.release:
             self.repos: Iterable[Mapping[str, Any]] = set()
             self.projects: Set[Project] = set()
@@ -65,7 +64,7 @@ class ReleaseActivityNotification(ActivityNotification):
             **self.get_base_context(),
             "commit_count": len(self.commit_list),
             "author_count": len(self.email_list),
-            "file_count": get_file_count(self.commit_list, self.organization),
+            "file_count": CommitFileChange.objects.get_count_for_commits(self.commit_list),
             "repos": self.repos,
             "release": self.release,
             "deploy": self.deploy,
@@ -104,8 +103,18 @@ class ReleaseActivityNotification(ActivityNotification):
     def get_title(self) -> str:
         return self.get_subject()
 
+    def get_notification_title(self) -> str:
+        text = "this project"
+        if len(self.projects) > 1:
+            text = "these projects"
+        return f"Release {self.version[:12]} deployed to {self.environment} for {text}"
+
     def get_filename(self) -> str:
         return "activity/release"
 
     def get_category(self) -> str:
         return "release_activity_email"
+
+    @property
+    def fine_tuning_key(self) -> str:
+        return "deploy/"

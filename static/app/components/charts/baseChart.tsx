@@ -1,6 +1,6 @@
 import 'zrender/lib/svg/svg';
 
-import React from 'react';
+import * as React from 'react';
 import {withTheme} from '@emotion/react';
 import styled from '@emotion/styled';
 import echarts, {EChartOption, ECharts} from 'echarts/lib/echarts';
@@ -130,6 +130,10 @@ type Props = {
    * ECharts Grid options. multiple grids allow multiple sub-graphs.
    */
   grid?: EChartOption.Grid | EChartOption.Grid[];
+  /**
+   * ECharts Visual Map Options.
+   */
+  visualMap?: EChartOption.VisualMap | EChartOption.VisualMap[];
   /**
    * Chart legend
    */

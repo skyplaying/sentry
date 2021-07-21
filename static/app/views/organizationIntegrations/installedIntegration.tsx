@@ -1,4 +1,4 @@
-import React from 'react';
+import * as React from 'react';
 import {withTheme} from '@emotion/react';
 import styled from '@emotion/styled';
 
@@ -23,7 +23,7 @@ export type Props = {
   integration: Integration;
   onRemove: (integration: Integration) => void;
   onDisable: (integration: Integration) => void;
-  trackIntegrationEvent: (eventKey: IntegrationAnalyticsKey) => void; //analytics callback
+  trackIntegrationEvent: (eventKey: IntegrationAnalyticsKey) => void; // analytics callback
   className?: string;
 };
 

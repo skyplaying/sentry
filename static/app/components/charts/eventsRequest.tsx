@@ -1,4 +1,4 @@
-import React from 'react';
+import * as React from 'react';
 import isEqual from 'lodash/isEqual';
 import omitBy from 'lodash/omitBy';
 
@@ -97,6 +97,10 @@ type EventsRequestPartialProps = {
    * List of environments to query
    */
   environment?: Readonly<string[]>;
+  /**
+   * List of team ids to query
+   */
+  team?: Readonly<string | string[]>;
   /**
    * List of fields to group with when doing a topEvents request.
    */
@@ -352,11 +356,8 @@ class EventsRequest extends React.PureComponent<EventsRequestProps, EventsReques
     }
 
     const {data, totals} = response;
-    const {
-      includeTransformedData,
-      includeTimeAggregation,
-      timeAggregationSeriesName,
-    } = this.props;
+    const {includeTransformedData, includeTimeAggregation, timeAggregationSeriesName} =
+      this.props;
     const {current, previous} = this.getData(data);
     const transformedData = includeTransformedData
       ? this.transformTimeseriesData(current, this.props.currentSeriesName)

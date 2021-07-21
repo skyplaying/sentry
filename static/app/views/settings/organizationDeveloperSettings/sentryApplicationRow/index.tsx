@@ -1,4 +1,4 @@
-import React from 'react';
+import {PureComponent} from 'react';
 import {Link} from 'react-router';
 import styled from '@emotion/styled';
 
@@ -18,13 +18,13 @@ type Props = {
   onRemoveApp: (app: SentryApp) => void;
 };
 
-export default class SentryApplicationRow extends React.PureComponent<Props> {
+export default class SentryApplicationRow extends PureComponent<Props> {
   get isInternal() {
     return this.props.app.status === 'internal';
   }
 
   hideStatus() {
-    //no publishing for internal apps so hide the status on the developer settings page
+    // no publishing for internal apps so hide the status on the developer settings page
     return this.isInternal;
   }
 

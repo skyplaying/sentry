@@ -1,4 +1,4 @@
-import React from 'react';
+import * as React from 'react';
 import {css} from '@emotion/react';
 import styled from '@emotion/styled';
 
@@ -333,8 +333,7 @@ class InviteMembersModal extends AsyncComponent<Props, State> {
           {this.willInvite
             ? t('Invite new members by email to join your organization.')
             : t(
-                `You don’t have permission to directly invite users, but we’ll
-                 send a request on your behalf.`
+                `You don’t have permission to directly invite users, but we'll send a request to your organization owner and manager for review.`
               )}
         </Subtext>
 
@@ -499,14 +498,9 @@ const StatusMessage = styled('div')<{status?: 'success' | 'error'}>`
 `;
 
 export const modalCss = css`
-  padding: 50px;
-
-  .modal-dialog {
-    position: unset;
-    width: 100%;
-    max-width: 800px;
-    margin: 50px auto;
-  }
+  width: 100%;
+  max-width: 800px;
+  margin: 50px auto;
 `;
 
 export default withLatestContext(withTeams(InviteMembersModal));

@@ -1,4 +1,4 @@
-import React from 'react';
+import {Component, Fragment} from 'react';
 import styled from '@emotion/styled';
 
 import {
@@ -27,23 +27,23 @@ export type Props = {
   organization: Organization;
   onResetConfiguration: (projectId: string) => void;
   onPluginEnableStatusChange: (projectId: string, status: boolean) => void;
-  trackIntegrationEvent: (eventKey: IntegrationAnalyticsKey) => void; //analytics callback
+  trackIntegrationEvent: (eventKey: IntegrationAnalyticsKey) => void; // analytics callback
   className?: string;
 };
 
-export class InstalledPlugin extends React.Component<Props> {
+export class InstalledPlugin extends Component<Props> {
   get projectId() {
     return this.props.projectItem.projectId;
   }
   getConfirmMessage() {
     return (
-      <React.Fragment>
+      <Fragment>
         <Alert type="error" icon={<IconFlag size="md" />}>
           {t(
             'Deleting this installation will disable the integration for this project and remove any configurations.'
           )}
         </Alert>
-      </React.Fragment>
+      </Fragment>
     );
   }
 
@@ -104,7 +104,7 @@ export class InstalledPlugin extends React.Component<Props> {
   };
 
   get projectForBadge(): AvatarProject {
-    //this function returns the project as needed for the ProjectBadge component
+    // this function returns the project as needed for the ProjectBadge component
     const {projectItem} = this.props;
     return {
       slug: projectItem.projectSlug,

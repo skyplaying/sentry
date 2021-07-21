@@ -1,4 +1,4 @@
-import React from 'react';
+import {Fragment} from 'react';
 import styled from '@emotion/styled';
 import sortBy from 'lodash/sortBy';
 import * as qs from 'query-string';
@@ -68,8 +68,8 @@ class IntegrationCodeMappings extends AsyncComponent<Props, State> {
   }
 
   get repos() {
-    //endpoint doesn't support loading only the repos for this integration
-    //but most people only have one source code repo so this should be fine
+    // endpoint doesn't support loading only the repos for this integration
+    // but most people only have one source code repo so this should be fine
     return this.state.repos.filter(repo => repo.integrationId === this.integrationId);
   }
 
@@ -117,9 +117,13 @@ class IntegrationCodeMappings extends AsyncComponent<Props, State> {
       pathConfigs = pathConfigs.filter(config => config.id !== pathConfig.id);
       this.setState({pathConfigs});
       addSuccessMessage(t('Deletion successful'));
-    } catch {
-      //no 4xx errors should happen on delete
-      addErrorMessage(t('An error occurred'));
+    } catch (err) {
+      addErrorMessage(
+        tct('[status]: [text]', {
+          status: err.statusText,
+          text: err.responseText,
+        })
+      );
     }
   };
 
@@ -154,7 +158,7 @@ class IntegrationCodeMappings extends AsyncComponent<Props, State> {
     );
 
     openModal(({Body, Header, closeModal}) => (
-      <React.Fragment>
+      <Fragment>
         <Header closeButton>{t('Configure code path mapping')}</Header>
         <Body>
           <RepositoryProjectPathConfigForm
@@ -170,7 +174,7 @@ class IntegrationCodeMappings extends AsyncComponent<Props, State> {
             onCancel={closeModal}
           />
         </Body>
-      </React.Fragment>
+      </Fragment>
     ));
   };
 
@@ -179,7 +183,7 @@ class IntegrationCodeMappings extends AsyncComponent<Props, State> {
     const {integration} = this.props;
 
     return (
-      <React.Fragment>
+      <Fragment>
         <Alert type="info" icon={<IconInfo />}>
           {tct('Got feedback? Email [email:ecosystem-feedback@sentry.io].', {
             email: <a href="mailto:ecosystem-feedback@sentry.io" />,
@@ -190,7 +194,7 @@ class IntegrationCodeMappings extends AsyncComponent<Props, State> {
             `Code Mappings are used to map stack trace file paths to source code file paths. These mappings are the basis for features like Stack Trace Linking. To learn more, [link: read the docs].`,
             {
               link: (
-                <ExternalLink href="https://docs.sentry.io/product/integrations/gitlab/#stack-trace-linking" />
+                <ExternalLink href="https://docs.sentry.io/product/integrations/source-code-mgmt/gitlab/#stack-trace-linking" />
               ),
             }
           )}
@@ -263,7 +267,7 @@ class IntegrationCodeMappings extends AsyncComponent<Props, State> {
               .filter(item => !!item)}
           </PanelBody>
         </Panel>
-      </React.Fragment>
+      </Fragment>
     );
   }
 }

@@ -1,4 +1,4 @@
-import React from 'react';
+import * as React from 'react';
 import styled from '@emotion/styled';
 import {PlatformIcon} from 'platformicons';
 
@@ -128,6 +128,7 @@ class StacktraceContent extends React.Component<Props, State> {
 
     return `${className} traceback in-app-traceback`;
   }
+
   render() {
     const {
       data,
@@ -222,7 +223,7 @@ class StacktraceContent extends React.Component<Props, State> {
             onAddressToggle={this.handleToggleAddresses}
             image={image}
             maxLengthOfRelativeAddress={maxLengthOfAllRelativeAddresses}
-            registers={{}} //TODO: Fix registers
+            registers={{}} // TODO: Fix registers
             isFrameAfterLastNonApp={isFrameAfterLastNonApp}
             includeSystemFrames={includeSystemFrames}
             onFunctionNameToggle={this.handleToggleFunctionName}

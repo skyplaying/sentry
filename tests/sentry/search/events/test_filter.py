@@ -1,13 +1,35 @@
 import datetime
 import re
 import unittest
+from unittest.mock import patch
 
 import pytest
 from django.utils import timezone
 from sentry_relay.consts import SPAN_STATUS_CODE_TO_NAME
 
-from sentry.search.events.fields import Function, FunctionArg, InvalidSearchQuery, with_default
-from sentry.search.events.filter import get_filter
+from sentry.api.event_search import SearchFilter, SearchKey, SearchValue
+from sentry.models import ReleaseProjectEnvironment, ReleaseStages
+from sentry.models.release import SemverFilter
+from sentry.search.events.constants import (
+    RELEASE_STAGE_ALIAS,
+    SEMVER_ALIAS,
+    SEMVER_BUILD_ALIAS,
+    SEMVER_EMPTY_RELEASE,
+    SEMVER_PACKAGE_ALIAS,
+)
+from sentry.search.events.fields import (
+    DiscoverFunction,
+    FunctionArg,
+    InvalidSearchQuery,
+    with_default,
+)
+from sentry.search.events.filter import (
+    _semver_build_filter_converter,
+    _semver_filter_converter,
+    _semver_package_filter_converter,
+    get_filter,
+    parse_semver,
+)
 from sentry.testutils.cases import TestCase
 from sentry.testutils.helpers.datetime import before_now
 from sentry.utils.snuba import OPERATOR_TO_FUNCTION
@@ -203,11 +225,39 @@ class ParseBooleanSearchQueryTest(TestCase):
             ]
         ]
 
-    def test_grouping_without_boolean_terms(self):
+        result = get_filter("test (item1 OR item2)")
+        assert result.conditions == [
+            _om("test"),
+            [
+                _or(
+                    _m("item1"),
+                    _m("item2"),
+                ),
+                "=",
+                1,
+            ],
+        ]
+
+    def test_grouping_edge_cases(self):
+        result = get_filter("()")
+        assert result.conditions == [
+            _om("()"),
+        ]
+
+        result = get_filter("(test)")
+        assert result.conditions == [
+            _om("test"),
+        ]
+
+    def test_grouping_within_free_text(self):
         result = get_filter("undefined is not an object (evaluating 'function.name')")
         assert result.conditions == [
-            _om("undefined is not an object"),
-            _om("evaluating 'function.name'"),
+            _om("undefined is not an object (evaluating 'function.name')"),
+        ]
+        result = get_filter("combined (free text) AND (grouped)")
+        assert result.conditions == [
+            _om("combined (free text)"),
+            _om("grouped"),
         ]
 
     def test_malformed_groups(self):
@@ -579,19 +629,13 @@ class ParseBooleanSearchQueryTest(TestCase):
         ):
             get_filter("(OR a:b) AND c:d")
 
-    # TODO (evanh): The situation with the next two tests is not ideal, since we should
-    # be matching the entire query instead of splitting on the brackets. However it's
-    # very difficult to write a regex that can tell the difference between a ParenExpression
-    # and a arbitrary search with parens in it. Once we switch tokenizers we can have something
-    # that can correctly classify these expressions.
     def test_empty_parens_in_message_not_boolean_search(self):
         result = get_filter(
             "failure_rate():>0.003&& users:>10 event.type:transaction",
             params={"organization_id": self.organization.id, "project_id": [self.project.id]},
         )
         assert result.conditions == [
-            _om("failure_rate"),
-            _om(":>0.003&&"),
+            _om("failure_rate():>0.003&&"),
             [["ifNull", ["users", "''"]], "=", ">10"],
             ["event.type", "=", "transaction"],
         ]
@@ -602,8 +646,7 @@ class ParseBooleanSearchQueryTest(TestCase):
             params={"organization_id": self.organization.id, "project_id": [self.project.id]},
         )
         assert result.conditions == [
-            _om("TypeError Anonymous function"),
-            _om("app/javascript/utils/transform-object-keys"),
+            _om("TypeError Anonymous function(app/javascript/utils/transform-object-keys)"),
         ]
 
     def test_or_does_not_match_organization(self):
@@ -787,6 +830,21 @@ class GetSnubaQueryArgsTest(TestCase):
         with self.assertRaises(InvalidSearchQuery):
             get_filter("id:deadbeef*")
 
+    def test_event_id(self):
+        event_id = "a" * 32
+        results = get_filter(f"id:{event_id}")
+        assert results.conditions == [["id", "=", event_id]]
+
+        event_id = "a" * 16 + "-" * 16 + "b" * 16
+        results = get_filter(f"id:{event_id}")
+        assert results.conditions == [["id", "=", event_id]]
+
+        with self.assertRaises(InvalidSearchQuery):
+            get_filter("id:deadbeef")
+
+        with self.assertRaises(InvalidSearchQuery):
+            get_filter(f"id:{'g' * 32}")
+
     def test_negated_wildcard(self):
         _filter = get_filter("!release:3.1.* user.email:*@example.com")
         assert _filter.conditions == [
@@ -800,12 +858,10 @@ class GetSnubaQueryArgsTest(TestCase):
 
     def test_escaped_wildcard(self):
         assert get_filter("release:3.1.\\* user.email:\\*@example.com").conditions == [
-            [["match", ["release", "'(?i)^3\\.1\\.\\*$'"]], "=", 1],
-            [["match", ["user.email", "'(?i)^\\*@example\\.com$'"]], "=", 1],
+            ["release", "=", "3.1.*"],
+            ["user.email", "=", "*@example.com"],
         ]
-        assert get_filter("release:\\\\\\*").conditions == [
-            [["match", ["release", "'(?i)^\\\\\\*$'"]], "=", 1]
-        ]
+        assert get_filter("release:\\\\\\*").conditions == [["release", "=", "\\\\*"]]
         assert get_filter("release:\\\\*").conditions == [
             [["match", ["release", "'(?i)^\\\\.*$'"]], "=", 1]
         ]
@@ -1169,9 +1225,7 @@ class GetSnubaQueryArgsTest(TestCase):
 
         result = get_filter("percentile    (transaction.duration, 0.75):>100")
         assert result.conditions == [
-            _om("percentile"),
-            _om("transaction.duration, 0.75"),
-            _om(":>100"),
+            _om("percentile    (transaction.duration, 0.75):>100"),
         ]
         assert result.having == []
 
@@ -1187,6 +1241,11 @@ class GetSnubaQueryArgsTest(TestCase):
     def test_function_with_negative_arguments(self):
         result = get_filter("apdex(300):>-0.5")
         assert result.having == [["apdex_300", ">", -0.5]]
+
+    def test_function_with_bad_arguments(self):
+        result = get_filter("percentile(transaction.duration 0.75):>100")
+        assert result.having == []
+        assert result.conditions == [_om("percentile(transaction.duration 0.75):>100")]
 
     def test_function_with_date_arguments(self):
         result = get_filter("last_seen():2020-04-01T19:34:52+00:00")
@@ -1245,20 +1304,91 @@ class GetSnubaQueryArgsTest(TestCase):
             ]
         ]
 
+    def test_shorthand_overflow(self):
+        with self.assertRaises(InvalidSearchQuery):
+            get_filter(f"transaction.duration:<{'9'*13}m")
+
+        with self.assertRaises(InvalidSearchQuery):
+            get_filter(f"transaction.duration:<{'9'*11}h")
+
+        with self.assertRaises(InvalidSearchQuery):
+            get_filter(f"transaction.duration:<{'9'*10}d")
+
+    def test_semver(self):
+        release = self.create_release(version="test@1.2.3")
+        release_2 = self.create_release(version="test@1.2.4")
+        _filter = get_filter(f"{SEMVER_ALIAS}:>=1.2.3", {"organization_id": self.organization.id})
+        assert _filter.conditions == [["release", "IN", [release.version, release_2.version]]]
+        assert _filter.filter_keys == {}
+
+        _filter = get_filter(f"{SEMVER_ALIAS}:>1.2.4-hi", {"organization_id": self.organization.id})
+        assert _filter.conditions == [["release", "IN", [release_2.version]]]
+        assert _filter.filter_keys == {}
+
+    def test_release_stage(self):
+        replaced_release = self.create_release(version="replaced_release")
+        adopted_release = self.create_release(version="adopted_release")
+        not_adopted_release = self.create_release(version="not_adopted_release")
+        ReleaseProjectEnvironment.objects.create(
+            project_id=self.project.id,
+            release_id=adopted_release.id,
+            environment_id=self.environment.id,
+            adopted=timezone.now(),
+        )
+        ReleaseProjectEnvironment.objects.create(
+            project_id=self.project.id,
+            release_id=replaced_release.id,
+            environment_id=self.environment.id,
+            adopted=timezone.now(),
+            unadopted=timezone.now(),
+        )
+        ReleaseProjectEnvironment.objects.create(
+            project_id=self.project.id,
+            release_id=not_adopted_release.id,
+            environment_id=self.environment.id,
+        )
+        _filter = get_filter(
+            f"{RELEASE_STAGE_ALIAS}:adopted", {"organization_id": self.organization.id}
+        )
+
+        assert _filter.conditions == [["release", "IN", [adopted_release.version]]]
+        assert _filter.filter_keys == {}
+
+        _filter = get_filter(
+            f"{RELEASE_STAGE_ALIAS}:[{ReleaseStages.REPLACED}, {ReleaseStages.LOW_ADOPTION}]",
+            {"organization_id": self.organization.id},
+        )
+        assert _filter.conditions == [
+            ["release", "IN", [replaced_release.version, not_adopted_release.version]]
+        ]
+        assert _filter.filter_keys == {}
+
+        _filter = get_filter(
+            f"!{RELEASE_STAGE_ALIAS}:[{ReleaseStages.ADOPTED}, {ReleaseStages.LOW_ADOPTION}]",
+            {"organization_id": self.organization.id},
+        )
+        assert _filter.conditions == [["release", "IN", [replaced_release.version]]]
+        assert _filter.filter_keys == {}
+
+        with self.assertRaises(InvalidSearchQuery):
+            _filter = get_filter(
+                f"!{RELEASE_STAGE_ALIAS}:invalid", {"organization_id": self.organization.id}
+            )
+
 
 def with_type(type, argument):
     argument.get_type = lambda *_: type
     return argument
 
 
-class FunctionTest(unittest.TestCase):
+class DiscoverFunctionTest(unittest.TestCase):
     def setUp(self):
-        self.fn_wo_optionals = Function(
+        self.fn_wo_optionals = DiscoverFunction(
             "wo_optionals",
             required_args=[FunctionArg("arg1"), FunctionArg("arg2")],
             transform="",
         )
-        self.fn_w_optionals = Function(
+        self.fn_w_optionals = DiscoverFunction(
             "w_optionals",
             required_args=[FunctionArg("arg1")],
             optional_args=[with_default("default", FunctionArg("arg2"))],
@@ -1284,7 +1414,7 @@ class FunctionTest(unittest.TestCase):
 
     def test_optional_valid(self):
         self.fn_w_optionals.validate_argument_count("fn_w_optionals()", ["arg1", "arg2"])
-        # because the last argument is optional, we dont need to provide it
+        # because the last argument is optional, we don't need to provide it
         self.fn_w_optionals.validate_argument_count("fn_w_optionals()", ["arg1"])
 
     def test_optional_not_enough_arguments(self):
@@ -1305,13 +1435,13 @@ class FunctionTest(unittest.TestCase):
         with self.assertRaisesRegexp(
             AssertionError, "test: optional argument at index 0 does not have default"
         ):
-            Function("test", optional_args=[FunctionArg("arg1")])
+            DiscoverFunction("test", optional_args=[FunctionArg("arg1")])
 
     def test_defining_duplicate_args(self):
         with self.assertRaisesRegexp(
             AssertionError, "test: argument arg1 specified more than once"
         ):
-            Function(
+            DiscoverFunction(
                 "test",
                 required_args=[FunctionArg("arg1")],
                 optional_args=[with_default("default", FunctionArg("arg1"))],
@@ -1321,7 +1451,7 @@ class FunctionTest(unittest.TestCase):
         with self.assertRaisesRegexp(
             AssertionError, "test: argument arg1 specified more than once"
         ):
-            Function(
+            DiscoverFunction(
                 "test",
                 required_args=[FunctionArg("arg1")],
                 calculated_args=[{"name": "arg1", "fn": lambda x: x}],
@@ -1331,7 +1461,7 @@ class FunctionTest(unittest.TestCase):
         with self.assertRaisesRegexp(
             AssertionError, "test: argument arg1 specified more than once"
         ):
-            Function(
+            DiscoverFunction(
                 "test",
                 optional_args=[with_default("default", FunctionArg("arg1"))],
                 calculated_args=[{"name": "arg1", "fn": lambda x: x}],
@@ -1339,20 +1469,20 @@ class FunctionTest(unittest.TestCase):
             )
 
     def test_default_result_type(self):
-        fn = Function("fn", transform="")
+        fn = DiscoverFunction("fn", transform="")
         assert fn.get_result_type() is None
 
-        fn = Function("fn", transform="", default_result_type="number")
+        fn = DiscoverFunction("fn", transform="", default_result_type="number")
         assert fn.get_result_type() == "number"
 
     def test_result_type_fn(self):
-        fn = Function("fn", transform="", result_type_fn=lambda *_: None)
+        fn = DiscoverFunction("fn", transform="", result_type_fn=lambda *_: None)
         assert fn.get_result_type("fn()", []) is None
 
-        fn = Function("fn", transform="", result_type_fn=lambda *_: "number")
+        fn = DiscoverFunction("fn", transform="", result_type_fn=lambda *_: "number")
         assert fn.get_result_type("fn()", []) == "number"
 
-        fn = Function(
+        fn = DiscoverFunction(
             "fn",
             required_args=[with_type("number", FunctionArg("arg1"))],
             transform="",
@@ -1361,9 +1491,237 @@ class FunctionTest(unittest.TestCase):
         assert fn.get_result_type("fn()", ["arg1"]) == "number"
 
     def test_private_function(self):
-        fn = Function("fn", transform="", result_type_fn=lambda *_: None, private=True)
+        fn = DiscoverFunction("fn", transform="", result_type_fn=lambda *_: None, private=True)
         assert fn.is_accessible() is False
         assert fn.is_accessible(None) is False
         assert fn.is_accessible([]) is False
         assert fn.is_accessible(["other_fn"]) is False
         assert fn.is_accessible(["fn"]) is True
+
+
+class SemverFilterConverterTest(TestCase):
+    def test_invalid_params(self):
+        key = SEMVER_ALIAS
+        filter = SearchFilter(SearchKey(key), ">", SearchValue("1.2.3"))
+        with pytest.raises(ValueError, match="organization_id is a required param"):
+            _semver_filter_converter(filter, key, None)
+        with pytest.raises(ValueError, match="organization_id is a required param"):
+            _semver_filter_converter(filter, key, {"something": 1})
+
+    def test_invalid_query(self):
+        key = SEMVER_ALIAS
+        filter = SearchFilter(SearchKey(key), ">", SearchValue("1.2.hi"))
+        with pytest.raises(InvalidSearchQuery, match="Invalid format for semver query"):
+            _semver_filter_converter(filter, key, {"organization_id": self.organization.id})
+
+    def run_test(
+        self, operator, version, expected_operator, expected_releases, organization_id=None
+    ):
+        organization_id = organization_id if organization_id else self.organization.id
+        key = SEMVER_ALIAS
+        filter = SearchFilter(SearchKey(key), operator, SearchValue(version))
+        assert _semver_filter_converter(filter, key, {"organization_id": organization_id}) == [
+            "release",
+            expected_operator,
+            expected_releases,
+        ]
+
+    def test_empty(self):
+        self.run_test(">", "1.2.3", "IN", [SEMVER_EMPTY_RELEASE])
+
+    def test(self):
+        release = self.create_release(version="test@1.2.3")
+        release_2 = self.create_release(version="test@1.2.4")
+        self.run_test(">", "1.2.3", "IN", [release_2.version])
+        self.run_test(">=", "1.2.4", "IN", [release_2.version])
+        self.run_test("<", "1.2.4", "IN", [release.version])
+        self.run_test("<=", "1.2.3", "IN", [release.version])
+        self.run_test("=", "1.2.4", "IN", [release_2.version])
+
+    def test_invert_query(self):
+        # Tests that flipping the query works and uses a NOT IN. Test all operators to
+        # make sure the inversion works correctly.
+        release = self.create_release(version="test@1.2.3")
+        self.create_release(version="test@1.2.4")
+        release_2 = self.create_release(version="test@1.2.5")
+
+        with patch("sentry.search.events.filter.MAX_SEARCH_RELEASES", 2):
+            self.run_test(">", "1.2.3", "NOT IN", [release.version])
+            self.run_test(">=", "1.2.4", "NOT IN", [release.version])
+            self.run_test("<", "1.2.5", "NOT IN", [release_2.version])
+            self.run_test("<=", "1.2.4", "NOT IN", [release_2.version])
+
+    def test_invert_fails(self):
+        # Tests that when we invert and still receive too many records that we return
+        # as many records we can using IN that are as close to the specified filter as
+        # possible.
+        self.create_release(version="test@1.2.1")
+        release_1 = self.create_release(version="test@1.2.2")
+        release_2 = self.create_release(version="test@1.2.3")
+        release_3 = self.create_release(version="test@1.2.4")
+        self.create_release(version="test@1.2.5")
+
+        with patch("sentry.search.events.filter.MAX_SEARCH_RELEASES", 2):
+            self.run_test(">", "1.2.2", "IN", [release_2.version, release_3.version])
+            self.run_test(">=", "1.2.3", "IN", [release_2.version, release_3.version])
+            self.run_test("<", "1.2.4", "IN", [release_2.version, release_1.version])
+            self.run_test("<=", "1.2.3", "IN", [release_2.version, release_1.version])
+
+    def test_prerelease(self):
+        # Prerelease has weird sorting rules, where an empty string is higher priority
+        # than a non-empty string. Make sure this sorting works
+        release = self.create_release(version="test@1.2.3-alpha")
+        release_1 = self.create_release(version="test@1.2.3-beta")
+        release_2 = self.create_release(version="test@1.2.3")
+        release_3 = self.create_release(version="test@1.2.4-alpha")
+        release_4 = self.create_release(version="test@1.2.4")
+        self.run_test(
+            ">=", "1.2.3", "IN", [release_2.version, release_3.version, release_4.version]
+        )
+        self.run_test(
+            ">=",
+            "1.2.3-beta",
+            "IN",
+            [release_1.version, release_2.version, release_3.version, release_4.version],
+        )
+        self.run_test("<", "1.2.3", "IN", [release_1.version, release.version])
+
+    def test_granularity(self):
+        self.create_release(version="test@1.0.0.0")
+        release_2 = self.create_release(version="test@1.2.0.0")
+        release_3 = self.create_release(version="test@1.2.3.0")
+        release_4 = self.create_release(version="test@1.2.3.4")
+        release_5 = self.create_release(version="test@2.0.0.0")
+        self.run_test(
+            ">",
+            "1",
+            "IN",
+            [release_2.version, release_3.version, release_4.version, release_5.version],
+        )
+        self.run_test(">", "1.2", "IN", [release_3.version, release_4.version, release_5.version])
+        self.run_test(">", "1.2.3", "IN", [release_4.version, release_5.version])
+        self.run_test(">", "1.2.3.4", "IN", [release_5.version])
+        self.run_test(">", "2", "IN", [SEMVER_EMPTY_RELEASE])
+
+    def test_wildcard(self):
+        release_1 = self.create_release(version="test@1.0.0.0")
+        release_2 = self.create_release(version="test@1.2.0.0")
+        release_3 = self.create_release(version="test@1.2.3.0")
+        release_4 = self.create_release(version="test@1.2.3.4")
+        release_5 = self.create_release(version="test@2.0.0.0")
+
+        self.run_test(
+            "=",
+            "1.X",
+            "IN",
+            [release_1.version, release_2.version, release_3.version, release_4.version],
+        )
+        self.run_test("=", "1.2.*", "IN", [release_2.version, release_3.version, release_4.version])
+        self.run_test("=", "1.2.3.*", "IN", [release_3.version, release_4.version])
+        self.run_test("=", "1.2.3.4", "IN", [release_4.version])
+        self.run_test("=", "2.*", "IN", [release_5.version])
+
+    def test_multi_package(self):
+        release_1 = self.create_release(version="test@1.0.0.0")
+        release_2 = self.create_release(version="test@1.2.0.0")
+        release_3 = self.create_release(version="test_2@1.2.3.0")
+        self.run_test("=", "test@1.*", "IN", [release_1.version, release_2.version])
+        self.run_test(">=", "test@1.0", "IN", [release_1.version, release_2.version])
+        self.run_test(">", "test_2@1.0", "IN", [release_3.version])
+
+
+class SemverPackageFilterConverterTest(TestCase):
+    def run_test(
+        self, operator, version, expected_operator, expected_releases, organization_id=None
+    ):
+        organization_id = organization_id if organization_id else self.organization.id
+        key = SEMVER_PACKAGE_ALIAS
+        filter = SearchFilter(SearchKey(key), operator, SearchValue(version))
+        converted = _semver_package_filter_converter(
+            filter, key, {"organization_id": organization_id}
+        )
+        assert converted[0] == "release"
+        assert converted[1] == expected_operator
+        assert set(converted[2]) == set(expected_releases)
+
+    def test_invalid_params(self):
+        key = SEMVER_PACKAGE_ALIAS
+        filter = SearchFilter(SearchKey(key), "=", SearchValue("sentry"))
+        with pytest.raises(ValueError, match="organization_id is a required param"):
+            _semver_filter_converter(filter, key, None)
+        with pytest.raises(ValueError, match="organization_id is a required param"):
+            _semver_filter_converter(filter, key, {"something": 1})
+
+    def test_empty(self):
+        self.run_test("=", "test", "IN", [SEMVER_EMPTY_RELEASE])
+
+    def test(self):
+        release = self.create_release(version="test@1.2.3")
+        release_2 = self.create_release(version="test@1.2.4")
+        release_3 = self.create_release(version="test2@1.2.4")
+        self.run_test("=", "test", "IN", [release.version, release_2.version])
+        self.run_test("=", "test2", "IN", [release_3.version])
+        self.run_test("=", "test3", "IN", [SEMVER_EMPTY_RELEASE])
+
+
+class SemverBuildFilterConverterTest(TestCase):
+    def run_test(
+        self, operator, version, expected_operator, expected_releases, organization_id=None
+    ):
+        organization_id = organization_id if organization_id else self.organization.id
+        key = SEMVER_BUILD_ALIAS
+        filter = SearchFilter(SearchKey(key), operator, SearchValue(version))
+        converted = _semver_build_filter_converter(
+            filter, key, {"organization_id": organization_id}
+        )
+        assert converted[0] == "release"
+        assert converted[1] == expected_operator
+        assert set(converted[2]) == set(expected_releases)
+
+    def test_invalid_params(self):
+        key = SEMVER_BUILD_ALIAS
+        filter = SearchFilter(SearchKey(key), "=", SearchValue("sentry"))
+        with pytest.raises(ValueError, match="organization_id is a required param"):
+            _semver_filter_converter(filter, key, None)
+        with pytest.raises(ValueError, match="organization_id is a required param"):
+            _semver_filter_converter(filter, key, {"something": 1})
+
+    def test_empty(self):
+        self.run_test("=", "test", "IN", [SEMVER_EMPTY_RELEASE])
+
+    def test(self):
+        release = self.create_release(version="test@1.2.3+123")
+        release_2 = self.create_release(version="test@1.2.4+123")
+        release_3 = self.create_release(version="test2@1.2.5+124")
+        self.run_test("=", "123", "IN", [release.version, release_2.version])
+        self.run_test("=", "124", "IN", [release_3.version])
+        self.run_test("=", "125", "IN", [SEMVER_EMPTY_RELEASE])
+        self.run_test("<", "125", "IN", [release.version, release_2.version, release_3.version])
+
+
+class ParseSemverTest(unittest.TestCase):
+    def run_test(self, version: str, operator: str, expected: SemverFilter):
+        semver_filter = parse_semver(version, operator)
+        assert semver_filter == expected
+
+    def test_invalid(self):
+        with pytest.raises(InvalidSearchQuery, match="Invalid format for semver query"):
+            parse_semver("1.hello", ">") is None
+        with pytest.raises(InvalidSearchQuery, match="Invalid format for semver query"):
+            parse_semver("hello", ">") is None
+
+    def test_normal(self):
+        self.run_test("1", ">", SemverFilter("gt", [1, 0, 0, 0, 1, ""]))
+        self.run_test("1.2", ">", SemverFilter("gt", [1, 2, 0, 0, 1, ""]))
+        self.run_test("1.2.3", ">", SemverFilter("gt", [1, 2, 3, 0, 1, ""]))
+        self.run_test("1.2.3.4", ">", SemverFilter("gt", [1, 2, 3, 4, 1, ""]))
+        self.run_test("1.2.3-hi", ">", SemverFilter("gt", [1, 2, 3, 0, 0, "hi"]))
+        self.run_test("1.2.3-hi", "<", SemverFilter("lt", [1, 2, 3, 0, 0, "hi"]))
+        self.run_test("sentry@1.2.3-hi", "<", SemverFilter("lt", [1, 2, 3, 0, 0, "hi"], "sentry"))
+
+    def test_wildcard(self):
+        self.run_test("1.*", "=", SemverFilter("exact", [1]))
+        self.run_test("1.2.*", "=", SemverFilter("exact", [1, 2]))
+        self.run_test("1.2.3.*", "=", SemverFilter("exact", [1, 2, 3]))
+        self.run_test("sentry@1.2.3.*", "=", SemverFilter("exact", [1, 2, 3], "sentry"))
+        self.run_test("1.X", "=", SemverFilter("exact", [1]))

@@ -1,4 +1,4 @@
-import React from 'react';
+import * as React from 'react';
 import {InjectedRouter, Link} from 'react-router';
 import styled from '@emotion/styled';
 
@@ -98,6 +98,7 @@ function IssueListHeader({
           <ButtonBar gap={1}>
             <Button
               size="small"
+              data-test-id="real-time"
               title={t('%s real-time updates', realtimeActive ? t('Pause') : t('Enable'))}
               onClick={() => onRealtimeChange(!realtimeActive)}
             >

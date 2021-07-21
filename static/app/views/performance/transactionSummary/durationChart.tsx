@@ -1,4 +1,4 @@
-import React from 'react';
+import {Component, Fragment} from 'react';
 import {browserHistory} from 'react-router';
 import * as ReactRouter from 'react-router';
 import {withTheme} from '@emotion/react';
@@ -27,7 +27,7 @@ import getDynamicText from 'app/utils/getDynamicText';
 import {Theme} from 'app/utils/theme';
 import withApi from 'app/utils/withApi';
 
-import {filterToField, SpanOperationBreakdownFilter} from './filter';
+import {SpanOperationBreakdownFilter} from './filter';
 
 const QUERY_KEYS = [
   'environment',
@@ -50,27 +50,15 @@ type Props = ReactRouter.WithRouterProps &
     currentFilter: SpanOperationBreakdownFilter;
   };
 
-function generateYAxisValues(filter: SpanOperationBreakdownFilter) {
-  if (filter === SpanOperationBreakdownFilter.None) {
-    return ['p50()', 'p75()', 'p95()', 'p99()', 'p100()'];
-  }
-
-  const field = filterToField(filter);
-
-  return [
-    `p50(${field})`,
-    `p75(${field})`,
-    `p95(${field})`,
-    `p99(${field})`,
-    `p100(${field})`,
-  ];
+function generateYAxisValues() {
+  return ['p50()', 'p75()', 'p95()', 'p99()', 'p100()'];
 }
 
 /**
  * Fetch and render a stacked area chart that shows duration
  * percentiles over the past 7 days
  */
-class DurationChart extends React.Component<Props> {
+class DurationChart extends Component<Props> {
   handleLegendSelectChanged = legendChange => {
     const {location} = this.props;
     const {selected} = legendChange;
@@ -148,7 +136,7 @@ class DurationChart extends React.Component<Props> {
           });
 
     return (
-      <React.Fragment>
+      <Fragment>
         <HeaderTitleLegend>
           {headerTitle}
           <QuestionTooltip
@@ -175,11 +163,11 @@ class DurationChart extends React.Component<Props> {
               environment={environment}
               start={start}
               end={end}
-              interval={getInterval(datetimeSelection, true)}
+              interval={getInterval(datetimeSelection, 'high')}
               showLoading={false}
               query={query}
               includePrevious={false}
-              yAxis={generateYAxisValues(currentFilter)}
+              yAxis={generateYAxisValues()}
               partial
             >
               {({results, errored, loading, reloading}) => {
@@ -242,7 +230,7 @@ class DurationChart extends React.Component<Props> {
             </EventsRequest>
           )}
         </ChartZoom>
-      </React.Fragment>
+      </Fragment>
     );
   }
 }

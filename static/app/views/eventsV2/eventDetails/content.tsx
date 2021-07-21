@@ -1,4 +1,4 @@
-import React from 'react';
+import {Fragment} from 'react';
 import {Params} from 'react-router/lib/Router';
 import styled from '@emotion/styled';
 import {Location} from 'history';
@@ -11,11 +11,8 @@ import NotFound from 'app/components/errors/notFound';
 import EventOrGroupTitle from 'app/components/eventOrGroupTitle';
 import {BorderlessEventEntries} from 'app/components/events/eventEntries';
 import EventMessage from 'app/components/events/eventMessage';
-import EventMetadata from 'app/components/events/eventMetadata';
 import EventVitals from 'app/components/events/eventVitals';
 import * as SpanEntryContext from 'app/components/events/interfaces/spans/context';
-import OpsBreakdown from 'app/components/events/opsBreakdown';
-import RootSpanStatus from 'app/components/events/rootSpanStatus';
 import FileSize from 'app/components/fileSize';
 import * as Layout from 'app/components/layouts/thirds';
 import LoadingError from 'app/components/loadingError';
@@ -47,6 +44,12 @@ import DiscoverBreadcrumb from '../breadcrumb';
 import {generateTitle, getExpandedResults} from '../utils';
 
 import LinkedIssue from './linkedIssue';
+
+/**
+ * Some tag keys should never be formatted as `tag[...]`
+ * when used as a filter because they are predefined.
+ */
+const EXCLUDED_TAG_KEYS = new Set(['release']);
 
 type Props = {
   organization: Organization;
@@ -102,7 +105,7 @@ class EventDetailsContent extends AsyncComponent<Props, State> {
     // Some tags may be normalized from context, but not all of them are.
     // This supports a user making a custom tag with the same name as one
     // that comes from context as all of these are also tags.
-    if (tag.key in FIELD_TAGS) {
+    if (tag.key in FIELD_TAGS && !EXCLUDED_TAG_KEYS.has(tag.key)) {
       return `tags[${tag.key}]`;
     }
     return tag.key;
@@ -162,7 +165,7 @@ class EventDetailsContent extends AsyncComponent<Props, State> {
       results?: QuickTraceQueryChildrenProps,
       metaResults?: TraceMetaQueryChildrenProps
     ) => (
-      <React.Fragment>
+      <Fragment>
         <Layout.Header>
           <Layout.HeaderContent>
             <DiscoverBreadcrumb
@@ -178,11 +181,9 @@ class EventDetailsContent extends AsyncComponent<Props, State> {
               <Button onClick={this.toggleSidebar}>
                 {isSidebarVisible ? 'Hide Details' : 'Show Details'}
               </Button>
-              {results && (
-                <Button icon={<IconOpen />} href={eventJsonUrl} external>
-                  {t('JSON')} (<FileSize bytes={event.size} />)
-                </Button>
-              )}
+              <Button icon={<IconOpen />} href={eventJsonUrl} external>
+                {t('JSON')} (<FileSize bytes={event.size} />)
+              </Button>
               {transactionSummaryTarget && (
                 <Feature organization={organization} features={['performance-view']}>
                   {({hasFeature}) => (
@@ -200,20 +201,18 @@ class EventDetailsContent extends AsyncComponent<Props, State> {
           </Layout.HeaderActions>
         </Layout.Header>
         <Layout.Body>
-          {results && (
-            <Layout.Main fullWidth>
-              <EventMetas
-                quickTrace={results}
-                meta={metaResults?.meta ?? null}
-                event={event}
-                organization={organization}
-                projectId={this.projectId}
-                location={location}
-                errorDest="discover"
-                transactionDest="discover"
-              />
-            </Layout.Main>
-          )}
+          <Layout.Main fullWidth>
+            <EventMetas
+              quickTrace={results ?? null}
+              meta={metaResults?.meta ?? null}
+              event={event}
+              organization={organization}
+              projectId={this.projectId}
+              location={location}
+              errorDest="discover"
+              transactionDest="discover"
+            />
+          </Layout.Main>
           <Layout.Main fullWidth={!isSidebarVisible}>
             <Projects orgId={organization.slug} slugs={[this.projectId]}>
               {({projects, initiallyLoaded}) =>
@@ -242,6 +241,7 @@ class EventDetailsContent extends AsyncComponent<Props, State> {
                         showExampleCommit={false}
                         showTagSummary={false}
                         api={this.api}
+                        isBorderless
                       />
                     </QuickTraceContext.Provider>
                   </SpanEntryContext.Provider>
@@ -253,17 +253,6 @@ class EventDetailsContent extends AsyncComponent<Props, State> {
           </Layout.Main>
           {isSidebarVisible && (
             <Layout.Side>
-              {results === undefined && (
-                <React.Fragment>
-                  <EventMetadata
-                    event={event}
-                    organization={organization}
-                    projectId={this.projectId}
-                  />
-                  <RootSpanStatus event={event} />
-                  <OpsBreakdown event={event} />
-                </React.Fragment>
-              )}
               <EventVitals event={event} />
               {event.groupID && (
                 <LinkedIssue groupId={event.groupID} eventId={event.eventID} />
@@ -276,12 +265,10 @@ class EventDetailsContent extends AsyncComponent<Props, State> {
             </Layout.Side>
           )}
         </Layout.Body>
-      </React.Fragment>
+      </Fragment>
     );
 
-    const hasQuickTraceView =
-      organization.features.includes('trace-view-quick') ||
-      organization.features.includes('trace-view-summary');
+    const hasQuickTraceView = organization.features.includes('performance-view');
 
     if (hasQuickTraceView) {
       const traceId = event.contexts?.trace?.trace_id ?? '';

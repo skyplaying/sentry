@@ -1,41 +1,45 @@
 import logging
+import re
 import time
-from typing import List, Tuple
-from urllib.parse import parse_qs, urlencode, urlparse
+from typing import Any, List, Tuple, Union
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
 from django.core.exceptions import ValidationError
-from django.http import Http404
+from django.http import Http404, HttpResponse
+from rest_framework.request import Request
 
 from sentry.constants import ObjectStatus
-from sentry.models import IdentityProvider, Integration, Organization
+from sentry.models import (
+    Environment,
+    Identity,
+    IdentityProvider,
+    IdentityStatus,
+    Integration,
+    Organization,
+    Project,
+    Team,
+    User,
+)
+from sentry.notifications.activity.release import ReleaseActivityNotification
+from sentry.notifications.base import BaseNotification
 from sentry.shared_integrations.exceptions import (
     ApiError,
     DuplicateDisplayNameError,
     IntegrationError,
 )
 from sentry.utils import json
+from sentry.utils.http import absolute_uri
+from sentry.web.helpers import render_to_response
 
 from .client import SlackClient
 
 logger = logging.getLogger("sentry.integrations.slack")
 
-# Attachment colors used for issues with no actions take
-LEVEL_TO_COLOR = {
-    "debug": "#fbe14f",
-    "info": "#2788ce",
-    "warning": "#FFC227",
-    "error": "#E03E2F",
-    "fatal": "#FA4747",
-}
-
-ACTIONED_ISSUE_COLOR = "#EDEEEF"
-INCIDENT_RESOLVED_COLOR = "#4dc771"
-
-
 MEMBER_PREFIX = "@"
 CHANNEL_PREFIX = "#"
 strip_channel_chars = "".join([MEMBER_PREFIX, CHANNEL_PREFIX])
 SLACK_DEFAULT_TIMEOUT = 10
+ALLOWED_ROLES = ["admin", "manager", "owner"]
 
 
 def get_integration_type(integration: Integration):
@@ -245,9 +249,7 @@ def get_identity(user, organization_id, integration_id):
 
 
 def parse_link(url):
-    """
-    For data aggreggation purposes, rm unique information from URL
-    """
+    """For data aggregation purposes, remove unique information from URL."""
 
     url_parts = list(urlparse(url))
     query = dict(parse_qs(url_parts[4]))
@@ -269,3 +271,134 @@ def parse_link(url):
     parsed_path += "/" + str(url_parts[4])
 
     return parsed_path
+
+
+def get_slack_data_by_user(integration, organization, emails_by_user):
+    access_token = (
+        integration.metadata.get("user_access_token") or integration.metadata["access_token"]
+    )
+    headers = {"Authorization": "Bearer %s" % access_token}
+    client = SlackClient()
+
+    slack_data_by_user = {}
+    for user, emails in emails_by_user.items():
+        for email in emails:
+            try:
+                # TODO use users.list instead to reduce API calls
+                resp = client.get("/users.lookupByEmail/", headers=headers, params={"email": email})
+            except ApiError as e:
+                logger.info(
+                    "post_install.fail.slack_lookupByEmail",
+                    extra={
+                        "error": str(e),
+                        "organization": organization.slug,
+                        "integration_id": integration.id,
+                        "email": email,
+                    },
+                )
+                continue
+
+            if resp["ok"] is True:
+                slack_data_by_user[user] = {
+                    "email": resp["user"]["profile"]["email"],
+                    "team_id": resp["user"]["team_id"],
+                    "slack_id": resp["user"]["id"],
+                }
+                break
+    return slack_data_by_user
+
+
+def get_identities_by_user(idp, users):
+    identity_models = Identity.objects.filter(
+        idp=idp,
+        user__in=users,
+        status=IdentityStatus.VALID,
+    )
+    return {identity.user: identity for identity in identity_models}
+
+
+def is_valid_role(org_member, team, organization):
+    return org_member.role in ALLOWED_ROLES and (
+        organization.flags.allow_joinleave or team in org_member.teams.all()
+    )
+
+
+def render_error_page(request: Request, body_text: str) -> HttpResponse:
+    return render_to_response(
+        "sentry/integrations/slack-link-team-error.html",
+        request=request,
+        context={"body_text": body_text},
+    )
+
+
+def send_confirmation(
+    integration: Integration,
+    channel_id: str,
+    heading: str,
+    text: str,
+    template: str,
+    request: Request,
+) -> HttpResponse:
+    client = SlackClient()
+    token = integration.metadata.get("user_access_token") or integration.metadata["access_token"]
+    payload = {
+        "token": token,
+        "channel": channel_id,
+        "text": text,
+    }
+
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        client.post("/chat.postMessage", headers=headers, data=payload, json=True)
+    except ApiError as e:
+        message = str(e)
+        if message != "Expired url":
+            logger.error("slack.slash-notify.response-error", extra={"error": message})
+    else:
+        return render_to_response(
+            template,
+            request=request,
+            context={
+                "heading_text": heading,
+                "body_text": text,
+                "channel_id": channel_id,
+                "team_id": integration.external_id,
+            },
+        )
+
+
+def get_referrer_qstring(notification: BaseNotification) -> str:
+    return "?referrer=" + re.sub("Notification$", "Slack", notification.__class__.__name__)
+
+
+def get_settings_url(notification: BaseNotification) -> str:
+    url_str = f"/settings/account/notifications/{notification.fine_tuning_key}"
+    return str(urljoin(absolute_uri(url_str), get_referrer_qstring(notification)))
+
+
+def build_notification_footer(notification: BaseNotification, recipient: Union[Team, User]) -> Any:
+    if isinstance(recipient, Team):
+        team = Team.objects.get(id=recipient.id)
+        url_str = f"/settings/{notification.group.project.organization.slug}/teams/{team.slug}/notifications/"
+        settings_url = str(urljoin(absolute_uri(url_str), get_referrer_qstring(notification)))
+    else:
+        settings_url = get_settings_url(notification)
+
+    if isinstance(notification, ReleaseActivityNotification):
+        # no environment related to a deploy
+        if notification.release:
+            return f"{notification.release.projects.all()[0].slug} | <{settings_url}|Notification Settings>"
+        return f"<{settings_url}|Notification Settings>"
+
+    footer = Project.objects.get_from_cache(id=notification.group.project_id).slug
+    latest_event = notification.group.get_latest_event()
+    environment = None
+    if latest_event:
+        try:
+            environment = latest_event.get_environment()
+        except Environment.DoesNotExist:
+            pass
+    if environment and getattr(environment, "name", None) != "":
+        footer += f" | {environment.name}"
+    footer += f" | <{settings_url}|Notification Settings>"
+    return footer

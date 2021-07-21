@@ -1,4 +1,4 @@
-import React from 'react';
+import * as React from 'react';
 import {withRouter} from 'react-router';
 import {WithRouterProps} from 'react-router/lib/withRouter';
 import {withTheme} from '@emotion/react';
@@ -34,6 +34,7 @@ type ReleaseConditions = {
   environment: Readonly<string[]>;
   statsPeriod?: string;
   cursor?: string;
+  query?: string;
 };
 
 // This is not an exported action/function because releases list uses AsyncComponent
@@ -77,6 +78,7 @@ type Props = WithRouterProps & {
   memoized?: boolean;
   preserveQueryParams?: boolean;
   emphasizeReleases?: string[];
+  query?: string;
   queryExtra?: Query;
 };
 
@@ -86,7 +88,7 @@ type State = {
 };
 
 class ReleaseSeries extends React.Component<Props, State> {
-  state = {
+  state: State = {
     releases: null,
     releaseSeries: [],
   };
@@ -110,7 +112,8 @@ class ReleaseSeries extends React.Component<Props, State> {
       !isEqual(prevProps.environments, this.props.environments) ||
       !isEqual(prevProps.start, this.props.start) ||
       !isEqual(prevProps.end, this.props.end) ||
-      !isEqual(prevProps.period, this.props.period)
+      !isEqual(prevProps.period, this.props.period) ||
+      !isEqual(prevProps.query, this.props.query)
     ) {
       this.fetchData();
     } else if (!isEqual(prevProps.emphasizeReleases, this.props.emphasizeReleases)) {
@@ -144,6 +147,7 @@ class ReleaseSeries extends React.Component<Props, State> {
       start,
       end,
       memoized,
+      query,
     } = this.props;
     const conditions: ReleaseConditions = {
       start,
@@ -151,6 +155,7 @@ class ReleaseSeries extends React.Component<Props, State> {
       project: projects,
       environment: environments,
       statsPeriod: period,
+      query,
     };
     let hasMore = true;
     const releases: ReleaseMetaBasic[] = [];

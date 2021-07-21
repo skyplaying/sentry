@@ -25,6 +25,8 @@ logger = logging.getLogger(__name__)
 
 ACCEPTED_TRACKING_COOKIE = "accepted_tracking"
 MEMBER_ID_COOKIE = "demo_member_id"
+SKIP_EMAIL_COOKIE = "skip_email"
+SAAS_ORG_SLUG = "saas_org_slug"
 
 
 class DemoStartView(BaseView):
@@ -43,8 +45,9 @@ class DemoStartView(BaseView):
         logger.info("post.start", extra={"cookie_member_id": member_id})
         sentry_sdk.set_tag("member_id", member_id)
 
-        # TODO(steve): switch to camelCase for request field
-        skip_buffer = request.POST.get("skip_buffer") == "1"
+        # TODO: remove snake case
+        skip_buffer_input = request.POST.get("skipBuffer") or request.POST.get("skip_buffer")
+        skip_buffer = skip_buffer_input == "1"
         sentry_sdk.set_tag("skip_buffer", skip_buffer)
 
         scenario = request.POST.get("scenario")
@@ -77,14 +80,25 @@ class DemoStartView(BaseView):
         auth.login(request, user)
         resp = self.redirect(get_redirect_url(request, org))
 
-        # set a cookie of whether the user accepteed tracking so we know
+        # set a cookie of whether the user accepted tracking so we know
         # whether to initialize analytics when accepted_tracking=1
         # 0 means don't show the footer to accept cookies (user already declined)
         # no value means we show the footer to accept cookies (user has neither accepted nor declined)
-        # TODO: switch to camelCase for request field
-        accepted_tracking = request.POST.get(ACCEPTED_TRACKING_COOKIE)
+        # TODO: remove snake case
+        accepted_tracking = request.POST.get("acceptedTracking") or request.POST.get(
+            ACCEPTED_TRACKING_COOKIE
+        )
         if accepted_tracking in ["0", "1"]:
             resp.set_cookie(ACCEPTED_TRACKING_COOKIE, accepted_tracking)
+
+        # if skip email is 1, set the cookie
+        skip_email = request.POST.get("skipEmail")
+        if skip_email == "1":
+            resp.set_cookie(SKIP_EMAIL_COOKIE, skip_email)
+
+        saas_org_slug = request.POST.get("saasOrgSlug")
+        if saas_org_slug:
+            resp.set_cookie(SAAS_ORG_SLUG, saas_org_slug)
 
         # set the member id
         resp.set_signed_cookie(MEMBER_ID_COOKIE, member.id)
@@ -117,13 +131,15 @@ def get_redirect_url(request, org):
         # with project slug
         project_slug = request.POST.get("projectSlug")
 
+        error_type = request.POST.get("errorType")
+
         # issue details
         if scenario == "oneIssue":
-            return get_one_issue(org, project_slug)
+            return get_one_issue(org, project_slug, error_type)
         if scenario == "oneBreadcrumb":
-            return get_one_breadcrumb(org, project_slug)
+            return get_one_breadcrumb(org, project_slug, error_type)
         if scenario == "oneStackTrace":
-            return get_one_stack_trace(org, project_slug)
+            return get_one_stack_trace(org, project_slug, error_type)
 
         # performance and discover
         if scenario == "oneTransaction":
@@ -158,21 +174,32 @@ def get_one_release(org: Organization, project_slug: Optional[str]):
     return f"/organizations/{org.slug}/releases/{version}/?project={project.id}"
 
 
-def get_one_issue(org: Organization, project_slug: Optional[str]):
+def get_one_issue(org: Organization, project_slug: Optional[str], error_type: Optional[str]):
     group_query = Group.objects.filter(project__organization=org)
+    if error_type:
+        error_type = error_type.lower()
+    similar_groups = []
     if project_slug:
         group_query = group_query.filter(project__slug=project_slug)
-    group = group_query.first()
-
+        if error_type:
+            similar_groups = [
+                group for group in group_query if check_strings_similar(error_type, group)
+            ]
+        if similar_groups:
+            group = similar_groups[0]
+        else:
+            group = group_query.first()
+    else:
+        group = group_query.first()
     return f"/organizations/{org.slug}/issues/{group.id}/?project={group.project_id}"
 
 
-def get_one_breadcrumb(org: Organization, project_slug: Optional[str]):
-    return get_one_issue(org, project_slug) + "#breadcrumbs"
+def get_one_breadcrumb(org: Organization, project_slug: Optional[str], error_type: Optional[str]):
+    return get_one_issue(org, project_slug, error_type) + "#breadcrumbs"
 
 
-def get_one_stack_trace(org: Organization, project_slug: Optional[str]):
-    return get_one_issue(org, project_slug) + "#exception"
+def get_one_stack_trace(org: Organization, project_slug: Optional[str], error_type: Optional[str]):
+    return get_one_issue(org, project_slug, error_type) + "#exception"
 
 
 def get_one_transaction(org: Organization, project_slug: Optional[str]):
@@ -236,3 +263,15 @@ def _get_one_transaction_name(project: Project):
         referrer="sandbox.demo_start._get_one_transaction_name",
     )
     return result["data"][0]["transaction"]
+
+
+def check_strings_similar(error_type, group):
+    type = group.data["metadata"].get("type")
+    title = group.data["metadata"].get("title")
+    if type:
+        if error_type in type.lower():
+            return True
+    if title:
+        if error_type in title.lower():
+            return True
+    return False

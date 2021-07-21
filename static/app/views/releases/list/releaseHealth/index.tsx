@@ -1,4 +1,4 @@
-import React from 'react';
+import {Component, Fragment} from 'react';
 import styled from '@emotion/styled';
 import {Location} from 'history';
 import partition from 'lodash/partition';
@@ -26,7 +26,7 @@ type Props = {
   getHealthData: ReleaseHealthRequestRenderProps['getHealthData'];
 };
 
-class ReleaseHealth extends React.Component<Props> {
+class ReleaseHealth extends Component<Props> {
   shouldComponentUpdate(nextProps: Props) {
     // we don't want project health rows to reorder/jump while the whole card is loading
     if (this.props.reloading && nextProps.reloading) {
@@ -71,11 +71,13 @@ class ReleaseHealth extends React.Component<Props> {
     }
 
     return (
-      <React.Fragment>
+      <Fragment>
         <Content
           organization={organization}
           activeDisplay={activeDisplay}
           releaseVersion={release.version}
+          showAdoptionStageLabels={selection.environments.length === 1}
+          adoptionStages={release.adoptionStages}
           projects={projectsToShow}
           location={location}
           showPlaceholders={showPlaceholders}
@@ -96,7 +98,7 @@ class ReleaseHealth extends React.Component<Props> {
             </Tooltip>
           </HiddenProjectsMessage>
         )}
-      </React.Fragment>
+      </Fragment>
     );
   }
 }

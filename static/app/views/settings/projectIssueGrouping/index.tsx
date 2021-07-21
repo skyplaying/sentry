@@ -1,4 +1,4 @@
-import React from 'react';
+import {Fragment} from 'react';
 import {RouteComponentProps} from 'react-router';
 
 import ProjectActions from 'app/actions/projectActions';
@@ -65,7 +65,7 @@ class ProjectDebugSymbols extends AsyncView<Props, State> {
     };
 
     return (
-      <React.Fragment>
+      <Fragment>
         <SettingsPageHeader title={t('Issue Grouping')} />
 
         <TextBlock>
@@ -73,7 +73,7 @@ class ProjectDebugSymbols extends AsyncView<Props, State> {
             `All events have a fingerprint. Events with the same fingerprint are grouped together into an issue. To learn more about issue grouping, [link: read the docs].`,
             {
               link: (
-                <ExternalLink href="https://docs.sentry.io/platform-redirect/?next=%2Fdata-management%2Fevent-grouping%2F" />
+                <ExternalLink href="https://docs.sentry.io/product/data-management-settings/event-grouping/" />
               ),
             }
           )}
@@ -120,7 +120,7 @@ class ProjectDebugSymbols extends AsyncView<Props, State> {
             onUpgrade={this.fetchData}
           />
         </Form>
-      </React.Fragment>
+      </Fragment>
     );
   }
 }

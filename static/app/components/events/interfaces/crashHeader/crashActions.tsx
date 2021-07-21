@@ -1,4 +1,3 @@
-import React from 'react';
 import styled from '@emotion/styled';
 
 import Button from 'app/components/button';
@@ -15,6 +14,7 @@ type NotifyOptions = {
 };
 
 type Props = {
+  hasGroupingTreeUI: boolean;
   stackView?: STACK_VIEW;
   stackType?: STACK_TYPE;
   platform?: string;
@@ -32,6 +32,7 @@ const CrashActions = ({
   exception,
   platform,
   onChange,
+  hasGroupingTreeUI,
 }: Props) => {
   const hasSystemFrames: boolean =
     stacktrace?.hasSystemFrames ||
@@ -79,7 +80,7 @@ const CrashActions = ({
             size="xsmall"
             onClick={setStackView(STACK_VIEW.APP)}
           >
-            {t('App Only')}
+            {hasGroupingTreeUI ? t('Relevant Only') : t('App Only')}
           </Button>
         )}
         <Button

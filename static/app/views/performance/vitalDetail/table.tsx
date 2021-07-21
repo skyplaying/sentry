@@ -1,4 +1,4 @@
-import React from 'react';
+import * as React from 'react';
 import * as ReactRouter from 'react-router';
 import styled from '@emotion/styled';
 import {Location, LocationDescriptorObject} from 'history';
@@ -8,12 +8,10 @@ import SortLink from 'app/components/gridEditable/sortLink';
 import Link from 'app/components/links/link';
 import Pagination from 'app/components/pagination';
 import Tag from 'app/components/tag';
-import {IconStar, IconUser} from 'app/icons';
+import {IconStar} from 'app/icons';
 import {t} from 'app/locale';
-import space from 'app/styles/space';
 import {Organization, Project} from 'app/types';
 import {trackAnalyticsEvent} from 'app/utils/analytics';
-import DiscoverQuery, {TableData, TableDataRow} from 'app/utils/discover/discoverQuery';
 import EventView, {EventData, isFieldSortable} from 'app/utils/discover/eventView';
 import {getFieldRenderer} from 'app/utils/discover/fieldRenderers';
 import {
@@ -22,7 +20,11 @@ import {
   Sort,
   WebVital,
 } from 'app/utils/discover/fields';
-import {stringifyQueryObject, tokenizeSearch} from 'app/utils/tokenizeSearch';
+import VitalsDetailsTableQuery, {
+  TableData,
+  TableDataRow,
+} from 'app/utils/performance/vitals/vitalsDetailsTableQuery';
+import {tokenizeSearch} from 'app/utils/tokenizeSearch';
 import CellAction, {Actions, updateQuery} from 'app/views/eventsV2/table/cellAction';
 import {TableColumn} from 'app/views/eventsV2/table/types';
 
@@ -89,7 +91,7 @@ type State = {
 };
 
 class Table extends React.Component<Props, State> {
-  state = {
+  state: State = {
     widths: [],
   };
 
@@ -116,7 +118,7 @@ class Table extends React.Component<Props, State> {
         query: {
           ...location.query,
           cursor: undefined,
-          query: stringifyQueryObject(searchConditions),
+          query: searchConditions.formatString(),
         },
       });
     };
@@ -171,21 +173,12 @@ class Table extends React.Component<Props, State> {
       Actions.SHOW_LESS_THAN,
     ];
 
-    if (field === 'count_unique(user)') {
-      return (
-        <UniqueUserCell>
-          {rendered}
-          <StyledUserIcon size="20" />
-        </UniqueUserCell>
-      );
-    }
-
     if (field === 'transaction') {
       const projectID = getProjectID(dataRow, projects);
       const summaryView = eventView.clone();
       const conditions = tokenizeSearch(summaryConditions);
       conditions.addTagValues('has', [`${vitalName}`]);
-      summaryView.query = stringifyQueryObject(conditions);
+      summaryView.query = conditions.formatString();
 
       const target = transactionSummaryRouteWithQuery({
         orgSlug: organization.slug,
@@ -211,6 +204,10 @@ class Table extends React.Component<Props, State> {
     }
 
     if (field.startsWith('key_transaction')) {
+      return rendered;
+    }
+
+    if (field.startsWith('team_key_transaction')) {
       return rendered;
     }
 
@@ -279,24 +276,44 @@ class Table extends React.Component<Props, State> {
     const keyTransactionColumn = eventView
       .getColumns()
       .find((col: TableColumn<React.ReactText>) => col.name === 'key_transaction');
+    const teamKeyTransactionColumn = eventView
+      .getColumns()
+      .find((col: TableColumn<React.ReactText>) => col.name === 'team_key_transaction');
     return (isHeader: boolean, dataRow?: any) => {
-      if (!keyTransactionColumn) {
-        return [];
+      if (keyTransactionColumn) {
+        if (isHeader) {
+          const star = (
+            <IconStar
+              key="keyTransaction"
+              color="yellow300"
+              isSolid
+              data-test-id="key-transaction-header"
+            />
+          );
+          return [this.renderHeadCell(tableData?.meta, keyTransactionColumn, star)];
+        } else {
+          return [
+            this.renderBodyCell(tableData, keyTransactionColumn, dataRow, vitalName),
+          ];
+        }
+      } else if (teamKeyTransactionColumn) {
+        if (isHeader) {
+          const star = (
+            <IconStar
+              key="keyTransaction"
+              color="yellow300"
+              isSolid
+              data-test-id="key-transaction-header"
+            />
+          );
+          return [this.renderHeadCell(tableData?.meta, teamKeyTransactionColumn, star)];
+        } else {
+          return [
+            this.renderBodyCell(tableData, teamKeyTransactionColumn, dataRow, vitalName),
+          ];
+        }
       }
-
-      if (isHeader) {
-        const star = (
-          <IconStar
-            key="keyTransaction"
-            color="yellow300"
-            isSolid
-            data-test-id="key-transaction-header"
-          />
-        );
-        return [this.renderHeadCell(tableData?.meta, keyTransactionColumn, star)];
-      } else {
-        return [this.renderBodyCell(tableData, keyTransactionColumn, dataRow, vitalName)];
-      }
+      return [];
     };
   };
 
@@ -335,7 +352,7 @@ class Table extends React.Component<Props, State> {
       ? []
       : [
           {
-            field: 'key_transaction',
+            field: 'team_key_transaction',
             kind: 'desc',
           },
           {
@@ -361,7 +378,10 @@ class Table extends React.Component<Props, State> {
       .getColumns()
       // remove key_transactions from the column order as we'll be rendering it
       // via a prepended column
-      .filter((col: TableColumn<React.ReactText>) => col.name !== 'key_transaction')
+      .filter(
+        (col: TableColumn<React.ReactText>) =>
+          col.name !== 'key_transaction' && col.name !== 'team_key_transaction'
+      )
       .slice(0, -1)
       .map((col: TableColumn<React.ReactText>, i: number) => {
         if (typeof widths[i] === 'number') {
@@ -376,7 +396,7 @@ class Table extends React.Component<Props, State> {
 
     return (
       <div>
-        <DiscoverQuery
+        <VitalsDetailsTableQuery
           eventView={sortedEventView}
           orgSlug={organization.slug}
           location={location}
@@ -411,16 +431,11 @@ class Table extends React.Component<Props, State> {
               <Pagination pageLinks={pageLinks} />
             </React.Fragment>
           )}
-        </DiscoverQuery>
+        </VitalsDetailsTableQuery>
       </div>
     );
   }
 }
-
-const UniqueUserCell = styled('span')`
-  display: flex;
-  align-items: center;
-`;
 
 const UniqueTagCell = styled('div')`
   text-align: right;
@@ -451,11 +466,6 @@ const PoorTag = styled(Tag)`
   span {
     color: ${p => p.theme.white};
   }
-`;
-
-const StyledUserIcon = styled(IconUser)`
-  margin-left: ${space(1)};
-  color: ${p => p.theme.gray400};
 `;
 
 export default Table;

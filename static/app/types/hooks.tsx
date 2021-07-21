@@ -1,10 +1,11 @@
-import {Route} from 'react-router';
+import React from 'react';
+import {Route, RouteComponentProps} from 'react-router';
 
 import {ChildrenRenderFn} from 'app/components/acl/feature';
 import DateRange from 'app/components/organizations/timeRangeSelector/dateRange';
 import SelectorItems from 'app/components/organizations/timeRangeSelector/dateRange/selectorItems';
 import SidebarItem from 'app/components/sidebar/sidebarItem';
-import {IntegrationProvider, Organization, Project, User} from 'app/types';
+import {IntegrationProvider, Member, Organization, Project, User} from 'app/types';
 import {ExperimentKey} from 'app/types/experiments';
 import {NavigationItem, NavigationSection} from 'app/views/settings/types';
 
@@ -49,6 +50,14 @@ export type RouteHooks = {
  */
 type DateRangeProps = React.ComponentProps<typeof DateRange>;
 type SelectorItemsProps = React.ComponentProps<typeof SelectorItems>;
+type GlobalNotificationProps = {className: string; organization?: Organization};
+type DisabledMemberViewProps = RouteComponentProps<{orgId: string}, {}>;
+type MemberListHeaderProps = {
+  members: Member[];
+  organization: Organization;
+};
+type DisabledMemberTooltipProps = {children: React.ReactNode};
+type DashboardHeadersProps = {organization: Organization};
 
 /**
  * Component wrapping hooks
@@ -56,6 +65,11 @@ type SelectorItemsProps = React.ComponentProps<typeof SelectorItems>;
 export type ComponentHooks = {
   'component:header-date-range': () => React.ComponentType<DateRangeProps>;
   'component:header-selector-items': () => React.ComponentType<SelectorItemsProps>;
+  'component:global-notifications': () => React.ComponentType<GlobalNotificationProps>;
+  'component:disabled-member': () => React.ComponentType<DisabledMemberViewProps>;
+  'component:member-list-header': () => React.ComponentType<MemberListHeaderProps>;
+  'component:disabled-member-tooltip': () => React.ComponentType<DisabledMemberTooltipProps>;
+  'component:dashboards-header': () => React.ComponentType<DashboardHeadersProps>;
 };
 
 /**
@@ -89,6 +103,7 @@ export type AnalyticsHooks = {
  */
 export type FeatureDisabledHooks = {
   'feature-disabled:alerts-page': FeatureDisabledHook;
+  'feature-disabled:configure-distributed-tracing': FeatureDisabledHook;
   'feature-disabled:custom-inbound-filters': FeatureDisabledHook;
   'feature-disabled:custom-symbol-sources': FeatureDisabledHook;
   'feature-disabled:data-forwarding': FeatureDisabledHook;
@@ -103,9 +118,12 @@ export type FeatureDisabledHooks = {
   'feature-disabled:grid-editable-actions': FeatureDisabledHook;
   'feature-disabled:open-discover': FeatureDisabledHook;
   'feature-disabled:dashboards-edit': FeatureDisabledHook;
+  'feature-disabled:dashboards-page': FeatureDisabledHook;
+  'feature-disabled:dashboards-sidebar-item': FeatureDisabledHook;
   'feature-disabled:incidents-sidebar-item': FeatureDisabledHook;
   'feature-disabled:performance-new-project': FeatureDisabledHook;
   'feature-disabled:performance-page': FeatureDisabledHook;
+  'feature-disabled:performance-quick-trace': FeatureDisabledHook;
   'feature-disabled:performance-sidebar-item': FeatureDisabledHook;
   'feature-disabled:project-performance-score-card': FeatureDisabledHook;
   'feature-disabled:project-selector-checkbox': FeatureDisabledHook;
@@ -128,6 +146,7 @@ export type InterfaceChromeHooks = {
   'sidebar:organization-dropdown-menu-bottom': GenericOrganizationComponentHook;
   'sidebar:bottom-items': SidebarBottomItemsHook;
   'sidebar:item-label': SidebarItemLabelHook;
+  'sidebar:item-override': SidebarItemOverrideHook;
   'help-modal:footer': HelpModalFooterHook;
 };
 
@@ -316,6 +335,14 @@ type SidebarItemLabelHook = () => React.ComponentType<{
    * The item label being wrapped
    */
   children: React.ReactNode;
+}>;
+
+type SidebarItemOverrideHook = () => React.ComponentType<{
+  /**
+   * The item label being wrapped
+   */
+  children: (props: Partial<React.ComponentProps<typeof SidebarItem>>) => React.ReactNode;
+  id?: string;
 }>;
 
 type SidebarProps = Pick<

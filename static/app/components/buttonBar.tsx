@@ -1,4 +1,4 @@
-import React from 'react';
+import * as React from 'react';
 import {css} from '@emotion/react';
 import styled from '@emotion/styled';
 import classNames from 'classnames';
@@ -125,4 +125,5 @@ const ButtonGrid = styled('div')<{gap: ValidSize; merged: boolean}>`
   ${p => p.merged && MergedStyles}
 `;
 
+export {ButtonGrid, MergedStyles};
 export default ButtonBar;

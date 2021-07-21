@@ -1,4 +1,4 @@
-import React from 'react';
+import * as React from 'react';
 import styled from '@emotion/styled';
 
 import Feature from 'app/components/acl/feature';
@@ -52,9 +52,7 @@ const IssueListSortOptions = ({onSelect, sort, query}: Props) => {
   return (
     <DropdownControl buttonProps={{prefix: t('Sort by')}} label={getSortLabel(sortKey)}>
       <React.Fragment>
-        <Feature features={['inbox']}>
-          {query === Query.FOR_REVIEW && getMenuItem(IssueSortOptions.INBOX)}
-        </Feature>
+        {query === Query.FOR_REVIEW && getMenuItem(IssueSortOptions.INBOX)}
         {getMenuItem(IssueSortOptions.DATE)}
         {getMenuItem(IssueSortOptions.NEW)}
         {getMenuItem(IssueSortOptions.PRIORITY)}

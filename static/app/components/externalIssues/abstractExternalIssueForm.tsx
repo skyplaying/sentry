@@ -1,4 +1,4 @@
-import React from 'react';
+import * as React from 'react';
 import debounce from 'lodash/debounce';
 import * as queryString from 'query-string';
 
@@ -6,10 +6,10 @@ import {ModalRenderProps} from 'app/actionCreators/modal';
 import AsyncComponent from 'app/components/asyncComponent';
 import {tct} from 'app/locale';
 import {Choices, IntegrationIssueConfig, IssueConfigField} from 'app/types';
+import {FormField} from 'app/views/alerts/issueRuleEditor/ruleNode';
 import FieldFromConfig from 'app/views/settings/components/forms/fieldFromConfig';
 import Form from 'app/views/settings/components/forms/form';
 import {FieldValue} from 'app/views/settings/components/forms/model';
-import {FormField} from 'app/views/settings/projectAlerts/issueRuleEditor/ruleNode';
 
 export type ExternalIssueAction = 'create' | 'link';
 
@@ -281,9 +281,12 @@ export default class AbstractExternalIssueForm<
               <Form initialData={initialData} {...this.getFormProps()}>
                 {(formFields || [])
                   .filter((field: FormField) => field.hasOwnProperty('name'))
+                  .map(fields => ({
+                    ...fields,
+                    noOptionsMessage: () => 'No options. Type to search.',
+                  }))
                   .map(field => (
                     <FieldFromConfig
-                      deprecatedSelectControl={false}
                       disabled={this.state.reloading}
                       field={field}
                       flexibleControlStateSize

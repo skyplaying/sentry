@@ -1,7 +1,9 @@
 import base64
 import logging
+import random
 import sys
 import time
+import uuid
 from urllib.parse import urljoin
 
 import jsonschema
@@ -18,12 +20,12 @@ from sentry.net.http import Session
 from sentry.tasks.store import RetrySymbolication
 from sentry.utils import json, metrics
 
+WORKER_ID = str(uuid.uuid4().int % 5000)
 MAX_ATTEMPTS = 3
 REQUEST_CACHE_TIMEOUT = 3600
 INTERNAL_SOURCE_NAME = "sentry:project"
 
 logger = logging.getLogger(__name__)
-
 
 VALID_LAYOUTS = ("native", "symstore", "symstore_index2", "ssqp", "unified", "debuginfod")
 
@@ -46,6 +48,48 @@ COMMON_SOURCE_PROPERTIES = {
     "name": {"type": "string"},
     "layout": LAYOUT_SCHEMA,
     "filetypes": {"type": "array", "items": {"type": "string", "enum": list(VALID_FILE_TYPES)}},
+}
+
+
+APP_STORE_CONNECT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "type": {"type": "string", "enum": ["appStoreConnect"]},
+        "id": {"type": "string", "minLength": 1},
+        "name": {"type": "string"},
+        "appconnectIssuer": {"type": "string", "minLength": 36, "maxLength": 36},
+        "appconnectKey": {"type": "string", "minLength": 2, "maxLength": 20},
+        "appconnectPrivateKey": {"type": "string"},
+        "itunesUser": {"type": "string", "minLength": 1, "maxLength": 100},
+        "itunesCreated": {"type": "string", "format": "date-time"},
+        "itunesPassword": {"type": "string"},
+        "itunesPersonId": {"type": "string"},
+        "itunesSession": {"type": "string"},
+        "appName": {"type": "string", "minLength": 1, "maxLength": 512},
+        "appId": {"type": "string", "minLength": 1},
+        "bundleId": {"type": "string", "minLength": 1},
+        "orgId": {"type": "integer"},
+        "orgName": {"type": "string", "minLength": 1, "maxLength": 512},
+    },
+    "required": [
+        "type",
+        "id",
+        "name",
+        "appconnectIssuer",
+        "appconnectKey",
+        "appconnectPrivateKey",
+        "itunesUser",
+        "itunesCreated",
+        "itunesPassword",
+        "itunesSession",
+        "itunesPersonId",
+        "appName",
+        "appId",
+        "bundleId",
+        "orgId",
+        "orgName",
+    ],
+    "additionalProperties": False,
 }
 
 HTTP_SOURCE_SCHEMA = {
@@ -92,7 +136,9 @@ GCS_SOURCE_SCHEMA = {
 
 SOURCES_SCHEMA = {
     "type": "array",
-    "items": {"oneOf": [HTTP_SOURCE_SCHEMA, S3_SOURCE_SCHEMA, GCS_SOURCE_SCHEMA]},
+    "items": {
+        "oneOf": [HTTP_SOURCE_SCHEMA, S3_SOURCE_SCHEMA, GCS_SOURCE_SCHEMA, APP_STORE_CONNECT_SCHEMA]
+    },
 }
 
 
@@ -106,12 +152,11 @@ class Symbolicator:
         base_url = symbolicator_options["url"].rstrip("/")
         assert base_url
 
-        if not getattr(project, "_organization_cache", False):
-            # needed for efficient featureflag checks in getsentry
-            with sentry_sdk.start_span(op="lang.native.symbolicator.organization.get_from_cache"):
-                project._organization_cache = Organization.objects.get_from_cache(
-                    id=project.organization_id
-                )
+        # needed for efficient featureflag checks in getsentry
+        with sentry_sdk.start_span(op="lang.native.symbolicator.organization.get_from_cache"):
+            project.set_cached_field_value(
+                "organization", Organization.objects.get_from_cache(id=project.organization_id)
+            )
 
         self.sess = SymbolicatorSession(
             url=base_url,
@@ -270,13 +315,16 @@ def parse_sources(config):
 
     try:
         sources = json.loads(config)
-    except BaseException as e:
-        raise InvalidSourcesError(str(e))
+    except Exception as e:
+        raise InvalidSourcesError(f"{e}")
 
     try:
         jsonschema.validate(sources, SOURCES_SCHEMA)
     except jsonschema.ValidationError as e:
-        raise InvalidSourcesError(e.message)
+        raise InvalidSourcesError(f"{e}")
+
+    # remove App Store Connect sources (we don't need them in Symbolicator)
+    filter(lambda src: src.get("type") != "AppStoreConnect", sources)
 
     ids = set()
     for source in sources:
@@ -290,9 +338,11 @@ def parse_sources(config):
 
 
 def get_options_for_project(project):
+    compare_rate = options.get("symbolicator.compare_stackwalking_methods_rate")
     return {
         # Symbolicators who do not support options will ignore this field entirely.
-        "dif_candidates": features.has("organizations:images-loaded-v2", project.organization)
+        "dif_candidates": features.has("organizations:images-loaded-v2", project.organization),
+        "compare_stackwalking_methods": random.random() < compare_rate,
     }
 
 
@@ -324,7 +374,11 @@ def get_sources_for_project(project):
     if sources_config:
         try:
             custom_sources = parse_sources(sources_config)
-            sources.extend(normalize_user_source(source) for source in custom_sources)
+            sources.extend(
+                normalize_user_source(source)
+                for source in custom_sources
+                if source["type"] != "appStoreConnect"
+            )
         except InvalidSourcesError:
             # Source configs should be validated when they are saved. If this
             # did not happen, this indicates a bug. Record this, but do not stop
@@ -382,6 +436,11 @@ class SymbolicatorSession:
             if source.get("type") == "alias":
                 self.source_names[source["id"]] = source.get("name", "unknown")
 
+        # Remove sources that should be ignored. This leaves a few extra entries in the alias
+        # maps and source names maps, but that's fine. The orphaned entries in the maps will just
+        # never be used.
+        self.sources = filter_ignored_sources(self.sources, self.reverse_source_aliases)
+
     def __enter__(self):
         self.open()
         return self
@@ -432,6 +491,7 @@ class SymbolicatorSession:
         # required for load balancing
         kwargs.setdefault("headers", {})["x-sentry-project-id"] = self.project_id
         kwargs.setdefault("headers", {})["x-sentry-event-id"] = self.event_id
+        kwargs.setdefault("headers", {})["x-sentry-worker-id"] = WORKER_ID
 
         attempts = 0
         wait = 0.5
@@ -493,7 +553,9 @@ class SymbolicatorSession:
 
     def _create_task(self, path, **kwargs):
         params = {"timeout": self.timeout, "scope": self.project_id}
-        with metrics.timer("events.symbolicator.create_task", tags={"path": path}):
+        with metrics.timer(
+            "events.symbolicator.create_task", tags={"path": path, "worker_id": WORKER_ID}
+        ):
             return self._request(method="post", path=path, params=params, **kwargs)
 
     def symbolicate_stacktraces(self, stacktraces, modules, signal=None):
@@ -531,7 +593,7 @@ class SymbolicatorSession:
             "scope": self.project_id,
         }
 
-        with metrics.timer("events.symbolicator.query_task"):
+        with metrics.timer("events.symbolicator.query_task", tags={"worker_id": WORKER_ID}):
             return self._request("get", task_url, params=params)
 
     def healthcheck(self):
@@ -559,6 +621,34 @@ def reverse_aliases_map(builtin_sources):
                 continue
             reverse_aliases[aliased_id] = self_id
     return reverse_aliases
+
+
+def filter_ignored_sources(sources, reversed_alias_map=None):
+    """
+    Filters out sources that are meant to be blocked based on a global killswitch. If any sources
+    were de-aliased, a reverse mapping of { unaliased id: alias } should be provided for this to
+    also recognize and filter out aliased sources.
+    """
+
+    ignored_source_ids = options.get("symbolicator.ignored_sources")
+    if not ignored_source_ids:
+        return sources
+
+    filtered = []
+    for src in sources:
+        resolved = src["id"]
+        alias = reversed_alias_map is not None and reversed_alias_map.get(resolved) or resolved
+        # This covers three scenarios:
+        # 1. The source had an alias, and the config may have used that alias to block it (alias map
+        #    lookup resolved)
+        # 2. The source had no alias, and the config may have used the source's ID to block it
+        #    (alias map lookup returned None and fell back to resolved)
+        # 3. The source had an alias, but the config used the source's internal unaliased ID to
+        #    block it (alias map lookup resolved but not in ignored_source_ids, resolved is in
+        #    ignored_source_ids)
+        if alias not in ignored_source_ids and resolved not in ignored_source_ids:
+            filtered.append(src)
+    return filtered
 
 
 def redact_internal_sources(response):

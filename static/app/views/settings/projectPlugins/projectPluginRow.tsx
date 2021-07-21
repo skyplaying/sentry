@@ -1,4 +1,4 @@
-import React from 'react';
+import {PureComponent} from 'react';
 import {Link, RouteComponentProps} from 'react-router';
 import {css} from '@emotion/react';
 import styled from '@emotion/styled';
@@ -25,7 +25,7 @@ type Props = {
 } & Plugin &
   Pick<RouteComponentProps<{}, {}>, 'params' | 'routes'>;
 
-class ProjectPluginRow extends React.PureComponent<Props> {
+class ProjectPluginRow extends PureComponent<Props> {
   handleChange = () => {
     const {onChange, id, enabled} = this.props;
     onChange(id, !enabled);
@@ -42,16 +42,8 @@ class ProjectPluginRow extends React.PureComponent<Props> {
   };
 
   render() {
-    const {
-      id,
-      name,
-      slug,
-      version,
-      author,
-      hasConfiguration,
-      enabled,
-      canDisable,
-    } = this.props;
+    const {id, name, slug, version, author, hasConfiguration, enabled, canDisable} =
+      this.props;
 
     const configureUrl = recreateRoute(id, this.props);
     return (

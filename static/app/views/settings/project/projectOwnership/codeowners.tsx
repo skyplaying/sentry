@@ -1,4 +1,4 @@
-import React from 'react';
+import {Component, Fragment} from 'react';
 
 import {addErrorMessage, addSuccessMessage} from 'app/actionCreators/indicator';
 import {Client} from 'app/api';
@@ -18,11 +18,7 @@ type Props = {
   onDelete: (data: any) => void;
 };
 
-type State = {};
-
-class CodeOwnersPanel extends React.Component<Props, State> {
-  state = {};
-
+class CodeOwnersPanel extends Component<Props> {
   handleDelete = async (codeowner: CodeOwners) => {
     const {api, organization, project, onDelete} = this.props;
     const endpoint = `/api/0/projects/${organization.slug}/${project.slug}/codeowners/${codeowner.id}/`;
@@ -33,7 +29,7 @@ class CodeOwnersPanel extends React.Component<Props, State> {
       onDelete(codeowner);
       addSuccessMessage(t('Deletion successful'));
     } catch {
-      //no 4xx errors should happen on delete
+      // no 4xx errors should happen on delete
       addErrorMessage(t('An error occurred'));
     }
   };
@@ -42,17 +38,17 @@ class CodeOwnersPanel extends React.Component<Props, State> {
     const {codeowners} = this.props;
     return (codeowners || []).map(codeowner => {
       const {
-        raw,
         dateUpdated,
         provider,
         codeMapping: {repoName},
+        ownershipSyntax,
       } = codeowner;
       return (
-        <React.Fragment key={codeowner.id}>
+        <Fragment key={codeowner.id}>
           <RulesPanel
             data-test-id="codeowners-panel"
             type="codeowners"
-            raw={raw}
+            raw={ownershipSyntax}
             dateUpdated={dateUpdated}
             provider={provider}
             repoName={repoName}
@@ -67,7 +63,7 @@ class CodeOwnersPanel extends React.Component<Props, State> {
               </Confirm>,
             ]}
           />
-        </React.Fragment>
+        </Fragment>
       );
     });
   }

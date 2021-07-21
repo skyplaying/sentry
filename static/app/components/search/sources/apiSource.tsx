@@ -1,4 +1,4 @@
-import React from 'react';
+import * as React from 'react';
 import {withRouter, WithRouterProps} from 'react-router';
 import * as Sentry from '@sentry/react';
 import debounce from 'lodash/debounce';
@@ -144,7 +144,7 @@ async function createPluginResults(
   const plugins = (await pluginsPromise) || [];
   return plugins
     .filter(plugin => {
-      //show a plugin if it is not hidden (aka legacy) or if we have projects with it configured
+      // show a plugin if it is not hidden (aka legacy) or if we have projects with it configured
       return !plugin.isHidden || !!plugin.projectList.length;
     })
     .map(plugin => ({
@@ -183,6 +183,7 @@ async function createIntegrationResults(
         sourceType: 'integration',
         resultType: 'integration',
         to: `/settings/${orgId}/integrations/${provider.slug}/`,
+        configUrl: `/api/0/organizations/${orgId}/integrations/?provider_key=${provider.slug}&includeConfig=0`,
       }))) ||
     []
   );
@@ -209,7 +210,7 @@ async function createSentryAppResults(
   }));
 }
 
-//Not really async but we need to return a promise
+// Not really async but we need to return a promise
 async function creatDocIntegrationResults(orgId: string): Promise<ResultItem[]> {
   return documentIntegrationList.map(integration => ({
     title: integration.name,
@@ -417,15 +418,8 @@ class ApiSource extends React.Component<Props, State> {
     //
     // This isn't particularly helpful in its current form because we still wait for all requests to finish before
     // updating state, but you could potentially optimize rendering direct results before all requests are finished.
-    const [
-      organizations,
-      projects,
-      teams,
-      members,
-      plugins,
-      integrations,
-      sentryApps,
-    ] = searchRequests;
+    const [organizations, projects, teams, members, plugins, integrations, sentryApps] =
+      searchRequests;
     const [shortIdLookup, eventIdLookup] = directRequests;
 
     const [searchResults, directResults] = await Promise.all([
@@ -441,7 +435,7 @@ class ApiSource extends React.Component<Props, State> {
       this.getDirectResults([shortIdLookup, eventIdLookup]),
     ]);
 
-    //TODO(XXX): Might consider adding logic to maintain consistent ordering of results so things don't switch positions
+    // TODO(XXX): Might consider adding logic to maintain consistent ordering of results so things don't switch positions
     const fuzzy = createFuzzySearch<ResultItem>(searchResults, {
       ...searchOptions,
       keys: ['title', 'description'],
@@ -458,15 +452,8 @@ class ApiSource extends React.Component<Props, State> {
   async getSearchableResults(requests) {
     const {params, organization} = this.props;
     const orgId = (params && params.orgId) || (organization && organization.slug);
-    const [
-      organizations,
-      projects,
-      teams,
-      members,
-      plugins,
-      integrations,
-      sentryApps,
-    ] = requests;
+    const [organizations, projects, teams, members, plugins, integrations, sentryApps] =
+      requests;
     const searchResults = flatten(
       await Promise.all([
         createOrganizationResults(organizations),

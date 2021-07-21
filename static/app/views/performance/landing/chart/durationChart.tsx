@@ -1,4 +1,3 @@
-import React from 'react';
 import * as ReactRouter from 'react-router';
 import withRouter, {WithRouterProps} from 'react-router/lib/withRouter';
 import styled from '@emotion/styled';
@@ -23,6 +22,7 @@ import withApi from 'app/utils/withApi';
 
 import Chart from '../../charts/chart';
 import {DoubleHeaderContainer} from '../../styles';
+import {getFieldOrBackup} from '../display/utils';
 
 type Props = {
   api: Client;
@@ -33,6 +33,8 @@ type Props = {
   field: string;
   title: string;
   titleTooltip: string;
+  backupField?: string;
+  usingBackupAxis: boolean;
 } & WithRouterProps;
 
 function DurationChart(props: Props) {
@@ -45,6 +47,8 @@ function DurationChart(props: Props) {
     field,
     title,
     titleTooltip,
+    backupField,
+    usingBackupAxis,
   } = props;
 
   // construct request parameters for fetching chart data
@@ -59,6 +63,10 @@ function DurationChart(props: Props) {
 
   const {utc} = getParams(location.query);
 
+  const _backupField = backupField ? [backupField] : [];
+
+  const apiPayload = eventView.getEventsAPIPayload(location);
+
   return (
     <EventsRequest
       organization={organization}
@@ -66,6 +74,7 @@ function DurationChart(props: Props) {
       period={globalSelection.datetime.period}
       project={globalSelection.projects}
       environment={globalSelection.environments}
+      team={apiPayload.team}
       start={start}
       end={end}
       interval={getInterval(
@@ -74,21 +83,31 @@ function DurationChart(props: Props) {
           end,
           period: globalSelection.datetime.period,
         },
-        true
+        'high'
       )}
       showLoading={false}
-      query={eventView.getEventsAPIPayload(location).query}
+      query={apiPayload.query}
       includePrevious={false}
-      yAxis={[field]}
+      yAxis={[field, ..._backupField]}
       partial
       hideError
     >
-      {({loading, reloading, errored, timeseriesData: results}) => {
+      {({
+        loading,
+        reloading,
+        errored,
+        timeseriesData: singleAxisResults,
+        results: multiAxisResults,
+      }) => {
+        const _field = usingBackupAxis ? getFieldOrBackup(field, backupField) : field;
+        const results = singleAxisResults
+          ? singleAxisResults
+          : [multiAxisResults?.find(r => r.seriesName === _field)].filter(Boolean);
         const series = results
           ? results.map(({...rest}) => {
               return {
                 ...rest,
-                seriesName: props.field,
+                seriesName: _field,
               };
             })
           : [];

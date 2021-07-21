@@ -1,5 +1,5 @@
 ---
-created: '2021-04-08T09:28:24.658040Z'
+created: '2021-07-07T15:30:53.704733Z'
 creator: sentry
 source: tests/sentry/grouping/test_variants.py
 ---
@@ -22,7 +22,7 @@ app-depth-1:
 --------------------------------------------------------------------------
 app-depth-2:
   hash: "f3257035573aef17e8643504abed74e6"
-  tree_label: "std::panicking::try::do_call | ..."
+  tree_label: "log_demo::main | std::panicking::try::do_call"
   component:
     app-depth-2*
       exception*
@@ -44,7 +44,7 @@ app-depth-2:
 --------------------------------------------------------------------------
 app-depth-3:
   hash: "dd291e7b08c871b74afbf4434db70dd3"
-  tree_label: "std::rt::lang_start_internal | ..."
+  tree_label: "log_demo::main | std::panicking::try::do_call | std::rt::lang_start_internal"
   component:
     app-depth-3*
       exception*
@@ -71,7 +71,7 @@ app-depth-3:
 --------------------------------------------------------------------------
 app-depth-4:
   hash: "0817e4e604fbe88c4534eff166df1db9"
-  tree_label: "_main | ..."
+  tree_label: "log_demo::main | std::panicking::try::do_call | std::rt::lang_start_internal | _main"
   component:
     app-depth-4*
       exception*
@@ -99,11 +99,11 @@ app-depth-4:
         value (ignored because stacktrace takes precedence)
           "Holy shit everything is on fire!"
 --------------------------------------------------------------------------
-app-depth-5:
+app-depth-max:
   hash: "0817e4e604fbe88c4534eff166df1db9"
-  tree_label: "<entire stacktrace>"
+  tree_label: "log_demo::main | std::panicking::try::do_call | std::rt::lang_start_internal | _main"
   component:
-    app-depth-5*
+    app-depth-max*
       exception*
         stacktrace*
           frame*
@@ -144,7 +144,7 @@ app-depth-5:
 --------------------------------------------------------------------------
 system:
   hash: "0817e4e604fbe88c4534eff166df1db9"
-  tree_label: "<entire stacktrace>"
+  tree_label: "log_demo::main | std::panicking::try::do_call | std::rt::lang_start_internal | _main"
   component:
     system*
       exception*

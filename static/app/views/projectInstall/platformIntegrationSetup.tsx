@@ -1,6 +1,6 @@
 import 'prism-sentry/index.css';
 
-import React from 'react';
+import {Fragment} from 'react';
 import {browserHistory, WithRouterProps} from 'react-router';
 import styled from '@emotion/styled';
 
@@ -12,6 +12,7 @@ import {t} from 'app/locale';
 import {PageHeader} from 'app/styles/organization';
 import space from 'app/styles/space';
 import {IntegrationProvider, Organization, Project} from 'app/types';
+import {trackAdvancedAnalyticsEvent} from 'app/utils/advancedAnalytics';
 import {trackIntegrationEvent} from 'app/utils/integrationUtil';
 import withOrganization from 'app/utils/withOrganization';
 import FirstEventFooter from 'app/views/onboarding/components/firstEventFooter';
@@ -48,7 +49,7 @@ class PlatformIntegrationSetup extends AsyncComponent<Props, State> {
 
     const {platform} = this.props.params;
 
-    //redirect if platform is not known.
+    // redirect if platform is not known.
     if (!platform || platform === 'other') {
       this.redirectToNeutralDocs();
     }
@@ -74,6 +75,11 @@ class PlatformIntegrationSetup extends AsyncComponent<Props, State> {
       ['project', `/projects/${organization.slug}/${params.projectId}/`],
     ];
   }
+
+  handleFullDocsClick = () => {
+    const {organization} = this.props;
+    trackAdvancedAnalyticsEvent('growth.onboarding_view_full_docs', {}, organization);
+  };
 
   redirectToNeutralDocs() {
     const {orgId, projectId} = this.props.params;
@@ -112,8 +118,9 @@ class PlatformIntegrationSetup extends AsyncComponent<Props, State> {
     }
     const gettingStartedLink = `/organizations/${orgId}/projects/${projectId}/getting-started/`;
 
-    //TODO: make dynamic when adding more integrations
-    const docsLink = 'https://docs.sentry.io/product/integrations/aws-lambda/';
+    // TODO: make dynamic when adding more integrations
+    const docsLink =
+      'https://docs.sentry.io/product/integrations/cloud-monitoring/aws-lambda/';
 
     return (
       <OuterWrapper>
@@ -128,7 +135,7 @@ class PlatformIntegrationSetup extends AsyncComponent<Props, State> {
         </StyledPageHeader>
         <InnerWrapper>
           {!installed ? (
-            <React.Fragment>
+            <Fragment>
               <AddInstallationInstructions />
               <StyledButtonBar gap={1}>
                 <AddIntegrationButton
@@ -151,16 +158,17 @@ class PlatformIntegrationSetup extends AsyncComponent<Props, State> {
                   {t('Manual Setup')}
                 </Button>
               </StyledButtonBar>
-            </React.Fragment>
+            </Fragment>
           ) : (
-            <React.Fragment>
+            <Fragment>
               <PostInstallCodeSnippet provider={provider} />
               <FirstEventFooter
                 project={project}
                 organization={organization}
                 docsLink={docsLink}
+                docsOnClick={this.handleFullDocsClick}
               />
-            </React.Fragment>
+            </Fragment>
           )}
         </InnerWrapper>
       </OuterWrapper>

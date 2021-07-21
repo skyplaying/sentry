@@ -1,4 +1,4 @@
-import React from 'react';
+import * as React from 'react';
 import {Link} from 'react-router';
 import isPropValid from '@emotion/is-prop-valid';
 import styled from '@emotion/styled';
@@ -45,14 +45,8 @@ export default class TagDistributionMeter extends React.Component<Props> {
   };
 
   renderTitle() {
-    const {
-      segments,
-      totalValues,
-      title,
-      isLoading,
-      hasError,
-      showReleasePackage,
-    } = this.props;
+    const {segments, totalValues, title, isLoading, hasError, showReleasePackage} =
+      this.props;
 
     if (!Array.isArray(segments) || segments.length <= 0) {
       return (
