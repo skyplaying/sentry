@@ -1,19 +1,17 @@
-import * as React from 'react';
-import {RouteComponentProps} from 'react-router';
+import {Outlet} from 'react-router-dom';
 
-import {Organization} from 'app/types';
+import Redirect from 'sentry/components/redirect';
+import {useRedirectNavV2Routes} from 'sentry/views/nav/useRedirectNavV2Routes';
 
-type RouteParams = {
-  orgId: string;
-};
+export default function ReleasesContainer() {
+  const redirectPath = useRedirectNavV2Routes({
+    oldPathPrefix: '/releases/',
+    newPathPrefix: '/explore/releases/',
+  });
 
-type Props = RouteComponentProps<RouteParams, {}> & {
-  organization: Organization;
-  children: React.ReactNode;
-};
+  if (redirectPath) {
+    return <Redirect to={redirectPath} />;
+  }
 
-function ReleasesContainer(props: Props) {
-  return props.children;
+  return <Outlet />;
 }
-
-export default ReleasesContainer;

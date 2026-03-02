@@ -1,9 +1,10 @@
-from django.conf.urls import url
+from django.urls import re_path
 from requests.exceptions import HTTPError
+from rest_framework.request import Request
 from rest_framework.response import Response
 
 from sentry.exceptions import PluginError, PluginIdentityRequired
-from sentry.integrations import FeatureDescription, IntegrationFeatures
+from sentry.integrations.base import FeatureDescription, IntegrationFeatures
 from sentry.plugins.bases.issue2 import IssueGroupActionEndpoint, IssuePlugin2
 from sentry.utils.http import absolute_uri
 from sentry_plugins.base import CorePluginMixin
@@ -32,7 +33,7 @@ class AsanaPlugin(CorePluginMixin, IssuePlugin2):
         FeatureDescription(
             """
             Create and link Sentry issue groups directly to an Asana ticket in any of your
-            projects, providing a quick way to jump from a Sentry bug to tracked ticket!
+            projects, providing a quick way to jump from a Sentry bug to tracked ticket.
             """,
             IntegrationFeatures.ISSUE_BASIC,
         ),
@@ -46,13 +47,14 @@ class AsanaPlugin(CorePluginMixin, IssuePlugin2):
 
     def get_group_urls(self):
         return super().get_group_urls() + [
-            url(
+            re_path(
                 r"^autocomplete",
                 IssueGroupActionEndpoint.as_view(view_method_name="view_autocomplete", plugin=self),
+                name=f"sentry-api-0-plugins-{self.slug}-autocomplete",
             )
         ]
 
-    def is_configured(self, request, project, **kwargs):
+    def is_configured(self, project) -> bool:
         return bool(self.get_option("workspace", project))
 
     def has_workspace_access(self, workspace, choices):
@@ -64,7 +66,7 @@ class AsanaPlugin(CorePluginMixin, IssuePlugin2):
     def get_workspace_choices(self, workspaces):
         return [(w["gid"], w["name"]) for w in workspaces["data"]]
 
-    def get_new_issue_fields(self, request, group, event, **kwargs):
+    def get_new_issue_fields(self, request: Request, group, event, **kwargs):
         fields = super().get_new_issue_fields(request, group, event, **kwargs)
         client = self.get_client(request.user)
         workspaces = client.get_workspaces()
@@ -81,39 +83,35 @@ class AsanaPlugin(CorePluginMixin, IssuePlugin2):
                 field["label"] = "Notes"
                 field["required"] = False
 
-        return (
-            [
-                {
-                    "name": "workspace",
-                    "label": "Asana Workspace",
-                    "default": workspace,
-                    "type": "select",
-                    "choices": workspace_choices,
-                    "readonly": True,
-                }
-            ]
-            + fields
-            + [
-                {
-                    "name": "project",
-                    "label": "Project",
-                    "type": "select",
-                    "has_autocomplete": True,
-                    "required": False,
-                    "placeholder": "Start typing to search for a project",
-                },
-                {
-                    "name": "assignee",
-                    "label": "Assignee",
-                    "type": "select",
-                    "has_autocomplete": True,
-                    "required": False,
-                    "placeholder": "Start typing to search for a user",
-                },
-            ]
-        )
+        return [
+            {
+                "name": "workspace",
+                "label": "Asana Workspace",
+                "default": workspace,
+                "type": "select",
+                "choices": workspace_choices,
+                "readonly": True,
+            },
+            *fields,
+            {
+                "name": "project",
+                "label": "Project",
+                "type": "select",
+                "has_autocomplete": True,
+                "required": False,
+                "placeholder": "Start typing to search for a project",
+            },
+            {
+                "name": "assignee",
+                "label": "Assignee",
+                "type": "select",
+                "has_autocomplete": True,
+                "required": False,
+                "placeholder": "Start typing to search for a user",
+            },
+        ]
 
-    def get_link_existing_issue_fields(self, request, group, event, **kwargs):
+    def get_link_existing_issue_fields(self, request: Request, group, event, **kwargs):
         return [
             {
                 "name": "issue_id",
@@ -129,7 +127,7 @@ class AsanaPlugin(CorePluginMixin, IssuePlugin2):
                     group.get_absolute_url(params={"referrer": "asana_plugin"})
                 ),
                 "type": "textarea",
-                "help": ("Leave blank if you don't want to " "add a comment to the Asana issue."),
+                "help": ("Leave blank if you don't want to add a comment to the Asana issue."),
                 "required": False,
             },
         ]
@@ -146,7 +144,7 @@ class AsanaPlugin(CorePluginMixin, IssuePlugin2):
             return " ".join(e["message"] for e in errors)
         return "unknown error"
 
-    def create_issue(self, request, group, form_data, **kwargs):
+    def create_issue(self, request: Request, group, form_data):
         client = self.get_client(request.user)
 
         try:
@@ -158,7 +156,7 @@ class AsanaPlugin(CorePluginMixin, IssuePlugin2):
 
         return response["data"]["gid"]
 
-    def link_issue(self, request, group, form_data, **kwargs):
+    def link_issue(self, request: Request, group, form_data, **kwargs):
         client = self.get_client(request.user)
         try:
             issue = client.get_issue(issue_id=form_data["issue_id"])["data"]
@@ -174,13 +172,13 @@ class AsanaPlugin(CorePluginMixin, IssuePlugin2):
 
         return {"title": issue["name"]}
 
-    def get_issue_label(self, group, issue_id, **kwargs):
+    def get_issue_label(self, group, issue_id: str) -> str:
         return "Asana Issue"
 
-    def get_issue_url(self, group, issue_id, **kwargs):
+    def get_issue_url(self, group, issue_id: str) -> str:
         return "https://app.asana.com/0/0/%s" % issue_id
 
-    def validate_config(self, project, config, actor):
+    def validate_config(self, project, config, actor=None):
         """
         ```
         if config['foo'] and not config['bar']:
@@ -191,12 +189,11 @@ class AsanaPlugin(CorePluginMixin, IssuePlugin2):
         try:
             int(config["workspace"])
         except ValueError as exc:
-            self.logger.exception(str(exc))
+            self.logger.warning(str(exc))
             raise PluginError("Non-numeric workspace value")
         return config
 
-    def get_config(self, *args, **kwargs):
-        user = kwargs["user"]
+    def get_config(self, project, user=None, initial=None, add_additional_fields: bool = False):
         try:
             client = self.get_client(user)
         except PluginIdentityRequired as e:
@@ -211,7 +208,7 @@ class AsanaPlugin(CorePluginMixin, IssuePlugin2):
                 raise PluginIdentityRequired(ERR_BEARER_EXPIRED)
             raise
         workspace_choices = self.get_workspace_choices(workspaces)
-        workspace = self.get_option("workspace", kwargs["project"])
+        workspace = self.get_option("workspace", project)
         # check to make sure the current user has access to the workspace
         helptext = None
         if workspace and not self.has_workspace_access(workspace, workspace_choices):
@@ -234,18 +231,20 @@ class AsanaPlugin(CorePluginMixin, IssuePlugin2):
             }
         ]
 
-    def view_autocomplete(self, request, group, **kwargs):
-        field = request.GET.get("autocomplete_field")
-        query = request.GET.get("autocomplete_query")
+    def view_autocomplete(self, request: Request, group, **kwargs):
+        field = request.GET["autocomplete_field"]
+        query = request.GET["autocomplete_query"]
 
         client = self.get_client(request.user)
         workspace = self.get_option("workspace", group.project)
-        results = []
-        field_name = field
+
         if field == "issue_id":
             field_name = "task"
         elif field == "assignee":
             field_name = "user"
+        else:
+            field_name = field
+
         try:
             response = client.search(workspace, field_name, query.encode("utf-8"))
         except Exception as e:
@@ -253,10 +252,9 @@ class AsanaPlugin(CorePluginMixin, IssuePlugin2):
                 {"error_type": "validation", "errors": [{"__all__": self.message_from_error(e)}]},
                 status=400,
             )
-        else:
-            results = [
-                {"text": "(#{}) {}".format(i["gid"], i["name"]), "id": i["gid"]}
-                for i in response.get("data", [])
-            ]
 
+        results = [
+            {"text": "(#{}) {}".format(i["gid"], i["name"]), "id": i["gid"]}
+            for i in response.get("data", [])
+        ]
         return Response({field: results})

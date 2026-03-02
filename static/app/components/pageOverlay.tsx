@@ -1,11 +1,13 @@
-import * as React from 'react';
+import {useEffect, useRef} from 'react';
 import {css} from '@emotion/react';
 import styled from '@emotion/styled';
 import {motion} from 'framer-motion';
 
-import Text from 'app/components/text';
-import space from 'app/styles/space';
-import testableTransition from 'app/utils/testableTransition';
+import {Prose} from '@sentry/scraps/text';
+
+import Panel from 'sentry/components/panels/panel';
+import {space} from 'sentry/styles/space';
+import testableTransition from 'sentry/utils/testableTransition';
 
 /**
  * The default wrapper for the detail text.
@@ -32,26 +34,20 @@ const subItemAnimation = {
   },
 };
 
-const Header = styled(motion.h2)`
+const Header = styled((props: React.ComponentProps<typeof motion.h2>) => (
+  <motion.h2 variants={subItemAnimation} transition={testableTransition()} {...props} />
+))`
   display: flex;
   align-items: center;
-  font-weight: normal;
+  font-weight: ${p => p.theme.font.weight.sans.regular};
   margin-bottom: ${space(1)};
 `;
 
-Header.defaultProps = {
-  variants: subItemAnimation,
-  transition: testableTransition(),
-};
-
-const Body = styled(motion.div)`
+const Body = styled((props: React.ComponentProps<typeof motion.div>) => (
+  <motion.div variants={subItemAnimation} transition={testableTransition()} {...props} />
+))`
   margin-bottom: ${space(2)};
 `;
-
-Body.defaultProps = {
-  variants: subItemAnimation,
-  transition: testableTransition(),
-};
 
 type ContentOpts = {
   Body: typeof Body;
@@ -60,30 +56,28 @@ type ContentOpts = {
 
 type PositioningStrategyOpts = {
   /**
-   * The main container component rect.
-   */
-  mainRect: DOMRect;
-  /**
    * The anchor reference component in the backgrounds rect.
    */
   anchorRect: DOMRect;
+  /**
+   * The main container component rect.
+   */
+  mainRect: DOMRect;
   /**
    * The wrapper being positioned Rect.
    */
   wrapperRect: DOMRect;
 };
 
-type Props = {
+interface PageOverlayProps extends React.ComponentProps<'div'> {
+  /**
+   * When a background with an anchorRef is provided, you can customize the
+   * positioning strategy for the wrapper by passing in a custom function here
+   * that resolves the X and Y position.
+   */
+  positioningStrategy: (opts: PositioningStrategyOpts) => {x: number; y: number};
   text: (opts: ContentOpts) => React.ReactNode;
   animateDelay?: number;
-  /**
-   * If special sizing of the details block is required you can use a custom
-   * wrapper passed in here.
-   *
-   * This must forward its ref if you are using a background that provides an
-   * anchor
-   */
-  customWrapper?: React.ComponentType;
   /**
    * Instead of rendering children with an animated gradient fly-in, render a
    * background component.
@@ -96,15 +90,16 @@ type Props = {
   background?:
     | React.ComponentType
     | React.ComponentType<{anchorRef: React.Ref<SVGForeignObjectElement>}>;
+  children?: React.ReactNode;
   /**
-   * When a background with an anchorRef is provided, you can customize the
-   * positioning strategy for the wrapper by passing in a custom function here
-   * that resolves the X and Y position.
+   * If special sizing of the details block is required you can use a custom
+   * wrapper passed in here.
+   *
+   * This must forward its ref if you are using a background that provides an
+   * anchor
    */
-  positioningStrategy: (opts: PositioningStrategyOpts) => {x: number; y: number};
-};
-
-type DefaultProps = Pick<Props, 'positioningStrategy'>;
+  customWrapper?: React.ComponentType;
+}
 
 /**
  * When a background with a anchor is used and no positioningStrategy is
@@ -128,109 +123,103 @@ const defaultPositioning = ({mainRect, anchorRect}: PositioningStrategyOpts) => 
  * wrapper to a safe space in the background to aid in alignment of the wrapper
  * to a safe space in the background.
  */
-class PageOverlay extends React.Component<Props> {
-  static defaultProps: DefaultProps = {
-    positioningStrategy: defaultPositioning,
-  };
+function PageOverlay({
+  positioningStrategy = defaultPositioning,
+  text,
+  animateDelay,
+  background: BackgroundComponent,
+  customWrapper,
+  children,
+  ...props
+}: PageOverlayProps) {
+  const contentRef = useRef<HTMLDivElement>(null);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const anchorRef = useRef<SVGForeignObjectElement>(null);
 
-  componentDidMount() {
-    if (this.contentRef.current === null || this.anchorRef.current === null) {
-      return;
+  useEffect(() => {
+    if (contentRef.current === null || anchorRef.current === null) {
+      return () => {};
     }
 
-    this.anchorWrapper();
+    /**
+     * Align the wrapper component to the anchor by computing x/y values using
+     * the passed function. By default if no function is specified it will align
+     * to the top left of the anchor.
+     */
+    function anchorWrapper() {
+      if (
+        contentRef.current === null ||
+        wrapperRef.current === null ||
+        anchorRef.current === null
+      ) {
+        return;
+      }
+
+      // Absolute position the container, this avoids the browser having to reflow
+      // the component
+      wrapperRef.current.style.position = 'absolute';
+      wrapperRef.current.style.left = `0px`;
+      wrapperRef.current.style.top = `0px`;
+
+      const mainRect = contentRef.current.getBoundingClientRect();
+      const anchorRect = anchorRef.current.getBoundingClientRect();
+      const wrapperRect = wrapperRef.current.getBoundingClientRect();
+
+      // Compute the position of the wrapper
+      const {x, y} = positioningStrategy({mainRect, anchorRect, wrapperRect});
+
+      const transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
+      wrapperRef.current.style.transform = transform;
+    }
+
+    anchorWrapper();
+
+    /**
+     * Used to re-anchor the text wrapper to the anchor point in the background when
+     * the size of the page changes.
+     */
+    let bgResizeObserver: ResizeObserver | null = null;
 
     // Observe changes to the upsell container to reanchor if available
     if (window.ResizeObserver) {
-      this.bgResizeObserver = new ResizeObserver(this.anchorWrapper);
-      this.bgResizeObserver.observe(this.contentRef.current);
-    }
-  }
-
-  componentWillUnmount() {
-    this.bgResizeObserver?.disconnect();
-  }
-
-  /**
-   * Used to re-anchor the text wrapper to the anchor point in the background when
-   * the size of the page changes.
-   */
-  bgResizeObserver: ResizeObserver | null = null;
-
-  contentRef = React.createRef<HTMLDivElement>();
-  wrapperRef = React.createRef<HTMLDivElement>();
-  anchorRef = React.createRef<SVGForeignObjectElement>();
-
-  /**
-   * Align the wrapper component to the anchor by computing x/y values using
-   * the passed function. By default if no function is specified it will align
-   * to the top left of the anchor.
-   */
-  anchorWrapper = () => {
-    if (
-      this.contentRef.current === null ||
-      this.wrapperRef.current === null ||
-      this.anchorRef.current === null
-    ) {
-      return;
+      bgResizeObserver = new ResizeObserver(anchorWrapper);
+      bgResizeObserver.observe(contentRef.current);
     }
 
-    // Absolute position the container, this avoids the browser having to reflow
-    // the component
-    this.wrapperRef.current.style.position = 'absolute';
-    this.wrapperRef.current.style.left = `0px`;
-    this.wrapperRef.current.style.top = `0px`;
+    return () => bgResizeObserver?.disconnect();
+  }, [positioningStrategy]);
 
-    const mainRect = this.contentRef.current.getBoundingClientRect();
-    const anchorRect = this.anchorRef.current.getBoundingClientRect();
-    const wrapperRect = this.wrapperRef.current.getBoundingClientRect();
+  const Wrapper = customWrapper ?? DefaultWrapper;
 
-    // Compute the position of the wrapper
-    const {x, y} = this.props.positioningStrategy({mainRect, anchorRect, wrapperRect});
+  const transition = testableTransition({
+    delay: 1,
+    duration: 1.2,
+    ease: 'easeInOut',
+    delayChildren: animateDelay ?? (BackgroundComponent ? 0.5 : 1.5),
+    staggerChildren: 0.15,
+  });
 
-    const transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
-    this.wrapperRef.current.style.transform = transform;
-  };
-
-  render() {
-    const {
-      text,
-      children,
-      animateDelay,
-      background: BackgroundComponent,
-      customWrapper,
-      ...props
-    } = this.props;
-    const Wrapper = customWrapper ?? DefaultWrapper;
-
-    const transition = testableTransition({
-      delay: 1,
-      duration: 1.2,
-      ease: 'easeInOut',
-      delayChildren: animateDelay ?? (BackgroundComponent ? 0.5 : 1.5),
-      staggerChildren: 0.15,
-    });
-
-    return (
-      <MaskedContent {...props}>
-        {children}
-        <ContentWrapper
-          ref={this.contentRef}
-          transition={transition}
-          variants={{animate: {}}}
-        >
-          {BackgroundComponent && (
-            <Background>
-              <BackgroundComponent anchorRef={this.anchorRef} />
-            </Background>
-          )}
-          <Wrapper ref={this.wrapperRef}>
-            <Text>{text({Body, Header})}</Text>
-          </Wrapper>
-        </ContentWrapper>
-      </MaskedContent>
-    );
-  }
+  return (
+    <MaskedContent {...props}>
+      {children}
+      <ContentWrapper
+        initial="initial"
+        animate="animate"
+        ref={contentRef}
+        transition={transition}
+        variants={{animate: {}}}
+      >
+        {BackgroundComponent && (
+          <Background>
+            <BackgroundComponent anchorRef={anchorRef} />
+          </Background>
+        )}
+        <Wrapper ref={wrapperRef}>
+          <PageOverlayProse>{text({Body, Header})}</PageOverlayProse>
+        </Wrapper>
+      </ContentWrapper>
+    </MaskedContent>
+  );
 }
 
 const absoluteFull = css`
@@ -246,11 +235,6 @@ const ContentWrapper = styled(motion.div)`
   padding: 10%;
   z-index: 900;
 `;
-
-ContentWrapper.defaultProps = {
-  initial: 'initial',
-  animate: 'animate',
-};
 
 const Background = styled('div')`
   ${absoluteFull}
@@ -271,11 +255,17 @@ const MaskedContent = styled('div')`
   overflow: hidden;
   flex-grow: 1;
   flex-basis: 0;
+`;
 
-  /* Specify bottom margin specifically to offset the margin of the footer, so
-   * the hidden content flows directly to the border of the footer
-   */
-  margin-bottom: -20px;
+const PageOverlayProse = styled(Prose)`
+  ${Panel} & {
+    padding-left: ${space(2)};
+    padding-right: ${space(2)};
+
+    &:first-child {
+      padding-top: ${space(2)};
+    }
+  }
 `;
 
 export default PageOverlay;

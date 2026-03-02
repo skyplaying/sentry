@@ -1,30 +1,28 @@
+from functools import cached_property
 from urllib.parse import parse_qs
 
+import orjson
 import responses
 from django.urls import reverse
-from exam import fixture
 
-from sentry.models import Rule
+from sentry.models.rule import Rule
 from sentry.plugins.base import Notification
-from sentry.testutils import PluginTestCase
-from sentry.utils import json
+from sentry.testutils.cases import PluginTestCase
 from sentry_plugins.pushover.plugin import PushoverPlugin
 
 SUCCESS = """{"status":1,"request":"e460545a8b333d0da2f3602aff3133d6"}"""
 
 
+def test_conf_key() -> None:
+    assert PushoverPlugin().conf_key == "pushover"
+
+
 class PushoverPluginTest(PluginTestCase):
-    @fixture
-    def plugin(self):
+    @cached_property
+    def plugin(self) -> PushoverPlugin:
         return PushoverPlugin()
 
-    def test_conf_key(self):
-        assert self.plugin.conf_key == "pushover"
-
-    def test_entry_point(self):
-        self.assertPluginInstalled("pushover", self.plugin)
-
-    def test_is_configured(self):
+    def test_is_configured(self) -> None:
         assert self.plugin.is_configured(self.project) is False
         self.plugin.set_option("apikey", "abcdef", self.project)
         assert self.plugin.is_configured(self.project) is False
@@ -32,7 +30,7 @@ class PushoverPluginTest(PluginTestCase):
         assert self.plugin.is_configured(self.project) is True
 
     @responses.activate
-    def test_simple_notification(self):
+    def test_simple_notification(self) -> None:
         responses.add("POST", "https://api.pushover.net/1/messages.json", body=SUCCESS)
         self.plugin.set_option("userkey", "abcdef", self.project)
         self.plugin.set_option("apikey", "ghijkl", self.project)
@@ -40,6 +38,7 @@ class PushoverPluginTest(PluginTestCase):
         event = self.store_event(
             data={"message": "Hello world", "level": "warning"}, project_id=self.project.id
         )
+        assert event.group is not None
         group = event.group
 
         rule = Rule.objects.create(project=self.project, label="my rule")
@@ -66,7 +65,7 @@ class PushoverPluginTest(PluginTestCase):
         }
 
     @responses.activate
-    def test_emergency_notification(self):
+    def test_emergency_notification(self) -> None:
         responses.add("POST", "https://api.pushover.net/1/messages.json", body=SUCCESS)
         self.plugin.set_option("userkey", "abcdef", self.project)
         self.plugin.set_option("apikey", "ghijkl", self.project)
@@ -77,6 +76,7 @@ class PushoverPluginTest(PluginTestCase):
         event = self.store_event(
             data={"message": "Hello world", "level": "warning"}, project_id=self.project.id
         )
+        assert event.group is not None
         group = event.group
 
         rule = Rule.objects.create(project=self.project, label="my rule")
@@ -102,7 +102,7 @@ class PushoverPluginTest(PluginTestCase):
             "retry": ["30"],
         }
 
-    def test_no_secrets(self):
+    def test_no_secrets(self) -> None:
         self.user = self.create_user("foo@example.com")
         self.org = self.create_organization(owner=self.user, name="Rowdy Tiger")
         self.team = self.create_team(organization=self.org, name="Mariachi Band")
@@ -115,7 +115,7 @@ class PushoverPluginTest(PluginTestCase):
             args=[self.org.slug, self.project.slug, "pushover"],
         )
         res = self.client.get(url)
-        config = json.loads(res.content)["config"]
+        config = orjson.loads(res.content)["config"]
         userkey_config = [item for item in config if item["name"] == "userkey"][0]
         apikey_config = [item for item in config if item["name"] == "apikey"][0]
         assert userkey_config.get("type") == "secret"

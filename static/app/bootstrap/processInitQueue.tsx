@@ -1,19 +1,52 @@
-import exportGlobals from 'app/bootstrap/exportGlobals';
-import {OnSentryInitConfiguration, SentryInitRenderReactComponent} from 'app/types';
+import {useState} from 'react';
+import {createRoot} from 'react-dom/client';
+import {createBrowserRouter, RouterProvider} from 'react-router-dom';
+import throttle from 'lodash/throttle';
+
+import {exportedGlobals} from 'sentry/bootstrap/exportGlobals';
+import {CommandPaletteProvider} from 'sentry/components/commandPalette/context';
+import {DocumentTitleManager} from 'sentry/components/sentryDocumentTitle/documentTitleManager';
+import {ThemeAndStyleProvider} from 'sentry/components/themeAndStyleProvider';
+import {ScrapsProviders} from 'sentry/scrapsProviders';
+import type {OnSentryInitConfiguration} from 'sentry/types/system';
+import {SentryInitRenderReactComponent} from 'sentry/types/system';
+import {
+  DEFAULT_QUERY_CLIENT_CONFIG,
+  QueryClient,
+  QueryClientProvider,
+} from 'sentry/utils/queryClient';
 
 import {renderDom} from './renderDom';
 import {renderOnDomReady} from './renderOnDomReady';
 
+const queryClient = new QueryClient(DEFAULT_QUERY_CLIENT_CONFIG);
+
 const COMPONENT_MAP = {
   [SentryInitRenderReactComponent.INDICATORS]: () =>
-    import(/* webpackChunkName: "Indicators" */ 'app/components/indicators'),
+    import(/* webpackChunkName: "Indicators" */ 'sentry/components/indicators'),
   [SentryInitRenderReactComponent.SYSTEM_ALERTS]: () =>
-    import(/* webpackChunkName: "SystemAlerts" */ 'app/views/app/systemAlerts'),
+    import(/* webpackChunkName: "SystemAlerts" */ 'sentry/views/app/systemAlerts'),
   [SentryInitRenderReactComponent.SETUP_WIZARD]: () =>
-    import(/* webpackChunkName: "SetupWizard" */ 'app/views/setupWizard'),
-  [SentryInitRenderReactComponent.U2F_SIGN]: () =>
-    import(/* webpackChunkName: "U2fSign" */ 'app/components/u2f/u2fsign'),
+    import(/* webpackChunkName: "SetupWizard" */ 'sentry/views/setupWizard'),
+  [SentryInitRenderReactComponent.WEB_AUTHN_ASSSERT]: () =>
+    import(
+      /* webpackChunkName: "WebAuthnAssert" */ 'sentry/components/webAuthn/webAuthnAssert'
+    ),
+  [SentryInitRenderReactComponent.SU_STAFF_ACCESS_FORM]: () =>
+    import(
+      /* webpackChunkName: "SuperuserStaffAccessForm" */ 'sentry/components/superuserStaffAccessForm'
+    ),
 };
+
+interface SimpleRouterProps {
+  element: React.ReactNode;
+}
+
+function SimpleRouter({element}: SimpleRouterProps) {
+  const [router] = useState(() => createBrowserRouter([{path: '*', element}]));
+
+  return <RouterProvider router={router} />;
+}
 
 async function processItem(initConfig: OnSentryInitConfiguration) {
   /**
@@ -23,19 +56,38 @@ async function processItem(initConfig: OnSentryInitConfiguration) {
    * password strength estimation library. Load it on demand.
    */
   if (initConfig.name === 'passwordStrength') {
-    const {input, element} = initConfig;
-    if (!input || !element) {
+    if (!initConfig.input || !initConfig.element) {
+      return;
+    }
+    const inputElem = document.querySelector(initConfig.input);
+    const rootEl = document.querySelector(initConfig.element);
+
+    if (!inputElem || !rootEl) {
       return;
     }
 
-    const passwordStrength = await import(
-      /* webpackChunkName: "PasswordStrength" */ 'app/components/passwordStrength'
+    const {PasswordStrength} = await import(
+      /* webpackChunkName: "PasswordStrength" */ 'sentry/components/passwordStrength'
     );
 
-    passwordStrength.attachTo({
-      input: document.querySelector(input),
-      element: document.querySelector(element),
-    });
+    const root = createRoot(rootEl);
+    inputElem.addEventListener(
+      'input',
+      throttle(e => {
+        root.render(
+          /**
+           * The screens and components rendering here will always render in light mode.
+           * This is because config is not available at this point (user might not be logged in yet),
+           * and so we dont know which theme to pick.
+           */
+          <QueryClientProvider client={queryClient}>
+            <ThemeAndStyleProvider>
+              <PasswordStrength value={e.target.value} />
+            </ThemeAndStyleProvider>
+          </QueryClientProvider>
+        );
+      })
+    );
 
     return;
   }
@@ -52,7 +104,32 @@ async function processItem(initConfig: OnSentryInitConfiguration) {
 
     renderOnDomReady(() =>
       // TODO(ts): Unsure how to type this, complains about u2fsign's required props
-      renderDom(Component as any, initConfig.container, initConfig.props)
+      renderDom(
+        (props: any) => (
+          /**
+           * The screens and components rendering here will always render in light mode.
+           * This is because config is not available at this point (user might not be logged in yet),
+           * and so we dont know which theme to pick.
+           */
+          <QueryClientProvider client={queryClient}>
+            <DocumentTitleManager>
+              <ThemeAndStyleProvider>
+                <CommandPaletteProvider>
+                  <SimpleRouter
+                    element={
+                      <ScrapsProviders>
+                        <Component {...props} />
+                      </ScrapsProviders>
+                    }
+                  />
+                </CommandPaletteProvider>
+              </ThemeAndStyleProvider>
+            </DocumentTitleManager>
+          </QueryClientProvider>
+        ),
+        initConfig.container,
+        initConfig.props
+      )
     );
   }
 
@@ -61,7 +138,7 @@ async function processItem(initConfig: OnSentryInitConfiguration) {
    * for downstream consumers to use.
    */
   if (initConfig.name === 'onReady' && typeof initConfig.onReady === 'function') {
-    initConfig.onReady(exportGlobals);
+    initConfig.onReady(exportedGlobals);
   }
 }
 

@@ -1,6 +1,22 @@
+from datetime import datetime
+from typing import TypedDict
+
 from sentry.api.serializers import Serializer, register, serialize
-from sentry.api.serializers.models.release import get_users_for_authors
-from sentry.models import CommitAuthor, PullRequest, Repository
+from sentry.api.serializers.models.release import Author, get_users_for_authors
+from sentry.api.serializers.models.repository import RepositorySerializerResponse
+from sentry.models.commitauthor import CommitAuthor
+from sentry.models.pullrequest import PullRequest
+from sentry.models.repository import Repository
+
+
+class PullRequestSerializerResponse(TypedDict):
+    id: str
+    title: str | None
+    message: str | None
+    dateCreated: datetime
+    repository: RepositorySerializerResponse
+    author: Author
+    externalUrl: str
 
 
 def get_users_for_pull_requests(item_list, user=None):
@@ -17,7 +33,7 @@ def get_users_for_pull_requests(item_list, user=None):
 
 @register(PullRequest)
 class PullRequestSerializer(Serializer):
-    def get_attrs(self, item_list, user):
+    def get_attrs(self, item_list, user, **kwargs):
         users_by_author = get_users_for_pull_requests(item_list, user)
         repositories = list(Repository.objects.filter(id__in=[c.repository_id for c in item_list]))
         repository_map = {repository.id: repository for repository in repositories}
@@ -28,7 +44,7 @@ class PullRequestSerializer(Serializer):
             repository_id = str(item.repository_id)
             external_url = ""
             if item.repository_id in repository_map:
-                external_url = self._external_url(repository_map[item.repository_id], item)
+                external_url = item.get_external_url()
             result[item] = {
                 "repository": serialized_repos.get(repository_id, {}),
                 "external_url": external_url,
@@ -37,17 +53,7 @@ class PullRequestSerializer(Serializer):
 
         return result
 
-    def _external_url(self, repository, pull):
-        from sentry.plugins.base import bindings
-
-        provider_id = repository.provider
-        if not provider_id or not provider_id.startswith("integrations:"):
-            return None
-        provider_cls = bindings.get("integration-repository.provider").get(provider_id)
-        provider = provider_cls(provider_id)
-        return provider.pull_request_url(repository, pull)
-
-    def serialize(self, obj, attrs, user):
+    def serialize(self, obj: PullRequest, attrs, user, **kwargs) -> PullRequestSerializerResponse:
         return {
             "id": obj.key,
             "title": obj.title,

@@ -1,23 +1,34 @@
+from unittest.mock import MagicMock, patch
 from urllib.parse import quote, urlencode
 
+import pytest
 import responses
 from django.urls import reverse
 
-from sentry.models import Integration
-from sentry.testutils import APITestCase
+from sentry.integrations.bitbucket.integration import BitbucketIntegrationProvider
+from sentry.integrations.models.integration import Integration
+from sentry.models.repository import Repository
+from sentry.shared_integrations.exceptions import IntegrationError
+from sentry.silo.base import SiloMode
+from sentry.testutils.cases import APITestCase
+from sentry.testutils.silo import assume_test_silo_mode, control_silo_test
 
 
+@control_silo_test
 class BitbucketIntegrationTest(APITestCase):
-    def setUp(self):
+    provider = BitbucketIntegrationProvider
+
+    def setUp(self) -> None:
         self.base_url = "https://api.bitbucket.org"
         self.shared_secret = "234567890"
         self.subject = "connect:1234567"
-        self.integration = Integration.objects.create(
-            provider="bitbucket",
+        self.integration = self.create_provider_integration(
+            provider=self.provider.key,
             external_id=self.subject,
             name="sentryuser",
             metadata={
                 "base_url": self.base_url,
+                "domain_name": "bitbucket.org/Test-Organization",
                 "shared_secret": self.shared_secret,
                 "subject": self.subject,
             },
@@ -29,7 +40,7 @@ class BitbucketIntegrationTest(APITestCase):
         )
 
     @responses.activate
-    def test_get_repositories_with_uuid(self):
+    def test_get_repositories_with_uuid(self) -> None:
         uuid = "{a21bd75c-0ce2-402d-b70b-e57de6fba4b3}"
         self.integration.metadata["uuid"] = uuid
         url = f"https://api.bitbucket.org/2.0/repositories/{quote(uuid)}"
@@ -38,12 +49,12 @@ class BitbucketIntegrationTest(APITestCase):
             url,
             json={"values": [{"full_name": "sentryuser/stuf"}]},
         )
-        installation = self.integration.get_installation(self.organization)
+        installation = self.integration.get_installation(self.organization.id)
         result = installation.get_repositories()
         assert result == [{"identifier": "sentryuser/stuf", "name": "sentryuser/stuf"}]
 
     @responses.activate
-    def test_get_repositories_exact_match(self):
+    def test_get_repositories_exact_match(self) -> None:
         querystring = urlencode({"q": 'name="stuf"'})
         responses.add(
             responses.GET,
@@ -73,7 +84,7 @@ class BitbucketIntegrationTest(APITestCase):
             },
         )
 
-        installation = self.integration.get_installation(self.organization)
+        installation = self.integration.get_installation(self.organization.id)
         result = installation.get_repositories("stuf")
         assert result == [
             {"identifier": "sentryuser/stuf", "name": "sentryuser/stuf"},
@@ -91,7 +102,7 @@ class BitbucketIntegrationTest(APITestCase):
         ]
 
     @responses.activate
-    def test_get_repositories_no_exact_match(self):
+    def test_get_repositories_no_exact_match(self) -> None:
         querystring = urlencode({"q": 'name~"stu"'})
         responses.add(
             responses.GET,
@@ -121,7 +132,7 @@ class BitbucketIntegrationTest(APITestCase):
             json={"values": []},
         )
 
-        installation = self.integration.get_installation(self.organization)
+        installation = self.integration.get_installation(self.organization.id)
         result = installation.get_repositories("stu")
         assert result == [
             {"identifier": "sentryuser/stuff", "name": "sentryuser/stuff"},
@@ -136,3 +147,124 @@ class BitbucketIntegrationTest(APITestCase):
             {"identifier": "sentryuser/stuff-2018", "name": "sentryuser/stuff-2018"},
             {"identifier": "sentryuser/stuff-2019", "name": "sentryuser/stuff-2019"},
         ]
+
+    @responses.activate
+    def test_source_url_matches(self) -> None:
+        installation = self.integration.get_installation(self.organization.id)
+
+        test_cases = [
+            (
+                "https://bitbucket.org/Test-Organization/sentry/src/master/src/sentry/integrations/bitbucket/integration.py",
+                True,
+            ),
+            (
+                "https://notbitbucket.org/Test-Organization/sentry/src/master/src/sentry/integrations/bitbucket/integration.py",
+                False,
+            ),
+            ("https://jianyuan.io", False),
+        ]
+        for source_url, matches in test_cases:
+            assert installation.source_url_matches(source_url) == matches
+
+    @responses.activate
+    def test_extract_branch_from_source_url(self) -> None:
+        installation = self.integration.get_installation(self.organization.id)
+        integration = Integration.objects.get(provider=self.provider.key)
+
+        with assume_test_silo_mode(SiloMode.REGION):
+            repo = Repository.objects.create(
+                organization_id=self.organization.id,
+                name="Test-Organization/repo",
+                url="https://bitbucket.org/Test-Organization/repo",
+                provider="integrations:bitbucket",
+                external_id=123,
+                config={"name": "Test-Organization/repo"},
+                integration_id=integration.id,
+            )
+        source_url = "https://bitbucket.org/Test-Organization/repo/src/master/src/sentry/integrations/bitbucket/integration.py"
+
+        assert installation.extract_branch_from_source_url(repo, source_url) == "master"
+
+    @responses.activate
+    def test_extract_source_path_from_source_url(self) -> None:
+        installation = self.integration.get_installation(self.organization.id)
+        integration = Integration.objects.get(provider=self.provider.key)
+
+        with assume_test_silo_mode(SiloMode.REGION):
+            repo = Repository.objects.create(
+                organization_id=self.organization.id,
+                name="Test-Organization/repo",
+                url="https://bitbucket.org/Test-Organization/repo",
+                provider="integrations:bitbucket",
+                external_id=123,
+                config={"name": "Test-Organization/repo"},
+                integration_id=integration.id,
+            )
+        source_url = "https://bitbucket.org/Test-Organization/repo/src/master/src/sentry/integrations/bitbucket/integration.py"
+
+        assert (
+            installation.extract_source_path_from_source_url(repo, source_url)
+            == "src/sentry/integrations/bitbucket/integration.py"
+        )
+
+    @responses.activate
+    def test_extract_source_path_from_source_url_strips_query_params(self) -> None:
+        installation = self.integration.get_installation(self.organization.id)
+        integration = Integration.objects.get(provider=self.provider.key)
+
+        with assume_test_silo_mode(SiloMode.REGION):
+            repo = Repository.objects.create(
+                organization_id=self.organization.id,
+                name="Test-Organization/repo",
+                url="https://bitbucket.org/Test-Organization/repo",
+                provider="integrations:bitbucket",
+                external_id=123,
+                config={"name": "Test-Organization/repo"},
+                integration_id=integration.id,
+            )
+        source_url = "https://bitbucket.org/Test-Organization/repo/src/master/src/sentry/integrations/bitbucket/integration.py?at=master"
+
+        assert (
+            installation.extract_source_path_from_source_url(repo, source_url)
+            == "src/sentry/integrations/bitbucket/integration.py"
+        )
+
+    @responses.activate
+    @patch("sentry.integrations.utils.metrics.EventLifecycle.record_failure")
+    @patch("sentry.integrations.utils.metrics.EventLifecycle.record_halt")
+    def test_get_repository_choices_halt_lifecycle(
+        self, mock_record_halt: MagicMock, mock_record_failure: MagicMock
+    ) -> None:
+        responses.add(
+            responses.GET,
+            "https://api.bitbucket.org/2.0/repositories/sentryuser",
+            status=404,
+            json={"error": {"message": "No workspace with identifier sentryuser"}},
+        )
+        installation = self.integration.get_installation(self.organization.id)
+        with pytest.raises(
+            IntegrationError, match="Unable to retrieve repositories. Please try again later."
+        ):
+            installation.get_repository_choices(None, {})
+        assert mock_record_halt.call_count == 1
+        assert mock_record_failure.call_count == 0
+
+    @responses.activate
+    @patch("sentry.integrations.utils.metrics.EventLifecycle.record_failure")
+    @patch("sentry.integrations.utils.metrics.EventLifecycle.record_halt")
+    def test_get_repository_choices_failure_lifecycle(
+        self, mock_record_halt: MagicMock, mock_record_failure: MagicMock
+    ) -> None:
+        responses.add(
+            responses.GET,
+            "https://api.bitbucket.org/2.0/repositories/sentryuser",
+            status=404,
+            json={"error": {"message": "Some other error, sentry is responsible"}},
+        )
+        installation = self.integration.get_installation(self.organization.id)
+        with pytest.raises(
+            IntegrationError, match="Unable to retrieve repositories. Please try again later."
+        ):
+            installation.get_repository_choices(None, {})
+        assert mock_record_halt.call_count == 0
+        assert mock_record_failure.call_count == 1

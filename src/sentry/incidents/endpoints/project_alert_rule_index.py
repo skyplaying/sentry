@@ -1,122 +1,40 @@
-from copy import deepcopy
+from __future__ import annotations
 
-from rest_framework import status
-from rest_framework.response import Response
+from django.http.response import HttpResponseBase
+from rest_framework.request import Request
 
-from sentry import features
+from sentry.api.api_owners import ApiOwner
+from sentry.api.api_publish_status import ApiPublishStatus
+from sentry.api.base import region_silo_endpoint
 from sentry.api.bases.project import ProjectAlertRulePermission, ProjectEndpoint
-from sentry.api.exceptions import ResourceDoesNotExist
-from sentry.api.paginator import (
-    CombinedQuerysetIntermediary,
-    CombinedQuerysetPaginator,
-    OffsetPaginator,
+from sentry.incidents.endpoints.organization_alert_rule_index import (
+    AlertRuleFetchMixin,
+    create_metric_alert,
 )
-from sentry.api.serializers import CombinedRuleSerializer, serialize
-from sentry.incidents.endpoints.serializers import AlertRuleSerializer
-from sentry.incidents.logic import get_slack_actions_with_async_lookups
-from sentry.incidents.models import AlertRule
-from sentry.integrations.slack import tasks
-from sentry.models import Rule, RuleStatus
-from sentry.signals import alert_rule_created
-from sentry.snuba.dataset import Dataset
+from sentry.incidents.models.alert_rule import AlertRule
+from sentry.workflow_engine.utils.legacy_metric_tracking import track_alert_endpoint_execution
 
 
-class ProjectCombinedRuleIndexEndpoint(ProjectEndpoint):
-    def get(self, request, project):
-        """
-        Fetches alert rules and legacy rules for a project
-        """
-        alert_rules = AlertRule.objects.fetch_for_project(project)
-        if not features.has("organizations:performance-view", project.organization):
-            # Filter to only error alert rules
-            alert_rules = alert_rules.filter(snuba_query__dataset=Dataset.Events.value)
-
-        alert_rule_intermediary = CombinedQuerysetIntermediary(alert_rules, ["date_added"])
-        rule_intermediary = CombinedQuerysetIntermediary(
-            Rule.objects.filter(
-                project=project, status__in=[RuleStatus.ACTIVE, RuleStatus.INACTIVE]
-            ),
-            ["date_added"],
-        )
-
-        return self.paginate(
-            request,
-            paginator_cls=CombinedQuerysetPaginator,
-            on_results=lambda x: serialize(x, request.user, CombinedRuleSerializer()),
-            default_per_page=25,
-            intermediaries=[alert_rule_intermediary, rule_intermediary],
-            desc=True,
-        )
-
-
-class ProjectAlertRuleIndexEndpoint(ProjectEndpoint):
+@region_silo_endpoint
+class ProjectAlertRuleIndexEndpoint(ProjectEndpoint, AlertRuleFetchMixin):
+    owner = ApiOwner.ISSUES
+    publish_status = {
+        "GET": ApiPublishStatus.EXPERIMENTAL,
+        "POST": ApiPublishStatus.EXPERIMENTAL,
+    }
     permission_classes = (ProjectAlertRulePermission,)
 
-    def get(self, request, project):
+    @track_alert_endpoint_execution("GET", "sentry-api-0-project-alert-rules")
+    def get(self, request: Request, project) -> HttpResponseBase:
         """
-        Fetches alert rules for a project
+        Fetches metric alert rules for a project - @deprecated. Use OrganizationAlertRuleIndexEndpoint instead.
         """
-        if not features.has("organizations:incidents", project.organization, actor=request.user):
-            raise ResourceDoesNotExist
-
         alert_rules = AlertRule.objects.fetch_for_project(project)
-        if not features.has("organizations:performance-view", project.organization):
-            # Filter to only error alert rules
-            alert_rules = alert_rules.filter(snuba_query__dataset=Dataset.Events.value)
+        return self.fetch_metric_alert(request, project.organization, alert_rules)
 
-        return self.paginate(
-            request,
-            queryset=alert_rules,
-            order_by="-date_added",
-            paginator_cls=OffsetPaginator,
-            on_results=lambda x: serialize(x, request.user),
-            default_per_page=25,
-        )
-
-    def post(self, request, project):
+    @track_alert_endpoint_execution("POST", "sentry-api-0-project-alert-rules")
+    def post(self, request: Request, project) -> HttpResponseBase:
         """
-        Create an alert rule
+        Create an alert rule - @deprecated. Use OrganizationAlertRuleIndexEndpoint instead.
         """
-        if not features.has("organizations:incidents", project.organization, actor=request.user):
-            raise ResourceDoesNotExist
-
-        data = deepcopy(request.data)
-        data["projects"] = [project.slug]
-
-        serializer = AlertRuleSerializer(
-            context={
-                "organization": project.organization,
-                "access": request.access,
-                "user": request.user,
-            },
-            data=data,
-        )
-        if serializer.is_valid():
-            if get_slack_actions_with_async_lookups(project.organization, request.user, data):
-                # need to kick off an async job for Slack
-                client = tasks.RedisRuleStatus()
-                task_args = {
-                    "organization_id": project.organization_id,
-                    "uuid": client.uuid,
-                    "data": data,
-                    "user_id": request.user.id,
-                }
-                tasks.find_channel_id_for_alert_rule.apply_async(kwargs=task_args)
-                return Response({"uuid": client.uuid}, status=202)
-            else:
-                alert_rule = serializer.save()
-                referrer = request.query_params.get("referrer")
-                session_id = request.query_params.get("sessionId")
-                alert_rule_created.send_robust(
-                    user=request.user,
-                    project=project,
-                    rule=alert_rule,
-                    rule_type="metric",
-                    sender=self,
-                    referrer=referrer,
-                    session_id=session_id,
-                    is_api_token=request.auth is not None,
-                )
-                return Response(serialize(alert_rule, request.user), status=status.HTTP_201_CREATED)
-
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        return create_metric_alert(request, project.organization, project)

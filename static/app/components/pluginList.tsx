@@ -1,44 +1,25 @@
-import {disablePlugin, enablePlugin} from 'app/actionCreators/plugins';
-import InactivePlugins from 'app/components/inactivePlugins';
-import PluginConfig from 'app/components/pluginConfig';
-import {t} from 'app/locale';
-import {Organization, Plugin, Project} from 'app/types';
-
-import {Panel, PanelItem} from './panels';
+import Panel from 'sentry/components/panels/panel';
+import PanelItem from 'sentry/components/panels/panelItem';
+import PluginConfig from 'sentry/components/pluginConfig';
+import {t} from 'sentry/locale';
+import type {Plugin} from 'sentry/types/integrations';
+import type {Project} from 'sentry/types/project';
+import {useTogglePluginMutation} from 'sentry/views/settings/projectPlugins/useTogglePluginMutation';
 
 type Props = {
-  organization: Organization;
-  project: Project;
   pluginList: Plugin[];
-  onDisablePlugin?: (plugin: Plugin) => void;
-  onEnablePlugin?: (plugin: Plugin) => void;
+  project: Project;
 };
 
-const PluginList = ({
-  organization,
-  project,
-  pluginList,
-  onDisablePlugin = () => {},
-  onEnablePlugin = () => {},
-}: Props) => {
-  const handleEnablePlugin = (plugin: Plugin) => {
-    enablePlugin({
-      projectId: project.slug,
-      orgId: organization.slug,
-      pluginId: plugin.slug,
-    });
-
-    onEnablePlugin(plugin);
-  };
-
+export default function PluginList({project, pluginList}: Props) {
+  const togglePluginMutation = useTogglePluginMutation({
+    projectSlug: project.slug,
+  });
   const handleDisablePlugin = (plugin: Plugin) => {
-    disablePlugin({
-      projectId: project.slug,
-      orgId: organization.slug,
+    togglePluginMutation.mutate({
       pluginId: plugin.slug,
+      shouldEnable: false,
     });
-
-    onDisablePlugin(plugin);
   };
 
   if (!pluginList.length) {
@@ -55,22 +36,14 @@ const PluginList = ({
     <div>
       {pluginList
         .filter(p => p.enabled)
-        .map(data => (
+        .map(plugin => (
           <PluginConfig
-            data={data}
-            organization={organization}
+            plugin={plugin}
             project={project}
-            key={data.id}
+            key={plugin.id}
             onDisablePlugin={handleDisablePlugin}
           />
         ))}
-
-      <InactivePlugins
-        plugins={pluginList.filter(p => !p.enabled && !p.isHidden)}
-        onEnablePlugin={handleEnablePlugin}
-      />
     </div>
   );
-};
-
-export default PluginList;
+}

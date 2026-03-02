@@ -1,12 +1,13 @@
-import styled from '@emotion/styled';
+import {trackAnalytics} from 'sentry/utils/analytics';
+import replaceRouterParams from 'sentry/utils/replaceRouterParams';
+import {useParams} from 'sentry/utils/useParams';
+import {SecondaryNav} from 'sentry/views/nav/secondary/secondary';
+import SettingsNavItem from 'sentry/views/settings/components/settingsNavItem';
+import type {NavigationGroupProps} from 'sentry/views/settings/types';
 
-import {trackAnalyticsEvent} from 'app/utils/analytics';
-import replaceRouterParams from 'app/utils/replaceRouterParams';
-import SettingsNavItem from 'app/views/settings/components/settingsNavItem';
-import {NavigationGroupProps} from 'app/views/settings/types';
-
-const SettingsNavigationGroup = (props: NavigationGroupProps) => {
+function SettingsNavigationGroup(props: NavigationGroupProps) {
   const {organization, project, name, items} = props;
+  const params = useParams();
 
   const navLinks = items.map(({path, title, index, show, badge, id, recordAnalytics}) => {
     if (typeof show === 'function' && !show(props)) {
@@ -16,19 +17,14 @@ const SettingsNavigationGroup = (props: NavigationGroupProps) => {
       return null;
     }
     const badgeResult = typeof badge === 'function' ? badge(props) : null;
-    const to = replaceRouterParams(path, {
-      ...(organization ? {orgId: organization.slug} : {}),
-      ...(project ? {projectId: project.slug} : {}),
-    });
+    const to = replaceRouterParams(path, {...params, orgId: organization?.slug});
 
     const handleClick = () => {
       // only call the analytics event if the URL is changing
-      if (recordAnalytics && to !== window.location.pathname) {
-        trackAnalyticsEvent({
-          organization_id: organization ? organization.id : null,
-          project_id: project && project.id,
-          eventName: 'Sidebar Item Clicked',
-          eventKey: 'sidebar.item_clicked',
+      if (recordAnalytics && to !== window.location.pathname && organization) {
+        trackAnalytics('sidebar.item_clicked', {
+          organization,
+          project_id: project?.id,
           sidebar_item_id: id,
           dest: path,
         });
@@ -53,23 +49,10 @@ const SettingsNavigationGroup = (props: NavigationGroupProps) => {
   }
 
   return (
-    <NavSection data-test-id={name}>
-      <SettingsHeading>{name}</SettingsHeading>
+    <SecondaryNav.Section id={props.id} title={name}>
       {navLinks}
-    </NavSection>
+    </SecondaryNav.Section>
   );
-};
-
-const NavSection = styled('div')`
-  margin-bottom: 20px;
-`;
-
-const SettingsHeading = styled('div')`
-  color: ${p => p.theme.subText};
-  font-size: 12px;
-  font-weight: 600;
-  text-transform: uppercase;
-  margin-bottom: 20px;
-`;
+}
 
 export default SettingsNavigationGroup;

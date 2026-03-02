@@ -1,9 +1,9 @@
-/* global __dirname */
-/* eslint import/no-nodejs-modules:0 */
-import fs from 'fs';
-import path from 'path';
+'use strict';
 
-const FIXTURES_ROOT = path.join(__dirname, '../../fixtures');
+import fs from 'node:fs';
+import path from 'node:path';
+
+const FIXTURES_ROOT = path.join(__dirname, '../../../fixtures');
 
 type Options = {
   /**
@@ -13,36 +13,43 @@ type Options = {
 };
 
 /**
- * Loads a directory of fixtures. Supports js and json fixtures.
+ * Loads a directory of JSON fixtures.
  */
 export function loadFixtures(dir: string, opts: Options = {}) {
   const from = path.join(FIXTURES_ROOT, dir);
   const files = fs.readdirSync(from);
 
-  const fixturesPairs = files.map(file => {
+  const fixtures: Record<string, any> = {};
+
+  for (const file of files) {
     const filePath = path.join(from, file);
 
-    if (/[jt]sx?$/.test(file)) {
-      const module = require(filePath);
-
-      if (Object.keys(module).includes('default')) {
-        throw new Error('Javascript fixtures cannot use default export');
-      }
-
-      return [file, module] as const;
-    }
-
     if (/json$/.test(file)) {
-      return [file, JSON.parse(fs.readFileSync(filePath).toString())] as const;
+      fixtures[file] = JSON.parse(fs.readFileSync(filePath).toString());
+      continue;
     }
 
     throw new Error(`Invalid fixture type found: ${file}`);
-  });
-
-  const fixtures = Object.fromEntries(fixturesPairs);
+  }
 
   if (opts.flatten) {
-    return Object.values(fixtures).reduce((acc, val) => ({...acc, ...val}), {});
+    const flattenedFixtures: Record<string, any> = {};
+
+    for (const moduleKey in fixtures) {
+      for (const moduleExport in fixtures[moduleKey]) {
+        // Check if our flattenedFixtures already contains a key with the same export.
+        // If it does, we want to throw and make sure that we dont silently override the fixtures.
+        if (flattenedFixtures?.[moduleKey]?.[moduleExport]) {
+          throw new Error(
+            `Flatten will override ${flattenedFixtures[moduleKey]} with ${fixtures[moduleKey][moduleExport]}`
+          );
+        }
+
+        flattenedFixtures[moduleExport] = fixtures[moduleKey][moduleExport];
+      }
+    }
+
+    return flattenedFixtures;
   }
 
   return fixtures;

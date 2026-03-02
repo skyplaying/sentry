@@ -1,28 +1,30 @@
-import pytz
 from django.utils import timezone
 
-from sentry.testutils import AcceptanceTestCase, SnubaTestCase
+from sentry.incidents.logic import update_incident_status
+from sentry.incidents.models.incident import IncidentStatus, IncidentStatusMethod
+from sentry.testutils.cases import AcceptanceTestCase, SnubaTestCase
 from sentry.testutils.helpers.datetime import before_now
+from sentry.testutils.silo import no_silo_test
 
 FEATURE_NAME = ["organizations:incidents", "organizations:performance-view"]
 
-event_time = before_now(days=3).replace(tzinfo=pytz.utc)
+event_time = before_now(days=3)
 
 
+@no_silo_test
 class OrganizationIncidentsListTest(AcceptanceTestCase, SnubaTestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         super().setUp()
         self.login_as(self.user)
-        self.path = f"/organizations/{self.organization.slug}/alerts/"
+        self.path = f"/organizations/{self.organization.slug}/issues/alerts/"
 
-    def test_empty_incidents(self):
+    def test_empty_incidents(self) -> None:
         with self.feature(FEATURE_NAME):
             self.browser.get(self.path)
-            self.browser.wait_until_not(".loading-indicator")
-            self.browser.snapshot("incidents - empty state")
+            self.browser.wait_until_not('[data-test-id="loading-indicator"]')
 
-    def test_incidents_list(self):
-        alert_rule = self.create_alert_rule()
+    def test_incidents_list(self) -> None:
+        alert_rule = self.create_alert_rule(name="Alert Rule #1")
         incident = self.create_incident(
             self.organization,
             title="Incident #1",
@@ -31,23 +33,20 @@ class OrganizationIncidentsListTest(AcceptanceTestCase, SnubaTestCase):
             projects=[self.project],
             alert_rule=alert_rule,
         )
+        update_incident_status(
+            incident, IncidentStatus.CRITICAL, status_method=IncidentStatusMethod.RULE_TRIGGERED
+        )
 
         features = {feature: True for feature in FEATURE_NAME}
-        features["organizations:alert-details-redesign"] = False
         with self.feature(features):
             self.browser.get(self.path)
-            self.browser.wait_until_not(".loading-indicator")
+            self.browser.wait_until_not('[data-test-id="loading-indicator"]')
             self.browser.wait_until_not('[data-test-id="loading-placeholder"]')
-            self.browser.snapshot("incidents - list")
 
-            details_url = (
-                f'[href="/organizations/{self.organization.slug}/alerts/{incident.identifier}/'
-            )
+            details_url = f'[href="/organizations/{self.organization.slug}/issues/alerts/rules/details/{alert_rule.id}/?alert={incident.id}'
             self.browser.wait_until(details_url)
             self.browser.click(details_url)
-            self.browser.wait_until_not(".loading-indicator")
-            self.browser.wait_until_test_id("incident-title")
+            self.browser.wait_until_not('[data-test-id="loading-indicator"]')
+            self.browser.wait_until_test_id("incident-rule-title")
 
             self.browser.wait_until_not('[data-test-id="loading-placeholder"]')
-            self.browser.blur()
-            self.browser.snapshot("incidents - details")

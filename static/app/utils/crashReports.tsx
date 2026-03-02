@@ -1,7 +1,5 @@
-import * as React from 'react';
-
-import {t, tct} from 'app/locale';
-import {defined} from 'app/utils';
+import {t, tct} from 'sentry/locale';
+import {defined} from 'sentry/utils';
 
 export function formatStoreCrashReports(
   value: number | null | '',
@@ -25,20 +23,22 @@ export function formatStoreCrashReports(
 }
 
 export enum SettingScope {
-  Organization,
-  Project,
+  ORGANIZATION = 0,
+  PROJECT = 1,
 }
 export function getStoreCrashReportsValues(settingScope: SettingScope) {
   const values: Array<number | null> = [
     0, // disabled
-    1,
+    1, // limited per issue
     5,
     10,
-    20, // limited per issue
+    20,
+    50,
+    100,
     -1, // unlimited
   ];
 
-  if (settingScope === SettingScope.Project) {
+  if (settingScope === SettingScope.PROJECT) {
     values.unshift(null); // inherit option
   }
 

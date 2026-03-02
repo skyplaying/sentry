@@ -1,21 +1,39 @@
 import re
 import time
+from unittest import mock
+from unittest.mock import MagicMock, patch
 
+import orjson
 import responses
+from django.forms import Form
 
-from sentry.integrations.msteams import MsTeamsNotifyServiceAction
-from sentry.models import Integration
-from sentry.testutils.cases import RuleTestCase
-from sentry.utils import json
+from sentry.analytics.events.alert_sent import AlertSentEvent
+from sentry.integrations.models.integration import Integration
+from sentry.integrations.msteams.actions.notification import MsTeamsNotifyServiceAction
+from sentry.integrations.msteams.analytics import MSTeamsIntegrationNotificationSent
+from sentry.integrations.types import EventLifecycleOutcome
+from sentry.testutils.asserts import assert_slo_metric
+from sentry.testutils.cases import PerformanceIssueTestCase, RuleTestCase
+from sentry.testutils.helpers.analytics import (
+    assert_any_analytics_event,
+    assert_last_analytics_event,
+)
+from sentry.testutils.helpers.notifications import TEST_ISSUE_OCCURRENCE, TEST_PERF_ISSUE_OCCURRENCE
+from sentry.testutils.silo import assume_test_silo_mode_of
+from sentry.testutils.skips import requires_snuba
+
+pytestmark = [requires_snuba]
 
 
-class MsTeamsNotifyActionTest(RuleTestCase):
+class MsTeamsNotifyActionTest(RuleTestCase, PerformanceIssueTestCase):
     rule_cls = MsTeamsNotifyServiceAction
 
-    def setUp(self):
+    def setUp(self) -> None:
         event = self.get_event()
 
-        self.integration = Integration.objects.create(
+        self.integration, _ = self.create_provider_integration_for(
+            event.project.organization,
+            self.user,
             provider="msteams",
             name="Galactic Empire",
             external_id="D4r7h_Pl4gu315_th3_w153",
@@ -25,22 +43,26 @@ class MsTeamsNotifyActionTest(RuleTestCase):
                 "expires_at": int(time.time()) + 86400,
             },
         )
-        self.integration.add_organization(event.project.organization, self.user)
 
-    def assert_form_valid(self, form, expected_channel_id, expected_channel):
+    def assert_form_valid(
+        self, form: Form, expected_channel_id: str, expected_channel: str
+    ) -> None:
         assert form.is_valid()
         assert form.cleaned_data["channel_id"] == expected_channel_id
         assert form.cleaned_data["channel"] == expected_channel
 
     @responses.activate
-    def test_applies_correctly(self):
+    @patch("sentry.integrations.utils.metrics.EventLifecycle.record_event")
+    @mock.patch("sentry.analytics.record")
+    def test_applies_correctly(self, mock_record: MagicMock, mock_record_event: MagicMock) -> None:
         event = self.get_event()
 
         rule = self.get_rule(
             data={"team": self.integration.id, "channel": "Naboo", "channel_id": "nb"}
         )
 
-        results = list(rule.after(event=event, state=self.get_state()))
+        notification_uuid = "123e4567-e89b-12d3-a456-426614174000"
+        results = list(rule.after(event=event, notification_uuid=notification_uuid))
         assert len(results) == 1
 
         responses.add(
@@ -51,7 +73,7 @@ class MsTeamsNotifyActionTest(RuleTestCase):
         )
 
         results[0].callback(event, futures=[])
-        data = json.loads(responses.calls[0].request.body)
+        data = orjson.loads(responses.calls[0].request.body)
 
         assert "attachments" in data
         attachments = data["attachments"]
@@ -63,21 +85,263 @@ class MsTeamsNotifyActionTest(RuleTestCase):
         title_card = attachments[0]["content"]["body"][0]
         title_pattern = r"\[%s\](.*)" % event.title
         assert re.match(title_pattern, title_card["text"])
+        assert_last_analytics_event(
+            mock_record,
+            AlertSentEvent(
+                provider="msteams",
+                alert_id="",
+                alert_type="issue_alert",
+                organization_id=self.organization.id,
+                project_id=self.project.id,
+                external_id="nb",
+                notification_uuid=notification_uuid,
+            ),
+        )
+        assert_any_analytics_event(
+            mock_record,
+            MSTeamsIntegrationNotificationSent(
+                category="issue_alert",
+                organization_id=self.organization.id,
+                project_id=self.project.id,
+                group_id=event.group_id,
+                notification_uuid=notification_uuid,
+                alert_id=None,
+            ),
+        )
 
-    def test_render_label(self):
+        assert_slo_metric(mock_record_event)
+
+    @responses.activate
+    @patch("sentry.integrations.utils.metrics.EventLifecycle.record_event")
+    @mock.patch("sentry.analytics.record")
+    def test_client_error(self, mock_record: MagicMock, mock_record_event: MagicMock) -> None:
+        event = self.get_event()
+
+        rule = self.get_rule(
+            data={"team": self.integration.id, "channel": "Naboo", "channel_id": "nb"}
+        )
+
+        notification_uuid = "123e4567-e89b-12d3-a456-426614174000"
+        results = list(rule.after(event=event, notification_uuid=notification_uuid))
+        assert len(results) == 1
+
+        responses.add(
+            method=responses.POST,
+            url="https://smba.trafficmanager.net/amer/v3/conversations/nb/activities",
+            status=500,
+            json={},
+        )
+
+        results[0].callback(event, futures=[])
+        data = orjson.loads(responses.calls[0].request.body)
+
+        assert "attachments" in data
+        attachments = data["attachments"]
+        assert len(attachments) == 1
+
+        # Wish there was a better way to do this, but we
+        # can't pass the title and title link separately
+        # with MS Teams cards.
+        title_card = attachments[0]["content"]["body"][0]
+        title_pattern = r"\[%s\](.*)" % event.title
+        assert re.match(title_pattern, title_card["text"])
+        assert_last_analytics_event(
+            mock_record,
+            AlertSentEvent(
+                provider="msteams",
+                alert_id="",
+                alert_type="issue_alert",
+                organization_id=self.organization.id,
+                project_id=self.project.id,
+                external_id="nb",
+                notification_uuid=notification_uuid,
+            ),
+        )
+        assert_any_analytics_event(
+            mock_record,
+            MSTeamsIntegrationNotificationSent(
+                category="issue_alert",
+                organization_id=self.organization.id,
+                project_id=self.project.id,
+                group_id=event.group_id,
+                notification_uuid=notification_uuid,
+                alert_id=None,
+            ),
+        )
+
+        assert_slo_metric(mock_record_event, EventLifecycleOutcome.FAILURE)
+
+    @responses.activate
+    @patch("sentry.integrations.utils.metrics.EventLifecycle.record_event")
+    @mock.patch("sentry.analytics.record")
+    def test_halt(self, mock_record: MagicMock, mock_record_event: MagicMock) -> None:
+        event = self.get_event()
+
+        rule = self.get_rule(
+            data={"team": self.integration.id, "channel": "Naboo", "channel_id": "nb"}
+        )
+
+        notification_uuid = "123e4567-e89b-12d3-a456-426614174000"
+        results = list(rule.after(event=event, notification_uuid=notification_uuid))
+        assert len(results) == 1
+
+        responses.add(
+            method=responses.POST,
+            url="https://smba.trafficmanager.net/amer/v3/conversations/nb/activities",
+            status=403,
+            json={
+                "error": {
+                    "code": "ConversationBlockedByUser",
+                    "message": "User blocked the conversation with the bot.",
+                }
+            },
+        )
+
+        results[0].callback(event, futures=[])
+        data = orjson.loads(responses.calls[0].request.body)
+
+        assert "attachments" in data
+        attachments = data["attachments"]
+        assert len(attachments) == 1
+
+        # Wish there was a better way to do this, but we
+        # can't pass the title and title link separately
+        # with MS Teams cards.
+        title_card = attachments[0]["content"]["body"][0]
+        title_pattern = r"\[%s\](.*)" % event.title
+        assert re.match(title_pattern, title_card["text"])
+        assert_last_analytics_event(
+            mock_record,
+            AlertSentEvent(
+                provider="msteams",
+                alert_id="",
+                alert_type="issue_alert",
+                organization_id=self.organization.id,
+                project_id=self.project.id,
+                external_id="nb",
+                notification_uuid=notification_uuid,
+            ),
+        )
+        assert_any_analytics_event(
+            mock_record,
+            MSTeamsIntegrationNotificationSent(
+                category="issue_alert",
+                organization_id=self.organization.id,
+                project_id=self.project.id,
+                group_id=event.group_id,
+                notification_uuid=notification_uuid,
+                alert_id=None,
+            ),
+        )
+
+        assert_slo_metric(mock_record_event, EventLifecycleOutcome.HALTED)
+
+    @responses.activate
+    @patch("sentry.integrations.utils.metrics.EventLifecycle.record_event")
+    @mock.patch(
+        "sentry.services.eventstore.models.GroupEvent.occurrence",
+        return_value=TEST_ISSUE_OCCURRENCE,
+        new_callable=mock.PropertyMock,
+    )
+    def test_applies_correctly_generic_issue(
+        self, occurrence: MagicMock, mock_record_event: MagicMock
+    ) -> None:
+        event = self.store_event(
+            data={"message": "Hello world", "level": "error"}, project_id=self.project.id
+        )
+        group_event = event.for_group(event.groups[0])
+
+        rule = self.get_rule(
+            data={"team": self.integration.id, "channel": "Hellboy", "channel_id": "nb"}
+        )
+        results = list(rule.after(event=group_event))
+        assert len(results) == 1
+
+        responses.add(
+            method=responses.POST,
+            url="https://smba.trafficmanager.net/amer/v3/conversations/nb/activities",
+            status=200,
+            json={},
+        )
+
+        results[0].callback(event, futures=[])
+
+        data = orjson.loads(responses.calls[0].request.body)
+        assert "attachments" in data
+        attachments = data["attachments"]
+        assert len(attachments) == 1
+
+        title_card = attachments[0]["content"]["body"][0]
+        description = attachments[0]["content"]["body"][1]
+
+        assert (
+            title_card["text"]
+            == f"[{TEST_ISSUE_OCCURRENCE.issue_title}](http://testserver/organizations/{self.organization.slug}/issues/{event.group_id}/?referrer=msteams)"
+        )
+        assert description["text"] == TEST_ISSUE_OCCURRENCE.evidence_display[0].value
+
+        assert_slo_metric(mock_record_event, EventLifecycleOutcome.SUCCESS)
+
+    @responses.activate
+    @patch("sentry.integrations.utils.metrics.EventLifecycle.record_event")
+    @mock.patch(
+        "sentry.services.eventstore.models.GroupEvent.occurrence",
+        return_value=TEST_PERF_ISSUE_OCCURRENCE,
+        new_callable=mock.PropertyMock,
+    )
+    def test_applies_correctly_performance_issue(
+        self, occurrence: MagicMock, mock_record_event: MagicMock
+    ) -> None:
+        event = self.create_performance_issue()
+
+        rule = self.get_rule(
+            data={"team": self.integration.id, "channel": "Naboo", "channel_id": "nb"}
+        )
+        results = list(rule.after(event=event))
+        assert len(results) == 1
+
+        responses.add(
+            method=responses.POST,
+            url="https://smba.trafficmanager.net/amer/v3/conversations/nb/activities",
+            status=200,
+            json={},
+        )
+
+        results[0].callback(event, futures=[])
+
+        data = orjson.loads(responses.calls[0].request.body)
+        assert "attachments" in data
+        attachments = data["attachments"]
+        assert len(attachments) == 1
+
+        title_card = attachments[0]["content"]["body"][0]
+        description = attachments[0]["content"]["body"][1]
+        assert (
+            title_card["text"]
+            == f"[N+1 Query](http://testserver/organizations/{self.organization.slug}/issues/{event.group_id}/?referrer=msteams)"
+        )
+        assert (
+            description["text"]
+            == "db - SELECT `books\\_author`.`id`, `books\\_author`.`name` FROM `books\\_author` WHERE `books\\_author`.`id` = %s LIMIT 21"
+        )
+
+        assert_slo_metric(mock_record_event, EventLifecycleOutcome.SUCCESS)
+
+    def test_render_label(self) -> None:
         rule = self.get_rule(data={"team": self.integration.id, "channel": "Tatooine"})
 
         assert rule.render_label() == "Send a notification to the Galactic Empire Team to Tatooine"
 
-    def test_render_label_without_integration(self):
-        self.integration.delete()
+    def test_render_label_without_integration(self) -> None:
+        with assume_test_silo_mode_of(Integration):
+            self.integration.delete()
 
         rule = self.get_rule(data={"team": self.integration.id, "channel": "Coruscant"})
 
         assert rule.render_label() == "Send a notification to the [removed] Team to Coruscant"
 
     @responses.activate
-    def test_valid_channel_selected(self):
+    def test_valid_channel_selected(self) -> None:
         rule = self.get_rule(data={"team": self.integration.id, "channel": "Death Star"})
 
         channels = [{"id": "d_s", "name": "Death Star"}]
@@ -92,7 +356,7 @@ class MsTeamsNotifyActionTest(RuleTestCase):
         self.assert_form_valid(form, "d_s", "Death Star")
 
     @responses.activate
-    def test_valid_member_selected(self):
+    def test_valid_member_selected(self) -> None:
         rule = self.get_rule(data={"team": self.integration.id, "channel": "Darth Vader"})
 
         channels = [{"id": "i_s_d", "name": "Imperial Star Destroyer"}]
@@ -121,7 +385,7 @@ class MsTeamsNotifyActionTest(RuleTestCase):
         self.assert_form_valid(form, "i_am_your_father", "Darth Vader")
 
     @responses.activate
-    def test_invalid_channel_selected(self):
+    def test_invalid_channel_selected(self) -> None:
         rule = self.get_rule(data={"team": self.integration.id, "channel": "Alderaan"})
 
         channels = [{"name": "Hoth", "id": "hh"}]

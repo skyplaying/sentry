@@ -1,159 +1,154 @@
-import * as React from 'react';
+import ErrorBoundary from 'sentry/components/errorBoundary';
+import {EventBreadcrumbsSection} from 'sentry/components/events/eventBreadcrumbsSection';
+import {t} from 'sentry/locale';
+import type {Entry, Event, EventTransaction} from 'sentry/types/event';
+import {EntryType} from 'sentry/types/event';
+import type {Group} from 'sentry/types/group';
+import type {Organization, SharedViewOrganization} from 'sentry/types/organization';
+import type {Project} from 'sentry/types/project';
+import {getConfigForIssueType} from 'sentry/utils/issueTypeConfig';
+import {isJavascriptPlatform} from 'sentry/utils/platform';
+import type {SectionKey} from 'sentry/views/issueDetails/streamline/context';
+import {InterimSection} from 'sentry/views/issueDetails/streamline/interimSection';
 
-import Breadcrumbs from 'app/components/events/interfaces/breadcrumbs';
-import Csp from 'app/components/events/interfaces/csp';
-import DebugMeta from 'app/components/events/interfaces/debugMeta';
-import DebugMetaV2 from 'app/components/events/interfaces/debugMeta-v2';
-import Exception from 'app/components/events/interfaces/exception';
-import Generic from 'app/components/events/interfaces/generic';
-import Message from 'app/components/events/interfaces/message';
-import Request from 'app/components/events/interfaces/request';
-import Spans from 'app/components/events/interfaces/spans';
-import Stacktrace from 'app/components/events/interfaces/stacktrace';
-import Template from 'app/components/events/interfaces/template';
-import Threads from 'app/components/events/interfaces/threads';
-import {Group, Organization, Project, SharedViewOrganization} from 'app/types';
-import {Entry, EntryType, Event, EventTransaction} from 'app/types/event';
+import {Csp} from './interfaces/csp';
+import {DebugMeta} from './interfaces/debugMeta';
+import {Exception} from './interfaces/exception';
+import {Generic} from './interfaces/generic';
+import {Message} from './interfaces/message';
+import {SpanEvidenceSection} from './interfaces/performance/spanEvidence';
+import {Request} from './interfaces/request';
+import {StackTrace} from './interfaces/stackTrace';
+import {Template} from './interfaces/template';
+import {Threads} from './interfaces/threads';
 
-type Props = Pick<React.ComponentProps<typeof Breadcrumbs>, 'route' | 'router'> & {
+type Props = {
   entry: Entry;
-  projectSlug: Project['slug'];
   event: Event;
   organization: SharedViewOrganization | Organization;
+  projectSlug: Project['slug'];
   group?: Group;
+  isShare?: boolean;
+  sectionKey?: SectionKey;
 };
 
-function EventEntry({
+function EventEntryContent({
   entry,
   projectSlug,
   event,
   organization,
   group,
-  route,
-  router,
+  isShare,
 }: Props) {
-  const hasHierarchicalGrouping =
-    !!organization.features?.includes('grouping-stacktrace-ui') &&
-    !!(event.metadata.current_tree_label || event.metadata.finest_tree_label);
-
   const groupingCurrentLevel = group?.metadata?.current_level;
+  const issueTypeConfig = group ? getConfigForIssueType(group, group.project) : null;
 
   switch (entry.type) {
-    case EntryType.EXCEPTION: {
-      const {data, type} = entry;
+    case EntryType.EXCEPTION:
       return (
         <Exception
-          type={type}
           event={event}
-          data={data}
-          projectId={projectSlug}
+          group={group}
+          data={entry.data}
+          projectSlug={projectSlug}
           groupingCurrentLevel={groupingCurrentLevel}
-          hasHierarchicalGrouping={hasHierarchicalGrouping}
         />
       );
-    }
-    case EntryType.MESSAGE: {
-      const {data} = entry;
-      return <Message data={data} />;
-    }
-    case EntryType.REQUEST: {
-      const {data, type} = entry;
-      return <Request type={type} event={event} data={data} />;
-    }
-    case EntryType.STACKTRACE: {
-      const {data, type} = entry;
+
+    case EntryType.MESSAGE:
+      return <Message event={event} data={entry.data} />;
+
+    case EntryType.REQUEST:
+      return <Request event={event} data={entry.data} />;
+
+    case EntryType.STACKTRACE:
       return (
-        <Stacktrace
-          type={type}
+        <StackTrace
           event={event}
-          data={data}
-          projectId={projectSlug}
+          data={entry.data}
+          projectSlug={projectSlug}
           groupingCurrentLevel={groupingCurrentLevel}
-          hasHierarchicalGrouping={hasHierarchicalGrouping}
         />
       );
-    }
-    case EntryType.TEMPLATE: {
-      const {data, type} = entry;
-      return <Template type={type} event={event} data={data} />;
-    }
-    case EntryType.CSP: {
-      const {data} = entry;
-      return <Csp event={event} data={data} />;
-    }
+
+    case EntryType.TEMPLATE:
+      return <Template event={event} data={entry.data} />;
+
+    case EntryType.CSP:
+      return <Csp event={event} data={entry.data} />;
+
     case EntryType.EXPECTCT:
-    case EntryType.EXPECTSTAPLE:
-    case EntryType.HPKP: {
+    case EntryType.EXPECTSTAPLE: {
       const {data, type} = entry;
       return <Generic type={type} data={data} />;
     }
-    case EntryType.BREADCRUMBS: {
-      const {data, type} = entry;
+    case EntryType.HPKP:
       return (
-        <Breadcrumbs
-          type={type}
-          data={data}
-          organization={organization as Organization}
-          event={event}
-          router={router}
-          route={route}
-        />
+        <Generic type={entry.type} data={entry.data} meta={event._meta?.hpkp ?? {}} />
       );
-    }
-    case EntryType.THREADS: {
-      const {data, type} = entry;
+
+    case EntryType.BREADCRUMBS:
+      return <EventBreadcrumbsSection event={event} />;
+
+    case EntryType.THREADS:
       return (
         <Threads
-          type={type}
           event={event}
-          data={data}
-          projectId={projectSlug}
+          group={group}
+          data={entry.data}
+          projectSlug={projectSlug}
           groupingCurrentLevel={groupingCurrentLevel}
-          hasHierarchicalGrouping={hasHierarchicalGrouping}
         />
       );
-    }
-    case EntryType.DEBUGMETA:
-      const {data} = entry;
-      const hasImagesLoadedV2Feature =
-        !!organization.features?.includes('images-loaded-v2');
 
-      if (hasImagesLoadedV2Feature) {
-        return (
-          <DebugMetaV2
-            event={event}
-            projectId={projectSlug}
-            groupId={group?.id}
-            organization={organization as Organization}
-            data={data as React.ComponentProps<typeof DebugMetaV2>['data']}
-          />
-        );
+    case EntryType.DEBUGMETA:
+      if (isShare || isJavascriptPlatform(event.platform)) {
+        return null;
       }
 
       return (
         <DebugMeta
           event={event}
-          projectId={projectSlug}
-          organization={organization as Organization}
-          data={data}
+          projectSlug={projectSlug}
+          groupId={group?.id}
+          data={entry.data}
         />
       );
 
     case EntryType.SPANS:
+      // XXX: We currently do not show spans in the share view.
+      if (isShare || !issueTypeConfig?.spanEvidence.enabled) {
+        return null;
+      }
+
       return (
-        <Spans
+        <SpanEvidenceSection
           event={event as EventTransaction}
           organization={organization as Organization}
+          projectSlug={projectSlug}
         />
       );
+
+    // this should not happen
     default:
-      // this should not happen
-      /* eslint no-console:0 */
-      window.console &&
-        console.error &&
-        console.error('Unregistered interface: ' + (entry as any).type);
+      if (window.console) {
+        // eslint-disable-next-line no-console
+        console.error?.('Unregistered interface: ' + (entry as any).type);
+      }
       return null;
   }
 }
 
-export default EventEntry;
+export function EventEntry(props: Props) {
+  return (
+    <ErrorBoundary
+      customComponent={() => (
+        <InterimSection type={props.entry.type} title={props.entry.type}>
+          <p>{t('There was an error rendering this data.')}</p>
+        </InterimSection>
+      )}
+    >
+      <EventEntryContent {...props} />
+    </ErrorBoundary>
+  );
+}

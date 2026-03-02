@@ -1,16 +1,18 @@
+import type {Theme} from '@emotion/react';
 import styled from '@emotion/styled';
 
-import space from 'app/styles/space';
-import {Theme} from 'app/utils/theme';
+import {space} from 'sentry/styles/space';
 
 export const DataSection = styled('div')`
   display: flex;
   flex-direction: column;
-  padding: ${space(2)} 0;
-  border-top: 1px solid ${p => p.theme.innerBorder};
+  margin: 0;
 
-  @media (min-width: ${p => p.theme.breakpoints[0]}) {
-    padding: ${space(3)} ${space(4)} 0 40px;
+  /* Padding aligns with Layout.Body */
+  padding: ${space(1)} ${space(2)};
+
+  @media (min-width: ${p => p.theme.breakpoints.md}) {
+    padding: ${space(1.5)} ${space(4)};
   }
 `;
 
@@ -21,16 +23,16 @@ type BannerProps = {
 function getColors({priority, theme}: BannerProps & {theme: Theme}) {
   const COLORS = {
     default: {
-      background: theme.backgroundSecondary,
-      border: theme.border,
+      background: theme.tokens.background.secondary,
+      border: theme.tokens.border.primary,
     },
     danger: {
-      background: theme.alert.error.backgroundLight,
-      border: theme.alert.error.border,
+      background: theme.colors.red100,
+      border: theme.colors.red200,
     },
     success: {
-      background: theme.alert.success.backgroundLight,
-      border: theme.alert.success.border,
+      background: theme.colors.green100,
+      border: theme.colors.green200,
     },
   } as const;
 
@@ -38,18 +40,13 @@ function getColors({priority, theme}: BannerProps & {theme: Theme}) {
 }
 
 export const BannerContainer = styled('div')<BannerProps>`
-  font-size: ${p => p.theme.fontSizeMedium};
-
+  font-size: ${p => p.theme.font.size.md};
   background: ${p => getColors(p).background};
   border-top: 1px solid ${p => getColors(p).border};
   border-bottom: 1px solid ${p => getColors(p).border};
 
   /* Muted box & processing errors are in different parts of the DOM */
-  &
-    + ${/* sc-selector */ DataSection}:first-child,
-    &
-    + div
-    > ${/* sc-selector */ DataSection}:first-child {
+  & + ${DataSection}:first-child, & + div > ${DataSection}:first-child {
     border-top: 0;
   }
 `;
@@ -57,8 +54,12 @@ export const BannerContainer = styled('div')<BannerProps>`
 export const BannerSummary = styled('p')`
   display: flex;
   align-items: flex-start;
-  padding: ${space(2)} ${space(4)} ${space(2)} 40px;
   margin-bottom: 0;
+  padding: ${space(2)} ${space(2)};
+
+  @media (min-width: ${p => p.theme.breakpoints.lg}) {
+    padding: ${space(2)} ${space(4)};
+  }
 
   /* Get icons in top right of content box */
   & > .icon,
@@ -78,19 +79,17 @@ export const BannerSummary = styled('p')`
   }
 `;
 
-export const CauseHeader = styled('div')`
+export const SuspectCommitHeader = styled('div')`
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: ${space(3)};
+  margin-bottom: ${space(1)};
 
   & button,
   & h3 {
-    color: ${p => p.theme.gray300};
-    font-size: 14px;
-    font-weight: 600;
-    line-height: 1.2;
-    text-transform: uppercase;
+    color: ${p => p.theme.tokens.content.secondary};
+    font-size: ${p => p.theme.font.size.md};
+    font-weight: ${p => p.theme.font.weight.sans.medium};
   }
 
   & h3 {

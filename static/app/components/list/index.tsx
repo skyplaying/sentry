@@ -1,15 +1,19 @@
-import * as React from 'react';
+import {Children, cloneElement, isValidElement} from 'react';
 import styled from '@emotion/styled';
 
-import space from 'app/styles/space';
+import {space} from 'sentry/styles/space';
 
+import type {ListItemProps} from './listItem';
 import {getListSymbolStyle, listSymbol} from './utils';
 
+type ListItemChild = React.ReactElement<ListItemProps> | undefined | false;
+
 type Props = {
-  children: React.ReactNode;
-  symbol?: keyof typeof listSymbol | React.ReactElement;
+  children: ListItemChild | ListItemChild[];
   className?: string;
+  'data-test-id'?: string;
   initialCounterValue?: number;
+  symbol?: keyof typeof listSymbol | React.ReactElement;
 };
 
 const List = styled(
@@ -36,14 +40,9 @@ const List = styled(
       <Wrapper className={className} {...props}>
         {!symbol || typeof symbol === 'string'
           ? children
-          : React.Children.map(children, child => {
-              if (!React.isValidElement(child)) {
-                return child;
-              }
-              return React.cloneElement(child as React.ReactElement, {
-                symbol,
-              });
-            })}
+          : Children.map(children, child =>
+              isValidElement(child) ? cloneElement(child, {symbol}) : child
+            )}
       </Wrapper>
     );
   }
@@ -52,7 +51,8 @@ const List = styled(
   padding: 0;
   list-style: none;
   display: grid;
-  grid-gap: ${space(0.5)};
+  grid-template-columns: minmax(0, 1fr);
+  gap: ${space(0.5)};
   ${p =>
     typeof p.symbol === 'string' &&
     listSymbol[p.symbol] &&

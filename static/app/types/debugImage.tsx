@@ -18,10 +18,10 @@ export enum SymbolType {
 }
 
 export enum ImageFeature {
-  has_sources = 'has_sources',
-  has_debug_info = 'has_debug_info',
-  has_unwind_info = 'has_unwind_info',
-  has_symbols = 'has_symbols',
+  HAS_SOURCES = 'has_sources',
+  HAS_DEBUG_INFO = 'has_debug_info',
+  HAS_UNWIND_INFO = 'has_unwind_info',
+  HAS_SYMBOLS = 'has_symbols',
 }
 
 type CandidateProcessingInfoOkStatus = {
@@ -49,23 +49,23 @@ export enum CandidateDownloadStatus {
 }
 
 type ImageFeatures = {
-  [ImageFeature.has_sources]: boolean;
-  [ImageFeature.has_debug_info]: boolean;
-  [ImageFeature.has_unwind_info]: boolean;
-  [ImageFeature.has_symbols]: boolean;
+  [ImageFeature.HAS_SOURCES]: boolean;
+  [ImageFeature.HAS_DEBUG_INFO]: boolean;
+  [ImageFeature.HAS_UNWIND_INFO]: boolean;
+  [ImageFeature.HAS_SYMBOLS]: boolean;
 };
 
 type CandidateFeatures = ImageFeatures;
 
 type CandidateDownloadOkStatus = {
-  status: CandidateDownloadStatus.OK;
   features: CandidateFeatures;
+  status: CandidateDownloadStatus.OK;
   details?: string;
 };
 
 type CandidateDownloadDeletedStatus = {
-  status: CandidateDownloadStatus.DELETED;
   features: CandidateFeatures;
+  status: CandidateDownloadStatus.DELETED;
   details?: string;
 };
 
@@ -75,8 +75,8 @@ type CandidateDownloadNotFoundStatus = {
 };
 
 type CandidateDownloadUnAppliedStatus = {
-  status: CandidateDownloadStatus.UNAPPLIED;
   features: CandidateFeatures;
+  status: CandidateDownloadStatus.UNAPPLIED;
 };
 
 type CandidateDownloadOtherStatus = {
@@ -94,51 +94,47 @@ export type CandidateDownload =
   | CandidateDownloadUnAppliedStatus
   | CandidateDownloadOtherStatus;
 
-type ImageCandidateBase = {
+interface ImageCandidateBase {
   source: string;
+  location?: string;
   source_name?: string;
+}
+
+type InternalSource = {
+  dateCreated: string;
+  filename: string;
+  prettyFileType: string;
+  size: number;
+  symbolType: SymbolType;
   location?: string;
 };
 
-type InternalSource = {
-  symbolType: SymbolType;
-  fileType: string | null;
-  cpuName: string;
-  size: number;
-  dateCreated: string;
-  location: string;
-  filename: string;
-};
-
-export type ImageCandidateOk = ImageCandidateBase & {
+export interface ImageCandidateOk extends ImageCandidateBase {
   download: CandidateDownloadOkStatus;
-  unwind?: CandidateProcessingInfo;
   debug?: CandidateProcessingInfo;
-};
+  unwind?: CandidateProcessingInfo;
+}
 
-export type ImageCandidateInternalOk = ImageCandidateBase &
-  InternalSource & {
-    download: CandidateDownloadOkStatus;
-    unwind?: CandidateProcessingInfo;
-    debug?: CandidateProcessingInfo;
-  };
+export interface ImageCandidateInternalOk extends ImageCandidateBase, InternalSource {
+  download: CandidateDownloadOkStatus;
+  debug?: CandidateProcessingInfo;
+  unwind?: CandidateProcessingInfo;
+}
 
-export type ImageCandidateUnApplied = ImageCandidateBase &
-  InternalSource & {
-    download: CandidateDownloadUnAppliedStatus;
-    source: string;
-    source_name?: string;
-  };
+export interface ImageCandidateUnApplied extends ImageCandidateBase, InternalSource {
+  download: CandidateDownloadUnAppliedStatus;
+  source: string;
+  source_name?: string;
+}
 
-type ImageCandidateOthers = ImageCandidateBase & {
+interface ImageCandidateOthers extends ImageCandidateBase {
   download:
     | CandidateDownloadNotFoundStatus
     | CandidateDownloadDeletedStatus
     | CandidateDownloadOtherStatus;
   source: string;
   source_name?: string;
-  location?: string;
-};
+}
 
 export type ImageCandidate =
   | ImageCandidateOk
@@ -152,23 +148,32 @@ export enum ImageStatus {
   UNUSED = 'unused',
   MISSING = 'missing',
   MALFORMED = 'malformed',
+  UNSUPPORTED = 'unsupported',
   FETCHING_FAILED = 'fetching_failed',
   TIMEOUT = 'timeout',
   OTHER = 'other',
 }
 
 export type Image = {
-  type: string;
   features: ImageFeatures;
-  candidates: Array<ImageCandidate>;
-  image_size?: number;
-  debug_file?: string;
+  type: string;
+  arch?: string;
+  candidates?: ImageCandidate[];
   code_file?: string | null;
   code_id?: string;
+  debug_file?: string;
   debug_id?: string;
   debug_status?: ImageStatus | null;
-  unwind_status?: ImageStatus | null;
-  arch?: string;
   image_addr?: string;
+  image_size?: number;
+  image_vmaddr?: string;
+  unwind_status?: ImageStatus | null;
   uuid?: string;
 };
+
+export interface ImageWithCombinedStatus extends Image {
+  /**
+   * This is not returned from any API but is derived from debug and unwind status
+   */
+  status: ImageStatus;
+}

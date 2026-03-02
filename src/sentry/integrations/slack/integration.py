@@ -1,27 +1,40 @@
+from __future__ import annotations
+
+import logging
 from collections import namedtuple
-from typing import Any, Mapping, Optional, Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
-from django.utils.translation import ugettext_lazy as _
-from django.views import View
+from django.utils.translation import gettext_lazy as _
+from slack_sdk import WebClient
+from slack_sdk.errors import SlackApiError
 
-from sentry.identity.pipeline import IdentityProviderPipeline
-from sentry.integrations import (
+from sentry.identity.pipeline import IdentityPipeline
+from sentry.integrations.base import (
     FeatureDescription,
+    IntegrationData,
     IntegrationFeatures,
     IntegrationInstallation,
     IntegrationMetadata,
     IntegrationProvider,
 )
-from sentry.integrations.slack import tasks
-from sentry.models import Integration, NotificationSetting, Organization, User
-from sentry.pipeline import NestedPipelineView
-from sentry.shared_integrations.exceptions import ApiError, IntegrationError
-from sentry.types.integrations import ExternalProviders
+from sentry.integrations.mixins import NotifyBasicMixin
+from sentry.integrations.models.integration import Integration
+from sentry.integrations.pipeline import IntegrationPipeline
+from sentry.integrations.slack.metrics import translate_slack_api_error
+from sentry.integrations.slack.sdk_client import SlackSdkClient
+from sentry.integrations.slack.tasks.link_slack_user_identities import link_slack_user_identities
+from sentry.integrations.types import IntegrationProviderSlug
+from sentry.notifications.platform.provider import IntegrationNotificationClient
+from sentry.notifications.platform.slack.provider import SlackRenderable
+from sentry.notifications.platform.target import IntegrationNotificationTarget
+from sentry.organizations.services.organization.model import RpcOrganization
+from sentry.pipeline.views.base import PipelineView
+from sentry.pipeline.views.nested import NestedPipelineView
+from sentry.shared_integrations.exceptions import IntegrationError
 from sentry.utils.http import absolute_uri
-from sentry.utils.json import JSONData
 
-from .client import SlackClient
-from .utils import get_integration_type, logger
+_logger = logging.getLogger("sentry.integrations.slack")
 
 Channel = namedtuple("Channel", ["name", "id"])
 
@@ -65,27 +78,99 @@ metadata = IntegrationMetadata(
 )
 
 
-class SlackIntegration(IntegrationInstallation):  # type: ignore
+class SlackIntegration(NotifyBasicMixin, IntegrationInstallation, IntegrationNotificationClient):
+    def get_client(self) -> SlackSdkClient:
+        return SlackSdkClient(integration_id=self.model.id)
+
     def get_config_data(self) -> Mapping[str, str]:
-        return {"installationType": get_integration_type(self.model)}
-
-    def uninstall(self) -> None:
-        """
-        Delete all parent-specific notification settings. For each user and team,
-        if this is their ONLY Slack integration, set their parent-independent
-        Slack notification setting to NEVER.
-        """
-        provider = ExternalProviders.SLACK
-        organization = Organization.objects.get(id=self.organization_id)
-        users = User.objects.get_users_with_only_one_integration_for_provider(
-            provider, organization
+        metadata_ = self.model.metadata
+        # Classic bots had a user_access_token in the metadata.
+        default_installation = (
+            "classic_bot" if "user_access_token" in metadata_ else "workspace_app"
         )
-        NotificationSetting.objects.remove_parent_settings_for_organization(organization, provider)
-        NotificationSetting.objects.disable_settings_for_users(provider, users)
+        return {"installationType": metadata_.get("installation_type", default_installation)}
+
+    def _get_debug_metadata_keys(self) -> list[str]:
+        return ["domain_name", "installation_type"]
+
+    def send_message(self, channel_id: str, message: str) -> None:
+        client = self.get_client()
+
+        try:
+            client.chat_postMessage(channel=channel_id, text=message)
+        except SlackApiError:
+            pass
+
+    def send_notification(
+        self, target: IntegrationNotificationTarget, payload: SlackRenderable
+    ) -> None:
+        client = self.get_client()
+        try:
+            client.chat_postMessage(
+                channel=target.resource_id, blocks=payload["blocks"], text=payload["text"]
+            )
+        except SlackApiError as e:
+            translate_slack_api_error(e)
+
+    def send_threaded_message(
+        self,
+        *,
+        channel_id: str,
+        renderable: SlackRenderable,
+        thread_ts: str,
+    ) -> None:
+        client = self.get_client()
+        try:
+            client.chat_postMessage(
+                channel=channel_id,
+                blocks=renderable["blocks"],
+                text=renderable["text"],
+                thread_ts=thread_ts,
+            )
+        except SlackApiError as e:
+            translate_slack_api_error(e)
+
+    def send_threaded_ephemeral_message(
+        self,
+        *,
+        slack_user_id: str,
+        channel_id: str,
+        renderable: SlackRenderable,
+        thread_ts: str,
+    ) -> None:
+        client = self.get_client()
+        try:
+            client.chat_postEphemeral(
+                channel=channel_id,
+                blocks=renderable["blocks"],
+                text=renderable["text"],
+                thread_ts=thread_ts,
+                user=slack_user_id,
+            )
+        except SlackApiError as e:
+            translate_slack_api_error(e)
+
+    def update_message(
+        self,
+        *,
+        channel_id: str,
+        message_ts: str,
+        renderable: SlackRenderable,
+    ) -> None:
+        client = self.get_client()
+        try:
+            client.chat_update(
+                channel=channel_id,
+                ts=message_ts,
+                text=renderable["text"],
+                blocks=renderable["blocks"],
+            )
+        except SlackApiError as e:
+            translate_slack_api_error(e)
 
 
-class SlackIntegrationProvider(IntegrationProvider):  # type: ignore
-    key = "slack"
+class SlackIntegrationProvider(IntegrationProvider):
+    key = IntegrationProviderSlug.SLACK.value
     name = "Slack"
     metadata = metadata
     features = frozenset([IntegrationFeatures.CHAT_UNFURL, IntegrationFeatures.ALERT_RULE])
@@ -118,35 +203,35 @@ class SlackIntegrationProvider(IntegrationProvider):  # type: ignore
 
     setup_dialog_config = {"width": 600, "height": 900}
 
-    def get_pipeline_views(self) -> Sequence[View]:
-        identity_pipeline_config = {
-            "oauth_scopes": self.identity_oauth_scopes,
-            "user_scopes": self.user_scopes,
-            "redirect_url": absolute_uri("/extensions/slack/setup/"),
-        }
-
-        identity_pipeline_view = NestedPipelineView(
+    def _identity_pipeline_view(self) -> PipelineView[IntegrationPipeline]:
+        return NestedPipelineView(
             bind_key="identity",
-            provider_key="slack",
-            pipeline_cls=IdentityProviderPipeline,
-            config=identity_pipeline_config,
+            provider_key=IntegrationProviderSlug.SLACK.value,
+            pipeline_cls=IdentityPipeline,
+            config={
+                "oauth_scopes": self.identity_oauth_scopes,
+                "user_scopes": self.user_scopes,
+                "redirect_url": absolute_uri("/extensions/slack/setup/"),
+            },
         )
 
-        return [identity_pipeline_view]
+    def get_pipeline_views(self) -> Sequence[PipelineView[IntegrationPipeline]]:
+        return [self._identity_pipeline_view()]
 
-    def get_team_info(self, access_token: str) -> JSONData:
-        headers = {"Authorization": f"Bearer {access_token}"}
+    def _get_team_info(self, access_token: str) -> Any:
+        # Manually add authorization since this method is part of slack installation
 
-        client = SlackClient()
+        # first try with new SDK client (not attached to integration)
         try:
-            resp = client.get("/team.info", headers=headers)
-        except ApiError as e:
-            logger.error("slack.team-info.response-error", extra={"error": str(e)})
+            client = WebClient(token=access_token)
+            sdk_response = client.team_info()
+
+            return sdk_response.get("team")
+        except SlackApiError:
+            _logger.warning("slack.install.team-info.error")
             raise IntegrationError("Could not retrieve Slack team information.")
 
-        return resp["team"]
-
-    def build_integration(self, state: Mapping[str, Any]) -> Mapping[str, Any]:
+    def build_integration(self, state: Mapping[str, Any]) -> IntegrationData:
         data = state["identity"]["data"]
         assert data["ok"]
 
@@ -158,7 +243,7 @@ class SlackIntegrationProvider(IntegrationProvider):  # type: ignore
         team_id = data["team"]["id"]
 
         scopes = sorted(self.identity_oauth_scopes)
-        team_data = self.get_team_info(access_token)
+        team_data = self._get_team_info(access_token)
 
         metadata = {
             "access_token": access_token,
@@ -168,25 +253,30 @@ class SlackIntegrationProvider(IntegrationProvider):  # type: ignore
             "installation_type": "born_as_bot",
         }
 
-        integration = {
+        return {
             "name": team_name,
             "external_id": team_id,
             "metadata": metadata,
             "user_identity": {
-                "type": "slack",
+                "type": IntegrationProviderSlug.SLACK.value,
                 "external_id": user_id_slack,
                 "scopes": [],
                 "data": {},
             },
         }
 
-        return integration
-
     def post_install(
-        self, integration: Integration, organization: Organization, extra: Optional[Any] = None
+        self,
+        integration: Integration,
+        organization: RpcOrganization,
+        *,
+        extra: dict[str, Any],
     ) -> None:
         """
         Create Identity records for an organization's users if their emails match in Sentry and Slack
         """
-        run_args = {"integration": integration, "organization": organization}
-        tasks.link_slack_user_identities.apply_async(kwargs=run_args)
+        run_args = {
+            "integration_id": integration.id,
+            "organization_id": organization.id,
+        }
+        link_slack_user_identities.apply_async(kwargs=run_args)

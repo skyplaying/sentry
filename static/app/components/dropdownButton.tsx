@@ -1,90 +1,97 @@
-import * as React from 'react';
+import {css} from '@emotion/react';
 import styled from '@emotion/styled';
+import type {DistributedOmit} from 'type-fest';
 
-import Button from 'app/components/button';
-import {IconChevron} from 'app/icons';
-import space from 'app/styles/space';
+import type {ButtonProps} from '@sentry/scraps/button';
+import {Button} from '@sentry/scraps/button';
 
-type Props = Omit<React.ComponentProps<typeof Button>, 'type' | 'priority'> & {
-  /**
-   * The fixed prefix text to show in the button eg: 'Sort By'
-   */
-  prefix?: React.ReactNode;
+import {IconChevron} from 'sentry/icons';
+import {space} from 'sentry/styles/space';
+
+export type DropdownButtonProps = DistributedOmit<
+  ButtonProps,
+  'type' | 'prefix' | 'onClick'
+> & {
   /**
    * Whether or not the button should render as open
    */
   isOpen?: boolean;
   /**
+   * The fixed prefix text to show in the button eg: 'Sort By'
+   */
+  prefix?: React.ReactNode;
+  /**
    * Should a chevron icon be shown?
    */
   showChevron?: boolean;
-  /**
-   * Should the bottom border become transparent when open?
-   */
-  hideBottomBorder?: boolean;
-  /**
-   * Button color
-   */
-  priority?: 'default' | 'primary' | 'form';
-  /**
-   * Forward a ref to the button's root
-   */
-  forwardedRef?: React.Ref<typeof Button>;
 };
 
-const DropdownButton = ({
+function DropdownButton({
   children,
-  forwardedRef,
   prefix,
+  size,
   isOpen = false,
-  showChevron = false,
-  hideBottomBorder = true,
+  showChevron = true,
   disabled = false,
-  priority = 'form',
+  ref,
   ...props
-}: Props) => {
+}: DropdownButtonProps) {
   return (
     <StyledButton
-      {...props}
-      type="button"
+      aria-haspopup="true"
+      aria-expanded={isOpen}
+      hasPrefix={!!prefix}
       disabled={disabled}
-      priority={priority}
       isOpen={isOpen}
-      hideBottomBorder={hideBottomBorder}
-      ref={forwardedRef}
+      size={size}
+      ref={ref}
+      {...props}
     >
       {prefix && <LabelText>{prefix}</LabelText>}
       {children}
-      {showChevron && <StyledChevron size="10px" direction={isOpen ? 'up' : 'down'} />}
+      {showChevron && (
+        <ChevronWrap>
+          <IconChevron
+            variant={
+              !props.priority || props.priority === 'default' ? 'muted' : undefined
+            }
+            direction={isOpen ? 'up' : 'down'}
+            size={size === 'zero' || size === 'xs' ? 'xs' : 'sm'}
+          />
+        </ChevronWrap>
+      )}
     </StyledButton>
   );
-};
+}
 
-DropdownButton.defaultProps = {
-  showChevron: true,
-};
-
-const StyledChevron = styled(IconChevron)`
-  margin-left: 0.33em;
+const ChevronWrap = styled('div')`
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+  padding-left: ${space(0.5)};
+  flex-shrink: 0;
 `;
 
-const StyledButton = styled(Button)<
-  Required<Pick<Props, 'isOpen' | 'disabled' | 'hideBottomBorder' | 'priority'>>
->`
-  border-bottom-right-radius: ${p => (p.isOpen ? 0 : p.theme.borderRadius)};
-  border-bottom-left-radius: ${p => (p.isOpen ? 0 : p.theme.borderRadius)};
+interface StyledButtonProps extends Required<
+  Pick<DropdownButtonProps, 'isOpen' | 'disabled'>
+> {
+  hasPrefix?: boolean;
+}
+
+const StyledButton = styled(Button)<StyledButtonProps>`
   position: relative;
-  z-index: 2;
-  box-shadow: ${p => (p.isOpen || p.disabled ? 'none' : p.theme.dropShadowLight)};
-  &,
-  &:active,
-  &:focus,
-  &:hover {
-    border-bottom-color: ${p =>
-      p.isOpen && p.hideBottomBorder
-        ? 'transparent'
-        : p.theme.button[p.priority].borderActive};
-  }
+  max-width: 100%;
+
+  ${p =>
+    (p.isOpen || p.disabled) &&
+    css`
+      box-shadow: none;
+    `}
+  ${p =>
+    p.hasPrefix &&
+    css`
+      font-weight: ${p.theme.font.weight.sans.regular};
+    `}
 `;
 
 const LabelText = styled('span')`
@@ -92,10 +99,8 @@ const LabelText = styled('span')`
     content: ':';
   }
 
-  font-weight: 400;
+  font-weight: ${p => p.theme.font.weight.sans.medium};
   padding-right: ${space(0.75)};
 `;
 
-export default React.forwardRef<typeof Button, Props>((props, ref) => (
-  <DropdownButton forwardedRef={ref} {...props} />
-));
+export default DropdownButton;

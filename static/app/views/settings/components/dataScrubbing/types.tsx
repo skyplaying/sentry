@@ -1,4 +1,4 @@
-import {Project} from 'app/types';
+import type {useTraceItemAttributeKeys} from 'sentry/views/explore/hooks/useTraceItemAttributeKeys';
 
 export enum RuleType {
   PATTERN = 'pattern',
@@ -43,7 +43,12 @@ export type SourceSuggestion = {
   type: SourceSuggestionType;
   value: string;
   description?: string;
-  examples?: Array<string>;
+  examples?: string[];
+};
+
+export type AttributeSuggestion = {
+  label: string;
+  value: string; // Hidden from the user.
 };
 
 type RuleBase = {
@@ -52,6 +57,7 @@ type RuleBase = {
 };
 
 export type RuleDefault = RuleBase & {
+  method: MethodType.MASK | MethodType.REMOVE | MethodType.HASH;
   type:
     | RuleType.CREDITCARD
     | RuleType.PASSWORD
@@ -65,56 +71,75 @@ export type RuleDefault = RuleBase & {
     | RuleType.USER_PATH
     | RuleType.MAC
     | RuleType.ANYTHING;
-  method: MethodType.MASK | MethodType.REMOVE | MethodType.HASH;
 };
 
-export type RulePattern = RuleBase & {
-  type: RuleType.PATTERN;
+type RulePattern = RuleBase & {
   pattern: string;
+  replaceCaptured: boolean;
+  type: RuleType.PATTERN;
 } & Pick<RuleDefault, 'method'>;
 
-export type RuleReplace = RuleBase & {
+type RuleReplace = RuleBase & {
   method: MethodType.REPLACE;
   placeholder?: string;
 } & Pick<RuleDefault, 'type'>;
 
 export type KeysOfUnion<T> = T extends any ? keyof T : never;
 
-export type RuleReplaceAndPattern = Omit<RulePattern, 'method'> &
-  Omit<RuleReplace, 'type'>;
+type RuleReplaceAndPattern = Omit<RulePattern, 'method'> & Omit<RuleReplace, 'type'>;
 
 export type Rule = RuleDefault | RuleReplace | RulePattern | RuleReplaceAndPattern;
 
 export type EventId = {
-  value: string;
   status: EventIdStatus;
+  value: string;
 };
 
+export type EditableRule = Omit<
+  {
+    [K in KeysOfUnion<Rule>]: K extends 'replaceCaptured' ? boolean : string;
+  },
+  'id'
+>;
+
+export type AttributeResults = Record<
+  AllowedDataScrubbingDatasets,
+  ReturnType<typeof useTraceItemAttributeKeys> | null
+>;
+
 type PiiConfigDefault = {
-  type: RuleDefault['type'];
   redaction: {
     method: RuleDefault['method'];
   };
+  type: RuleDefault['type'];
 };
 
 type PiiConfigReplace = {
-  type: RuleReplace['type'];
   redaction: {
     method: RuleReplace['method'];
     text?: string;
   };
+  type: RuleReplace['type'];
 };
 
 type PiiConfigPattern = {
-  type: RulePattern['type'];
   pattern: string;
   redaction: {
     method: RulePattern['method'];
   };
+  type: RulePattern['type'];
+  replaceGroups?: number[];
 };
 
 type PiiConfigReplaceAndPattern = Omit<PiiConfigPattern, 'redaction'> &
   Pick<PiiConfigReplace, 'redaction'>;
+
+export enum AllowedDataScrubbingDatasets {
+  // This is the default dataset that is used for data scrubbing. When this is selected, the user will be shown the old 'source' field.
+  DEFAULT = 'default',
+  // This is the dataset that is used for data scrubbing. When this is selected, the user will be shown a trace item attribute picker.
+  LOGS = 'logs',
+}
 
 export type PiiConfig =
   | PiiConfigDefault
@@ -122,8 +147,4 @@ export type PiiConfig =
   | PiiConfigReplace
   | PiiConfigReplaceAndPattern;
 
-export type Applications = Record<string, Array<string>>;
-
-export type Errors = Partial<Record<KeysOfUnion<Rule>, string>>;
-
-export type ProjectId = Project['id'] | undefined;
+export type Applications = Record<string, string[]>;

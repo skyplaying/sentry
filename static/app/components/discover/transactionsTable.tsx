@@ -1,98 +1,112 @@
-import * as React from 'react';
+import {Fragment} from 'react';
+import {useTheme} from '@emotion/react';
 import styled from '@emotion/styled';
-import {Location, LocationDescriptor, Query} from 'history';
+import type {Location, LocationDescriptor} from 'history';
 
-import GuideAnchor from 'app/components/assistant/guideAnchor';
-import SortLink from 'app/components/gridEditable/sortLink';
-import Link from 'app/components/links/link';
-import LoadingIndicator from 'app/components/loadingIndicator';
-import PanelTable from 'app/components/panels/panelTable';
-import QuestionTooltip from 'app/components/questionTooltip';
-import {t} from 'app/locale';
-import overflowEllipsis from 'app/styles/overflowEllipsis';
-import space from 'app/styles/space';
-import {Organization} from 'app/types';
-import {TableData, TableDataRow} from 'app/utils/discover/discoverQuery';
-import EventView, {MetaType} from 'app/utils/discover/eventView';
-import {getFieldRenderer} from 'app/utils/discover/fieldRenderers';
-import {Alignments, fieldAlignment, getAggregateAlias} from 'app/utils/discover/fields';
-import {generateEventSlug} from 'app/utils/discover/urls';
-import {getDuration} from 'app/utils/formatters';
-import {BaselineQueryResults} from 'app/utils/performance/baseline/baselineQuery';
-import CellAction, {Actions} from 'app/views/eventsV2/table/cellAction';
-import {TableColumn} from 'app/views/eventsV2/table/types';
-import {GridCell, GridCellNumber} from 'app/views/performance/styles';
-import {TrendsDataEvents} from 'app/views/performance/trends/types';
-import {getTransactionComparisonUrl} from 'app/views/performance/utils';
+import {LinkButton} from '@sentry/scraps/button';
+import {Link} from '@sentry/scraps/link';
+
+import LoadingIndicator from 'sentry/components/loadingIndicator';
+import {PanelTable} from 'sentry/components/panels/panelTable';
+import QuestionTooltip from 'sentry/components/questionTooltip';
+import SortLink from 'sentry/components/tables/gridEditable/sortLink';
+import {IconProfiling} from 'sentry/icons';
+import {t} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {Organization} from 'sentry/types/organization';
+import {trackAnalytics} from 'sentry/utils/analytics';
+import type {TableData, TableDataRow} from 'sentry/utils/discover/discoverQuery';
+import type {MetaType} from 'sentry/utils/discover/eventView';
+import type EventView from 'sentry/utils/discover/eventView';
+import {getFieldRenderer} from 'sentry/utils/discover/fieldRenderers';
+import type {Alignments} from 'sentry/utils/discover/fields';
+import {fieldAlignment, getAggregateAlias} from 'sentry/utils/discover/fields';
+import ViewReplayLink from 'sentry/utils/discover/viewReplayLink';
+import {isEmptyObject} from 'sentry/utils/object/isEmptyObject';
+import {VisuallyCompleteWithData} from 'sentry/utils/performanceForSentry';
+import type {Actions} from 'sentry/views/discover/table/cellAction';
+import CellAction from 'sentry/views/discover/table/cellAction';
+import type {TableColumn} from 'sentry/views/discover/table/types';
+import {GridCell, GridCellNumber} from 'sentry/views/performance/styles';
+import type {TrendsDataEvents} from 'sentry/views/performance/trends/types';
 
 type Props = {
+  columnOrder: Array<TableColumn<string | number>>;
   eventView: EventView;
-  organization: Organization;
-  location: Location;
   isLoading: boolean;
+  location: Location;
+  organization: Organization;
   tableData: TableData | TrendsDataEvents | null;
-  columnOrder: TableColumn<React.ReactText>[];
-  titles?: string[];
-  baselineTransactionName: string | null;
-  baselineData: BaselineQueryResults | null;
-  handleBaselineClick?: (e: React.MouseEvent<Element>) => void;
+  useAggregateAlias: boolean;
   generateLink?: Record<
     string,
     (
       organization: Organization,
       tableRow: TableDataRow,
-      query: Query
+      location: Location
     ) => LocationDescriptor
   >;
   handleCellAction?: (
-    c: TableColumn<React.ReactText>
-  ) => (a: Actions, v: React.ReactText) => void;
+    c: TableColumn<string | number>
+  ) => (a: Actions, v: string | number) => void;
+  referrer?: string;
+  titles?: string[];
 };
 
-class TransactionsTable extends React.PureComponent<Props> {
-  getTitles() {
-    const {eventView, titles} = this.props;
+function TransactionsTable(props: Props) {
+  const {
+    eventView,
+    titles,
+    tableData,
+    columnOrder,
+    organization,
+    location,
+    generateLink,
+    handleCellAction,
+    useAggregateAlias,
+    isLoading,
+    referrer,
+  } = props;
+  const theme = useTheme();
+
+  const getTitles = () => {
     return titles ?? eventView.getFields();
-  }
+  };
 
-  renderHeader() {
-    const {tableData, columnOrder, baselineTransactionName} = this.props;
-
+  const renderHeader = () => {
     const tableMeta = tableData?.meta;
     const generateSortLink = () => undefined;
-    const tableTitles = this.getTitles();
+    const tableTitles = getTitles();
 
     const headers = tableTitles.map((title, index) => {
-      const column = columnOrder[index];
+      const column = columnOrder[index]!;
       const align: Alignments = fieldAlignment(column.name, column.type, tableMeta);
 
       if (column.key === 'span_ops_breakdown.relative') {
         return (
           <HeadCellContainer key={index}>
-            <GuideAnchor target="span_op_relative_breakdowns">
-              <SortLink
-                align={align}
-                title={
-                  title === t('operation duration') ? (
-                    <React.Fragment>
-                      {title}
-                      <StyledIconQuestion
-                        size="xs"
-                        position="top"
-                        title={t(
-                          `Span durations are summed over the course of an entire transaction. Any overlapping spans are only counted once.`
-                        )}
-                      />
-                    </React.Fragment>
-                  ) : (
-                    title
-                  )
-                }
-                direction={undefined}
-                canSort={false}
-                generateSortLink={generateSortLink}
-              />
-            </GuideAnchor>
+            <SortLink
+              align={align}
+              title={
+                title === t('operation duration') ? (
+                  <Fragment>
+                    {title}
+                    <StyledIconQuestion
+                      size="xs"
+                      position="top"
+                      title={t(
+                        `Span durations are summed over the course of an entire transaction. Any overlapping spans are only counted once.`
+                      )}
+                    />
+                  </Fragment>
+                ) : (
+                  title
+                )
+              }
+              direction={undefined}
+              canSort={false}
+              generateSortLink={generateSortLink}
+            />
           </HeadCellContainer>
         );
       }
@@ -110,72 +124,67 @@ class TransactionsTable extends React.PureComponent<Props> {
       );
     });
 
-    if (baselineTransactionName) {
-      headers.push(
-        <HeadCellContainer key="baseline">
-          <SortLink
-            align="right"
-            title={t('Compared to Baseline')}
-            direction={undefined}
-            canSort={false}
-            generateSortLink={generateSortLink}
-          />
-        </HeadCellContainer>
-      );
-    }
-
     return headers;
-  }
+  };
 
-  renderRow(
+  const renderRow = (
     row: TableDataRow,
     rowIndex: number,
-    columnOrder: TableColumn<React.ReactText>[],
+    colOrder: Array<TableColumn<string | number>>,
     tableMeta: MetaType
-  ): React.ReactNode[] {
-    const {
-      eventView,
-      organization,
-      location,
-      generateLink,
-      baselineTransactionName,
-      baselineData,
-      handleBaselineClick,
-      handleCellAction,
-      titles,
-    } = this.props;
+  ): React.ReactNode[] => {
     const fields = eventView.getFields();
 
-    if (titles && titles.length) {
+    if (titles?.length) {
       // Slice to match length of given titles
-      columnOrder = columnOrder.slice(0, titles.length);
+      colOrder = colOrder.slice(0, titles.length);
     }
 
-    const resultsRow = columnOrder.map((column, index) => {
+    const resultsRow = colOrder.map((column, index) => {
       const field = String(column.key);
       // TODO add a better abstraction for this in fieldRenderers.
-      const fieldName = getAggregateAlias(field);
+      const fieldName = useAggregateAlias ? getAggregateAlias(field) : field;
       const fieldType = tableMeta[fieldName];
 
-      const fieldRenderer = getFieldRenderer(field, tableMeta);
-      let rendered = fieldRenderer(row, {organization, location});
+      const fieldRenderer = getFieldRenderer(field, tableMeta, useAggregateAlias);
+      let rendered = fieldRenderer(row, {organization, location, theme});
 
-      const target = generateLink?.[field]?.(organization, row, location.query);
+      const target = generateLink?.[field]?.(organization, row, location);
 
-      if (target) {
+      if (fields[index] === 'profile.id') {
         rendered = (
-          <Link data-test-id={`view-${fields[index]}`} to={target}>
-            {rendered}
-          </Link>
+          <LinkButton
+            data-test-id={`view-${fields[index]}`}
+            disabled={!target || isEmptyObject(target)}
+            to={target || {}}
+            onClick={getProfileAnalyticsHandler(organization, referrer)}
+            size="xs"
+          >
+            <IconProfiling size="xs" />
+          </LinkButton>
         );
+      } else if (target && !isEmptyObject(target)) {
+        if (fields[index] === 'replayId') {
+          rendered = (
+            <ViewReplayLink replayId={row.replayId!} to={target}>
+              {rendered}
+            </ViewReplayLink>
+          );
+        } else {
+          rendered = (
+            <Link data-test-id={`view-${fields[index]}`} to={target}>
+              {rendered}
+            </Link>
+          );
+        }
       }
 
       const isNumeric = ['integer', 'number', 'duration'].includes(fieldType);
       const key = `${rowIndex}:${column.key}:${index}`;
       rendered = isNumeric ? (
-        <GridCellNumber>{rendered}</GridCellNumber>
+        <GridCellNumber data-test-id="grid-cell">{rendered}</GridCellNumber>
       ) : (
-        <GridCell>{rendered}</GridCell>
+        <GridCell data-test-id="grid-cell">{rendered}</GridCell>
       );
 
       if (handleCellAction) {
@@ -193,62 +202,16 @@ class TransactionsTable extends React.PureComponent<Props> {
       return <BodyCellContainer key={key}>{rendered}</BodyCellContainer>;
     });
 
-    if (baselineTransactionName) {
-      if (baselineData) {
-        const currentTransactionDuration: number =
-          Number(row['transaction.duration']) || 0;
-        const duration = baselineData['transaction.duration'];
-
-        const delta = Math.abs(currentTransactionDuration - duration);
-
-        const relativeSpeed =
-          currentTransactionDuration < duration
-            ? t('faster')
-            : currentTransactionDuration > duration
-            ? t('slower')
-            : '';
-
-        const target = getTransactionComparisonUrl({
-          organization,
-          baselineEventSlug: generateEventSlug(baselineData),
-          regressionEventSlug: generateEventSlug(row),
-          transaction: baselineTransactionName,
-          query: location.query,
-        });
-
-        resultsRow.push(
-          <BodyCellContainer
-            data-test-id="baseline-cell"
-            key={`${rowIndex}-baseline`}
-            style={{textAlign: 'right'}}
-          >
-            <GridCell>
-              <Link to={target} onClick={handleBaselineClick}>
-                {`${getDuration(delta / 1000, delta < 1000 ? 0 : 2)} ${relativeSpeed}`}
-              </Link>
-            </GridCell>
-          </BodyCellContainer>
-        );
-      } else {
-        resultsRow.push(
-          <BodyCellContainer data-test-id="baseline-cell" key={`${rowIndex}-baseline`}>
-            {'\u2014'}
-          </BodyCellContainer>
-        );
-      }
-    }
-
     return resultsRow;
-  }
+  };
 
-  renderResults() {
-    const {isLoading, tableData, columnOrder} = this.props;
+  const renderResults = () => {
     let cells: React.ReactNode[] = [];
 
     if (isLoading) {
       return cells;
     }
-    if (!tableData || !tableData.meta || !tableData.data) {
+    if (!tableData?.meta || !tableData.data) {
       return cells;
     }
 
@@ -257,33 +220,53 @@ class TransactionsTable extends React.PureComponent<Props> {
       if (!tableData.meta) {
         return;
       }
-      cells = cells.concat(this.renderRow(row, i, columnOrder, tableData.meta));
+      // @ts-expect-error TS(2345): Argument of type 'TableDataRow | TrendsTransaction... Remove this comment to see the full error message
+      cells = cells.concat(renderRow(row, i, columnOrder, tableData.meta, theme));
     });
     return cells;
-  }
+  };
 
-  render() {
-    const {isLoading, tableData} = this.props;
+  const hasResults = tableData?.meta && tableData.data?.length > 0;
 
-    const hasResults =
-      tableData && tableData.data && tableData.meta && tableData.data.length > 0;
+  // Custom set the height so we don't have layout shift when results are loaded.
+  const loader = <LoadingIndicator style={{margin: '70px auto'}} />;
 
-    // Custom set the height so we don't have layout shift when results are loaded.
-    const loader = <LoadingIndicator style={{margin: '70px auto'}} />;
-
-    return (
+  return (
+    <VisuallyCompleteWithData
+      id="TransactionsTable"
+      hasData={hasResults}
+      isLoading={isLoading}
+    >
       <PanelTable
+        data-test-id="transactions-table"
         isEmpty={!hasResults}
-        emptyMessage={t('No transactions found')}
-        headers={this.renderHeader()}
+        emptyMessage={
+          eventView.query
+            ? t('No transactions found for this filter.')
+            : t('No transactions found.')
+        }
+        headers={renderHeader()}
         isLoading={isLoading}
         disablePadding
         loader={loader}
       >
-        {this.renderResults()}
+        {renderResults()}
       </PanelTable>
-    );
-  }
+    </VisuallyCompleteWithData>
+  );
+}
+
+function getProfileAnalyticsHandler(organization: Organization, referrer?: string) {
+  return () => {
+    const source =
+      referrer === 'performance.transactions_summary'
+        ? ('performance.transactions_summary.overview' as const)
+        : ('discover.transactions_table' as const);
+    trackAnalytics('profiling_views.go_to_flamegraph', {
+      organization,
+      source,
+    });
+  };
 }
 
 const HeadCellContainer = styled('div')`
@@ -292,7 +275,11 @@ const HeadCellContainer = styled('div')`
 
 const BodyCellContainer = styled('div')`
   padding: ${space(1)} ${space(2)};
-  ${overflowEllipsis};
+  display: block;
+  width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 `;
 
 const StyledIconQuestion = styled(QuestionTooltip)`

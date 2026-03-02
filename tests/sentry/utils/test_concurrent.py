@@ -1,13 +1,13 @@
 import _thread
-import sys
 from concurrent.futures import CancelledError, Future
 from contextlib import contextmanager
 from queue import Full
 from threading import Event
+from unittest import mock
 
 import pytest
 
-from sentry.utils.compat import mock
+from sentry.testutils.thread_leaks.pytest import thread_leak_allowlist
 from sentry.utils.concurrent import (
     FutureSet,
     SynchronousExecutor,
@@ -17,14 +17,14 @@ from sentry.utils.concurrent import (
 )
 
 
-def test_execute():
+def test_execute() -> None:
     assert execute(_thread.get_ident).result() != _thread.get_ident()
 
     with pytest.raises(Exception):
         assert execute(mock.Mock(side_effect=Exception("Boom!"))).result()
 
 
-def test_future_set_callback_success():
+def test_future_set_callback_success() -> None:
     future_set = FutureSet([Future() for i in range(3)])
 
     callback = mock.Mock()
@@ -44,7 +44,7 @@ def test_future_set_callback_success():
     assert other_callback.call_args == mock.call(future_set)
 
 
-def test_future_set_callback_error():
+def test_future_set_callback_error() -> None:
     future_set = FutureSet([Future() for i in range(3)])
 
     callback = mock.Mock()
@@ -64,7 +64,7 @@ def test_future_set_callback_error():
     assert other_callback.call_args == mock.call(future_set)
 
 
-def test_future_set_callback_empty():
+def test_future_set_callback_empty() -> None:
     future_set = FutureSet([])
 
     callback = mock.Mock()
@@ -74,15 +74,12 @@ def test_future_set_callback_empty():
     assert callback.call_args == mock.call(future_set)
 
 
-def test_future_broken_callback():
+def test_future_broken_callback() -> None:
     future_set = FutureSet([])
 
     callback = mock.Mock(side_effect=Exception("Boom!"))
 
-    try:
-        future_set.add_done_callback(callback)
-    except Exception:
-        assert False, "should not raise"
+    future_set.add_done_callback(callback)  # should not raise
 
     assert callback.call_count == 1
     assert callback.call_args == mock.call(future_set)
@@ -95,22 +92,34 @@ def timestamp(t):
         yield
 
 
-def test_timed_future_success():
-    future = TimedFuture()
+def test_timed_future_success() -> None:
+    future: TimedFuture[object] = TimedFuture()
     assert future.get_timing() == (None, None)
 
-    with timestamp(1.0):
+    expected_result = mock.sentinel.RESULT_VALUE
+    start_time, finish_time = expected_timing = (1.0, 2.0)
+
+    callback_results = []
+    callback = lambda future: callback_results.append((future.result(), future.get_timing()))
+
+    future.add_done_callback(callback)
+
+    with timestamp(start_time):
         future.set_running_or_notify_cancel()
-        assert future.get_timing() == (1.0, None)
+        assert future.get_timing() == (start_time, None)
 
-    with timestamp(2.0):
-        future.set_result(None)
-        assert future.get_timing() == (1.0, 2.0)
+    assert len(callback_results) == 0
+
+    with timestamp(finish_time):
+        future.set_result(expected_result)
+        assert future.get_timing() == expected_timing
+
+    assert len(callback_results) == 1
+    assert callback_results[0] == (expected_result, expected_timing)
 
 
-@pytest.mark.skipif(sys.version_info[:2] < (3, 8), reason="doesn't apply to this python version")
-def test_time_is_not_overwritten_if_fail_to_set_result():
-    future = TimedFuture()
+def test_time_is_not_overwritten_if_fail_to_set_result() -> None:
+    future: TimedFuture[int] = TimedFuture()
 
     with timestamp(1.0):
         future.set_running_or_notify_cancel()
@@ -128,21 +137,33 @@ def test_time_is_not_overwritten_if_fail_to_set_result():
         assert future.get_timing() == (1.0, 1.0)
 
 
-def test_timed_future_error():
-    future = TimedFuture()
+def test_timed_future_error() -> None:
+    future: TimedFuture[None] = TimedFuture()
     assert future.get_timing() == (None, None)
 
-    with timestamp(1.0):
+    start_time, finish_time = expected_timing = (1.0, 2.0)
+
+    callback_timings = []
+    callback = lambda future: callback_timings.append(future.get_timing())
+
+    future.add_done_callback(callback)
+
+    with timestamp(start_time):
         future.set_running_or_notify_cancel()
-        assert future.get_timing() == (1.0, None)
+        assert future.get_timing() == (start_time, None)
 
-    with timestamp(2.0):
+    assert len(callback_timings) == 0
+
+    with timestamp(finish_time):
         future.set_exception(None)
-        assert future.get_timing() == (1.0, 2.0)
+        assert future.get_timing() == expected_timing
+
+    assert len(callback_timings) == 1
+    assert callback_timings[0] == expected_timing
 
 
-def test_timed_future_cancel():
-    future = TimedFuture()
+def test_timed_future_cancel() -> None:
+    future: TimedFuture[None] = TimedFuture()
     assert future.get_timing() == (None, None)
 
     with timestamp(1.0):
@@ -163,24 +184,24 @@ def test_timed_future_cancel():
     assert future.get_timing() == (2.0, 1.0)
 
 
-def test_synchronous_executor():
+def test_synchronous_executor() -> None:
     executor = SynchronousExecutor()
 
     assert executor.submit(lambda: mock.sentinel.RESULT).result() is mock.sentinel.RESULT
 
+    class SentinelException(ValueError):
+        pass
+
     def callable():
-        raise Exception(mock.sentinel.EXCEPTION)
+        raise SentinelException
 
     future = executor.submit(callable)
-    try:
+    with pytest.raises(SentinelException):
         future.result()
-    except Exception as e:
-        assert e.args[0] == mock.sentinel.EXCEPTION
-    else:
-        assert False, "expected future to raise"
 
 
-def test_threaded_same_priority_Tasks():
+@thread_leak_allowlist(reason="sentry threaded executor", issue=97043)
+def test_threaded_same_priority_Tasks() -> None:
     executor = ThreadedExecutor(worker_count=1)
 
     def callable():
@@ -191,7 +212,8 @@ def test_threaded_same_priority_Tasks():
     executor.submit(callable)
 
 
-def test_threaded_executor():
+@thread_leak_allowlist(reason="sentry threaded executor", issue=97043)
+def test_threaded_executor() -> None:
     executor = ThreadedExecutor(worker_count=1, maxsize=3)
 
     def waiter(ready, waiting, result):

@@ -1,35 +1,36 @@
-__all__ = ("Analytics",)
+from __future__ import annotations
 
+import abc
 
-from sentry.analytics.event import Event
+from sentry.analytics.event import Event, EventEnvelope
 from sentry.utils.services import Service
 
 from .event_manager import default_manager
 
+__all__ = ("Analytics",)
 
-class Analytics(Service):
+
+class Analytics(Service, abc.ABC):
     __all__ = ("record", "validate")
 
     event_manager = default_manager
 
-    def record(self, event_or_event_type, instance=None, **kwargs):
+    def record(self, event: Event) -> None:
         """
-        >>> record(Event())
-        >>> record('organization.created', organization)
-        """
-        if isinstance(event_or_event_type, str):
-            event = self.event_manager.get(event_or_event_type).from_instance(instance, **kwargs)
-        elif isinstance(event_or_event_type, Event):
-            event = event_or_event_type.from_instance(instance, **kwargs)
-        else:
-            return
-        self.record_event(event)
+        Record an event. Must be an instance of a subclass of `Event`.
 
-    def record_event(self, event):
+        >>> analytics.record(
+        ...     MyEvent(
+        ...         some_id=123,
+        ...         some_prop="abc"
+        ...     )
+        ... )
         """
-        >>> record_event(Event())
-        """
+        self.record_event_envelope(EventEnvelope(event=event))
 
-    def setup(self):
+    def record_event_envelope(self, envelope: EventEnvelope) -> None:
+        pass
+
+    def setup(self) -> None:
         # Load default event types
         import sentry.analytics.events  # NOQA

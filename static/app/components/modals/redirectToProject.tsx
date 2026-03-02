@@ -1,12 +1,16 @@
 import {Component, Fragment} from 'react';
-import {withRouter, WithRouterProps} from 'react-router';
-import styled from '@emotion/styled';
 
-import {ModalRenderProps} from 'app/actionCreators/modal';
-import Button from 'app/components/button';
-import Text from 'app/components/text';
-import {t, tct} from 'app/locale';
-import recreateRoute from 'app/utils/recreateRoute';
+import {LinkButton} from '@sentry/scraps/button';
+import {Flex} from '@sentry/scraps/layout';
+import {Text} from '@sentry/scraps/text';
+
+import type {ModalRenderProps} from 'sentry/actionCreators/modal';
+import {t, tct} from 'sentry/locale';
+import type {WithRouterProps} from 'sentry/types/legacyReactRouter';
+import recreateRoute from 'sentry/utils/recreateRoute';
+import {testableWindowLocation} from 'sentry/utils/testableWindowLocation';
+// eslint-disable-next-line no-restricted-imports
+import withSentryRouter from 'sentry/utils/withSentryRouter';
 
 type Props = ModalRenderProps &
   WithRouterProps & {
@@ -23,9 +27,9 @@ class RedirectToProjectModal extends Component<Props, State> {
   };
 
   componentDidMount() {
-    setInterval(() => {
+    this.redirectInterval = window.setInterval(() => {
       if (this.state.timer <= 1) {
-        window.location.assign(this.newPath);
+        testableWindowLocation.assign(this.newPath);
         return;
       }
 
@@ -34,6 +38,14 @@ class RedirectToProjectModal extends Component<Props, State> {
       }));
     }, 1000);
   }
+
+  componentWillUnmount() {
+    if (this.redirectInterval) {
+      window.clearInterval(this.redirectInterval);
+    }
+  }
+
+  redirectInterval: number | null = null;
 
   get newPath() {
     const {params, slug} = this.props;
@@ -54,11 +66,10 @@ class RedirectToProjectModal extends Component<Props, State> {
         <Header>{t('Redirecting to New Project...')}</Header>
 
         <Body>
-          <div>
-            <Text>
-              <p>{t('The project slug has been changed.')}</p>
-
-              <p>
+          <Flex direction="column" gap="lg">
+            <Flex direction="column" gap="sm">
+              <Text>{t('The project slug has been changed.')}</Text>
+              <Text variant="muted">
                 {tct(
                   'You will be redirected to the new project [project] in [timer] seconds...',
                   {
@@ -66,24 +77,19 @@ class RedirectToProjectModal extends Component<Props, State> {
                     timer: `${this.state.timer}`,
                   }
                 )}
-              </p>
-              <ButtonWrapper>
-                <Button priority="primary" href={this.newPath}>
-                  {t('Continue to %s', slug)}
-                </Button>
-              </ButtonWrapper>
-            </Text>
-          </div>
+              </Text>
+            </Flex>
+            <Flex justify="end">
+              <LinkButton priority="primary" href={this.newPath}>
+                {t('Continue to %s', slug)}
+              </LinkButton>
+            </Flex>
+          </Flex>
         </Body>
       </Fragment>
     );
   }
 }
 
-export default withRouter(RedirectToProjectModal);
+export default withSentryRouter(RedirectToProjectModal);
 export {RedirectToProjectModal};
-
-const ButtonWrapper = styled('div')`
-  display: flex;
-  justify-content: flex-end;
-`;

@@ -1,13 +1,17 @@
-import {browserHistory, withRouter, WithRouterProps} from 'react-router';
+import {useCallback} from 'react';
 import styled from '@emotion/styled';
-import {Query} from 'history';
+import type {Query} from 'history';
 
-import Button from 'app/components/button';
-import ButtonBar from 'app/components/buttonBar';
-import {IconChevron} from 'app/icons';
-import {t} from 'app/locale';
-import space from 'app/styles/space';
-import parseLinkHeader from 'app/utils/parseLinkHeader';
+import {Button, ButtonBar} from '@sentry/scraps/button';
+import {Flex} from '@sentry/scraps/layout';
+
+import {IconChevron} from 'sentry/icons';
+import {t} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import {defined} from 'sentry/utils';
+import parseLinkHeader from 'sentry/utils/parseLinkHeader';
+import {useLocation} from 'sentry/utils/useLocation';
+import {useNavigate} from 'sentry/utils/useNavigate';
 
 /**
  * @param cursor The string cursor value
@@ -23,33 +27,35 @@ export type CursorHandler = (
   delta: number
 ) => void;
 
-type Props = WithRouterProps & {
-  pageLinks?: string | null;
-  to?: string;
-  caption?: React.ReactElement;
-  size?: 'zero' | 'xsmall' | 'small';
-  onCursor?: CursorHandler;
-  disabled?: boolean;
+type Props = {
+  caption?: React.ReactNode;
   className?: string;
+  disabled?: boolean;
+  onCursor?: CursorHandler;
+  pageLinks?: string | null;
+  paginationAnalyticsEvent?: (direction: string) => void;
+  size?: 'zero' | 'xs' | 'sm' | 'md';
+  to?: string;
 };
 
-const defaultOnCursor: CursorHandler = (cursor, path, query, _direction) =>
-  browserHistory.push({
-    pathname: path,
-    query: {...query, cursor},
-  });
-
-const Pagination = ({
+function Pagination({
   to,
-  location,
   className,
-  onCursor = defaultOnCursor,
+  onCursor,
+  paginationAnalyticsEvent,
   pageLinks,
-  size = 'small',
+  size = 'sm',
   caption,
   disabled = false,
-}: Props) => {
-  if (!pageLinks) {
+}: Props) {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const defaultCursorHandler = useCallback<CursorHandler>(
+    (cursor, path, query) => navigate({pathname: path, query: {...query, cursor}}),
+    [navigate]
+  );
+
+  if (!defined(pageLinks)) {
     return null;
   }
 
@@ -59,40 +65,47 @@ const Pagination = ({
   const previousDisabled = disabled || links.previous?.results === false;
   const nextDisabled = disabled || links.next?.results === false;
 
+  const cursorHandler = onCursor ?? defaultCursorHandler;
+
   return (
-    <Wrapper className={className}>
+    <Flex
+      justify="end"
+      align="center"
+      margin="2xl 0 0 0"
+      className={className}
+      data-test-id="pagination"
+    >
       {caption && <PaginationCaption>{caption}</PaginationCaption>}
-      <ButtonBar merged>
+      <ButtonBar>
         <Button
-          icon={<IconChevron direction="left" size="sm" />}
+          icon={<IconChevron direction="left" />}
           aria-label={t('Previous')}
           size={size}
           disabled={previousDisabled}
-          onClick={() => onCursor?.(links.previous?.cursor, path, query, -1)}
+          onClick={() => {
+            cursorHandler(links.previous?.cursor, path, query, -1);
+            paginationAnalyticsEvent?.('Previous');
+          }}
         />
         <Button
-          icon={<IconChevron direction="right" size="sm" />}
+          icon={<IconChevron direction="right" />}
           aria-label={t('Next')}
           size={size}
           disabled={nextDisabled}
-          onClick={() => onCursor?.(links.next?.cursor, path, query, 1)}
+          onClick={() => {
+            cursorHandler(links.next?.cursor, path, query, 1);
+            paginationAnalyticsEvent?.('Next');
+          }}
         />
       </ButtonBar>
-    </Wrapper>
+    </Flex>
   );
-};
-
-const Wrapper = styled('div')`
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  margin: ${space(3)} 0 0 0;
-`;
+}
 
 const PaginationCaption = styled('span')`
-  color: ${p => p.theme.subText};
-  font-size: ${p => p.theme.fontSizeMedium};
+  color: ${p => p.theme.tokens.content.secondary};
+  font-size: ${p => p.theme.font.size.md};
   margin-right: ${space(2)};
 `;
 
-export default withRouter(Pagination);
+export default Pagination;

@@ -1,107 +1,116 @@
-import {RouteComponentProps} from 'react-router';
+import {Fragment} from 'react';
 import styled from '@emotion/styled';
 
-import AsyncComponent from 'app/components/asyncComponent';
-import ExternalLink from 'app/components/links/externalLink';
-import {Panel, PanelBody, PanelHeader} from 'app/components/panels';
-import {t, tct} from 'app/locale';
-import space from 'app/styles/space';
-import {Integration, Organization, Team} from 'app/types';
-import {toTitleCase} from 'app/utils';
-import withOrganization from 'app/utils/withOrganization';
-import AsyncView from 'app/views/asyncView';
-import EmptyMessage from 'app/views/settings/components/emptyMessage';
-import TextField from 'app/views/settings/components/forms/textField';
+import {Button} from '@sentry/scraps/button';
+import {Flex} from '@sentry/scraps/layout';
+import {ExternalLink} from '@sentry/scraps/link';
+import {Tooltip} from '@sentry/scraps/tooltip';
 
-type Props = RouteComponentProps<{orgId: string; teamId: string}, {}> & {
-  organization: Organization;
-  team: Team;
-};
-
-type State = AsyncView['state'] & {
-  teamDetails: Team;
-  integrations: Integration[];
-};
+import {addErrorMessage, addSuccessMessage} from 'sentry/actionCreators/indicator';
+import {hasEveryAccess} from 'sentry/components/acl/access';
+import Confirm from 'sentry/components/confirm';
+import EmptyMessage from 'sentry/components/emptyMessage';
+import TextField from 'sentry/components/forms/fields/textField';
+import LoadingError from 'sentry/components/loadingError';
+import LoadingIndicator from 'sentry/components/loadingIndicator';
+import Panel from 'sentry/components/panels/panel';
+import PanelBody from 'sentry/components/panels/panelBody';
+import PanelHeader from 'sentry/components/panels/panelHeader';
+import SentryDocumentTitle from 'sentry/components/sentryDocumentTitle';
+import {IconDelete} from 'sentry/icons';
+import {t, tct} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {ExternalTeam, Integration} from 'sentry/types/integrations';
+import type {Team} from 'sentry/types/organization';
+import getApiUrl from 'sentry/utils/api/getApiUrl';
+import {useApiQuery} from 'sentry/utils/queryClient';
+import {toTitleCase} from 'sentry/utils/string/toTitleCase';
+import useApi from 'sentry/utils/useApi';
+import useOrganization from 'sentry/utils/useOrganization';
+import {useParams} from 'sentry/utils/useParams';
+import {ProjectPermissionAlert} from 'sentry/views/settings/project/projectPermissionAlert';
 
 const DOCS_LINK =
   'https://docs.sentry.io/product/integrations/notification-incidents/slack/#team-notifications';
 const NOTIFICATION_PROVIDERS = ['slack'];
 
-class TeamNotificationSettings extends AsyncView<Props, State> {
-  getTitle() {
-    return 'Team Notification Settings';
-  }
+function TeamNotificationSettingsPanel({
+  team,
+  integrations,
+  onDelete,
+}: {
+  integrations: Integration[];
+  onDelete: (externalTeam: ExternalTeam) => void;
+  team: Team;
+}) {
+  const organization = useOrganization();
 
-  getEndpoints(): ReturnType<AsyncComponent['getEndpoints']> {
-    const {organization, team} = this.props;
-    return [
-      [
-        'teamDetails',
-        `/teams/${organization.slug}/${team.slug}/`,
-        {query: {expand: ['externalTeams']}},
-      ],
-      [
-        'integrations',
-        `/organizations/${organization.slug}/integrations/`,
-        {query: {includeConfig: 0}},
-      ],
-    ];
-  }
-
-  renderBody() {
+  const notificationIntegrations = integrations.filter(integration =>
+    NOTIFICATION_PROVIDERS.includes(integration.provider.key)
+  );
+  if (!notificationIntegrations.length) {
     return (
-      <Panel>
-        <PanelHeader>{t('Notifications')}</PanelHeader>
-        <PanelBody>{this.renderPanelBody()}</PanelBody>
-      </Panel>
+      <EmptyMessage>
+        {t('No Notification Integrations have been installed yet.')}
+      </EmptyMessage>
     );
   }
 
-  renderPanelBody() {
-    const {teamDetails, integrations} = this.state;
+  const externalTeams = (team.externalTeams ?? []).filter(externalTeam =>
+    NOTIFICATION_PROVIDERS.includes(externalTeam.provider)
+  );
 
-    const notificationIntegrations = integrations.filter(integration =>
-      NOTIFICATION_PROVIDERS.includes(integration.provider.key)
+  if (!externalTeams.length) {
+    return (
+      <EmptyMessage>
+        <div>{t('No teams have been linked yet.')}</div>
+        <NotDisabledSubText>
+          {tct('Head over to Slack and type [code] to get started. [link].', {
+            code: <code>/sentry link team</code>,
+            link: <ExternalLink href={DOCS_LINK}>{t('Learn more')}</ExternalLink>,
+          })}
+        </NotDisabledSubText>
+      </EmptyMessage>
     );
-    if (!notificationIntegrations.length) {
-      return (
-        <EmptyMessage>
-          {t('No Notification Integrations have been installed yet.')}
-        </EmptyMessage>
-      );
-    }
+  }
 
-    const externalTeams = (teamDetails.externalTeams || []).filter(externalTeam =>
-      NOTIFICATION_PROVIDERS.includes(externalTeam.provider)
+  const integrationsById = Object.fromEntries(
+    notificationIntegrations.map(integration => [integration.id, integration])
+  );
+
+  const hasWriteAccess = hasEveryAccess(['team:write'], {organization, team});
+
+  const hasValidIntegration = externalTeams.some(
+    externalTeam => integrationsById[externalTeam.integrationId]
+  );
+
+  if (!hasValidIntegration) {
+    return (
+      <EmptyMessage>
+        <div>{t('No teams have been linked yet.')}</div>
+        <NotDisabledSubText>
+          {tct('Head over to Slack and type [code] to get started. [link].', {
+            code: <code>/sentry link team</code>,
+            link: <ExternalLink href={DOCS_LINK}>{t('Learn more')}</ExternalLink>,
+          })}
+        </NotDisabledSubText>
+      </EmptyMessage>
     );
+  }
 
-    if (!externalTeams.length) {
-      return (
-        <EmptyMessage>
-          <div>{t('No teams have been linked yet.')}</div>
-          <NotDisabledSubText>
-            {tct('Head over to Slack and type [code] to get started. [link].', {
-              code: <code>/sentry link team</code>,
-              link: <ExternalLink href={DOCS_LINK}>{t('Learn more')}</ExternalLink>,
-            })}
-          </NotDisabledSubText>
-        </EmptyMessage>
-      );
-    }
+  const filteredExternalTeams = externalTeams.filter(
+    externalTeam => integrationsById[externalTeam.integrationId]
+  );
 
-    const integrationsById = Object.fromEntries(
-      notificationIntegrations.map(integration => [integration.id, integration])
-    );
-
-    return externalTeams.map(externalTeam => (
-      <TextField
+  return filteredExternalTeams.map(externalTeam => (
+    <Flex key={externalTeam.id} align="center" justify="start">
+      <StyledFormField
         disabled
-        key={externalTeam.id}
         label={
           <div>
             <NotDisabledText>
               {toTitleCase(externalTeam.provider)}:
-              {integrationsById[externalTeam.integrationId].name}
+              {integrationsById[externalTeam.integrationId]!.name}
             </NotDisabledText>
             <NotDisabledSubText>
               {tct('Unlink this channel in Slack with [code]. [link].', {
@@ -111,21 +120,141 @@ class TeamNotificationSettings extends AsyncView<Props, State> {
             </NotDisabledSubText>
           </div>
         }
+        labelText={t('Unlink this channel in slack with `/slack unlink team`')}
         name="externalName"
         value={externalTeam.externalName}
       />
-    ));
-  }
+
+      <DeleteButtonWrapper>
+        <Tooltip
+          title={t(
+            'You must be an organization owner, manager or admin to remove a Slack team link'
+          )}
+          disabled={hasWriteAccess}
+        >
+          <Confirm
+            disabled={!hasWriteAccess}
+            onConfirm={() => onDelete(externalTeam)}
+            message={t('Are you sure you want to remove this Slack team link?')}
+          >
+            <Button icon={<IconDelete />} disabled={!hasWriteAccess}>
+              {t('Unlink')}
+            </Button>
+          </Confirm>
+        </Tooltip>
+      </DeleteButtonWrapper>
+    </Flex>
+  ));
 }
-export default withOrganization(TeamNotificationSettings);
+
+export default function TeamNotificationSettings() {
+  const api = useApi();
+  const params = useParams<{teamId: string}>();
+  const organization = useOrganization();
+
+  const {
+    data: team,
+    isPending: isTeamPending,
+    isError: isTeamError,
+    refetch: refetchTeam,
+  } = useApiQuery<Team>(
+    [
+      getApiUrl(`/teams/$organizationIdOrSlug/$teamIdOrSlug/`, {
+        path: {organizationIdOrSlug: organization.slug, teamIdOrSlug: params.teamId},
+      }),
+      {
+        query: {expand: ['externalTeams']},
+      },
+    ],
+    {
+      staleTime: 0,
+    }
+  );
+
+  const {
+    data: integrations,
+    isPending: isIntegrationsPending,
+    isError: isIntegrationsError,
+    refetch: refetchIntegrations,
+  } = useApiQuery<Integration[]>(
+    [
+      getApiUrl(`/organizations/$organizationIdOrSlug/integrations/`, {
+        path: {organizationIdOrSlug: organization.slug},
+      }),
+      {
+        query: {includeConfig: '0'},
+      },
+    ],
+    {
+      staleTime: 0,
+    }
+  );
+
+  if (isTeamPending || isIntegrationsPending) {
+    return <LoadingIndicator />;
+  }
+
+  if (isTeamError || isIntegrationsError) {
+    return (
+      <LoadingError
+        onRetry={() => {
+          refetchTeam();
+          refetchIntegrations();
+        }}
+      />
+    );
+  }
+
+  const handleDelete = async (externalTeam: ExternalTeam) => {
+    try {
+      await api.requestPromise(
+        `/teams/${organization.slug}/${team.slug}/external-teams/${externalTeam.id}/`,
+        {
+          method: 'DELETE',
+        }
+      );
+      addSuccessMessage(t('Deletion successful'));
+    } catch {
+      addErrorMessage(t('An error occurred'));
+    }
+
+    refetchTeam();
+    refetchIntegrations();
+  };
+
+  return (
+    <Fragment>
+      <SentryDocumentTitle
+        title={t('%s Team Notification Settings', `#${params.teamId}`)}
+      />
+      <ProjectPermissionAlert access={['team:write']} team={team} />
+      <Panel>
+        <PanelHeader>{t('Notifications')}</PanelHeader>
+        <PanelBody>
+          <TeamNotificationSettingsPanel
+            team={team}
+            integrations={integrations}
+            onDelete={handleDelete}
+          />
+        </PanelBody>
+      </Panel>
+    </Fragment>
+  );
+}
 
 const NotDisabledText = styled('div')`
-  color: ${p => p.theme.textColor};
+  color: ${p => p.theme.tokens.content.primary};
   line-height: ${space(2)};
 `;
 const NotDisabledSubText = styled('div')`
-  color: ${p => p.theme.subText};
-  font-size: ${p => p.theme.fontSizeRelativeSmall};
+  color: ${p => p.theme.tokens.content.secondary};
+  font-size: ${p => p.theme.font.size.sm};
   line-height: 1.4;
   margin-top: ${space(1)};
+`;
+const StyledFormField = styled(TextField)`
+  flex: 1;
+`;
+const DeleteButtonWrapper = styled('div')`
+  margin-right: ${space(2)};
 `;

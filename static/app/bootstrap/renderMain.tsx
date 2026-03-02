@@ -1,13 +1,13 @@
-import {ROOT_ELEMENT} from 'app/constants';
-import Main from 'app/main';
+import {ROOT_ELEMENT} from 'sentry/constants';
+import Main from 'sentry/main';
 
 import {renderDom} from './renderDom';
 
 export function renderMain() {
   try {
-    renderDom(Main, `#${ROOT_ELEMENT}`);
+    renderDom(Main, `#${ROOT_ELEMENT}`, {});
   } catch (err) {
-    if (err.message === 'URI malformed') {
+    if (err instanceof URIError) {
       // eslint-disable-next-line no-console
       console.error(
         new Error(

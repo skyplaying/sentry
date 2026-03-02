@@ -1,21 +1,52 @@
-import {t} from 'app/locale';
-import {aggregateOutputType} from 'app/utils/discover/fields';
-import {
-  DAY,
-  formatAbbreviatedNumber,
-  formatPercentage,
-  getDuration,
-  HOUR,
-  MINUTE,
-  SECOND,
-  WEEK,
-} from 'app/utils/formatters';
+import * as Sentry from '@sentry/react';
+import type {LegendComponentOption} from 'echarts';
+
+import type {Series} from 'sentry/types/echarts';
+import {defined} from 'sentry/utils';
+import {formatBytesBase2} from 'sentry/utils/bytes/formatBytesBase2';
+import {formatBytesBase10} from 'sentry/utils/bytes/formatBytesBase10';
+import type {
+  AggregationOutputType,
+  DataUnit,
+  RateUnit,
+} from 'sentry/utils/discover/fields';
+import {ABYTE_UNITS, SizeUnit} from 'sentry/utils/discover/fields';
+import {axisDuration} from 'sentry/utils/duration/axisDuration';
+import getDuration from 'sentry/utils/duration/getDuration';
+import {formatAbbreviatedNumber, formatRate} from 'sentry/utils/formatters';
+import {formatPercentage} from 'sentry/utils/number/formatPercentage';
+import {convertSize} from 'sentry/utils/unitConversion/convertSize';
+import {isASizeUnit} from 'sentry/views/dashboards/widgets/common/typePredicates';
+
+import {categorizeDuration} from './categorizeDuration';
 
 /**
- * Formatter for chart tooltips that handle a variety of discover result values
+ * Formatter for chart tooltips that handle a variety of discover and metrics result values.
+ * If the result is metric values, the value can be of type number or null
  */
-export function tooltipFormatter(value: number, seriesName: string = ''): string {
-  switch (aggregateOutputType(seriesName)) {
+export function tooltipFormatter(
+  value: number | null,
+  outputType: AggregationOutputType = 'number',
+  unit?: DataUnit
+): string {
+  if (!defined(value)) {
+    return '\u2014';
+  }
+  return tooltipFormatterUsingAggregateOutputType(value, outputType, unit);
+}
+
+/**
+ * Formatter for chart tooltips that takes the aggregate output type directly
+ */
+export function tooltipFormatterUsingAggregateOutputType(
+  value: number | null,
+  type: string,
+  unit?: DataUnit
+): string {
+  if (!defined(value)) {
+    return '\u2014';
+  }
+  switch (type) {
     case 'integer':
     case 'number':
       return value.toLocaleString();
@@ -23,6 +54,21 @@ export function tooltipFormatter(value: number, seriesName: string = ''): string
       return formatPercentage(value, 2);
     case 'duration':
       return getDuration(value / 1000, 2, true);
+    case 'size': {
+      const unitString = unit ?? undefined;
+      const resolvedUnit = isASizeUnit(unitString) ? unitString : SizeUnit.BYTE;
+      const sizeInBytes = convertSize(value, resolvedUnit, SizeUnit.BYTE);
+      const formatter =
+        unitString && ABYTE_UNITS.includes(unitString)
+          ? formatBytesBase10
+          : formatBytesBase2;
+      return formatter(sizeInBytes);
+    }
+    case 'rate':
+      if (unit) {
+        return formatRate(value, unit as RateUnit);
+      }
+      return formatRate(value);
     default:
       return value.toString();
   }
@@ -34,53 +80,126 @@ export function tooltipFormatter(value: number, seriesName: string = ''): string
  */
 export function axisLabelFormatter(
   value: number,
-  seriesName: string,
-  abbreviation: boolean = false
+  outputType: AggregationOutputType,
+  abbreviation = false,
+  durationUnit?: number,
+  rateUnit?: RateUnit,
+  decimalPlaces?: number,
+  sizeUnit?: DataUnit
 ): string {
-  switch (aggregateOutputType(seriesName)) {
+  return axisLabelFormatterUsingAggregateOutputType(
+    value,
+    outputType,
+    abbreviation,
+    durationUnit,
+    rateUnit,
+    decimalPlaces,
+    sizeUnit
+  );
+}
+
+/**
+ * Formatter for chart axis labels that takes the aggregate output type directly
+ */
+export function axisLabelFormatterUsingAggregateOutputType(
+  value: number,
+  type: string,
+  abbreviation = false,
+  durationUnit?: number,
+  rateUnit?: RateUnit,
+  decimalPlaces = 0,
+  sizeUnit?: DataUnit
+): string {
+  switch (type) {
     case 'integer':
     case 'number':
       return abbreviation ? formatAbbreviatedNumber(value) : value.toLocaleString();
     case 'percentage':
-      return formatPercentage(value, 0);
+      return formatPercentage(value, decimalPlaces);
     case 'duration':
-      return axisDuration(value);
+      return axisDuration(value, durationUnit);
+    case 'size': {
+      const unitString = sizeUnit ?? undefined;
+      const resolvedUnit = isASizeUnit(unitString) ? unitString : SizeUnit.BYTE;
+      const sizeInBytes = convertSize(value, resolvedUnit, SizeUnit.BYTE);
+      const formatter =
+        unitString && ABYTE_UNITS.includes(unitString)
+          ? formatBytesBase10
+          : formatBytesBase2;
+      return formatter(sizeInBytes, 0);
+    }
+    case 'rate':
+      return formatRate(value, rateUnit);
     default:
       return value.toString();
   }
 }
 
 /**
- * Specialized duration formatting for axis labels.
- * In that context we are ok sacrificing accuracy for more
- * consistent sizing.
- *
- * @param value Number of milliseconds to format.
+ * Given an array of series and an eCharts legend object,
+ * finds the range of y values (min and max) based on which series is selected in the legend.
+ * Does not assume any ordering of series, will check min/max for all series in multiseries.
+ * @param series Array of eCharts series
+ * @param legend eCharts legend object
+ * @returns
  */
-export function axisDuration(value: number): string {
-  if (value === 0) {
-    return '0';
+export function findRangeOfMultiSeries(series: Series[], legend?: LegendComponentOption) {
+  const range: {max: number; min: number} = {
+    max: 0,
+    min: Infinity,
+  };
+
+  if (!series[0]?.data) {
+    return undefined;
   }
-  if (value >= WEEK) {
-    const label = (value / WEEK).toFixed(0);
-    return t('%swk', label);
+
+  for (const {seriesName, data} of series) {
+    if (legend?.selected?.[seriesName] !== false) {
+      const max = Math.max(...data.map(({value}) => value).filter(Number.isFinite));
+      const min = Math.min(...data.map(({value}) => value).filter(Number.isFinite));
+
+      if (max > range.max) {
+        range.max = max;
+      }
+      if (min < range.min) {
+        range.min = min;
+      }
+      if (min < 0) {
+        Sentry.withScope(scope => {
+          scope.setTag('seriesName', seriesName);
+          scope.setExtra('min', min);
+          scope.setExtra('max', min);
+          Sentry.captureMessage('Found negative min value in multiseries');
+        });
+      }
+    }
   }
-  if (value >= DAY) {
-    const label = (value / DAY).toFixed(0);
-    return t('%sd', label);
+  if (range.max === 0 && range.min === Infinity) {
+    return undefined;
   }
-  if (value >= HOUR) {
-    const label = (value / HOUR).toFixed(0);
-    return t('%shr', label);
+  return range;
+}
+
+/**
+ * Given a eCharts series and legend, returns the unit to be used on the yAxis for a duration chart
+ * @param series eCharts series array
+ * @param legend eCharts legend object
+ * @returns
+ */
+export function getDurationUnit(
+  series: Series[],
+  legend?: LegendComponentOption
+): number {
+  let durationUnit = 0;
+  const range = findRangeOfMultiSeries(series, legend);
+  if (range) {
+    const avg = (range.max + range.min) / 2;
+    durationUnit = categorizeDuration((range.max - range.min) / 5); // avg of 5 yAxis ticks per chart
+
+    const numOfDigits = (avg / durationUnit).toFixed(0).length;
+    if (numOfDigits > 6) {
+      durationUnit = categorizeDuration(avg);
+    }
   }
-  if (value >= MINUTE) {
-    const label = (value / MINUTE).toFixed(0);
-    return t('%smin', label);
-  }
-  if (value >= SECOND) {
-    const label = (value / SECOND).toFixed(0);
-    return t('%ss', label);
-  }
-  const label = value.toFixed(0);
-  return t('%sms', label);
+  return durationUnit;
 }

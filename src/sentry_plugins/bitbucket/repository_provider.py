@@ -1,18 +1,34 @@
-from uuid import uuid4
+from __future__ import annotations
 
-from sentry.app import locks
-from sentry.models import OrganizationOption
-from sentry.plugins import providers
+import secrets
+from typing import TYPE_CHECKING
+
+from sentry.exceptions import PluginError
+from sentry.locks import locks
+from sentry.models.options.organization_option import OrganizationOption
+from sentry.plugins.providers import RepositoryProvider
 from sentry.shared_integrations.exceptions import ApiError
+from sentry.utils.email import parse_email, parse_user_name
 from sentry.utils.http import absolute_uri
+from sentry_plugins.base import CorePluginMixin
 
-from .endpoints.webhook import parse_raw_user_email, parse_raw_user_name
-from .mixins import BitbucketMixin
+from .client import BitbucketClient
+
+if TYPE_CHECKING:
+    from django.utils.functional import _StrPromise
 
 
-class BitbucketRepositoryProvider(BitbucketMixin, providers.RepositoryProvider):
+class BitbucketRepositoryProvider(CorePluginMixin, RepositoryProvider):
     name = "Bitbucket"
     auth_provider = "bitbucket"
+
+    title: str | _StrPromise = "Bitbucket"
+
+    def get_client(self, user):
+        auth = self.get_auth(user=user)
+        if auth is None:
+            raise PluginError("You still need to associate an identity with Bitbucket.")
+        return BitbucketClient(auth)
 
     def get_config(self):
         return [
@@ -45,13 +61,17 @@ class BitbucketRepositoryProvider(BitbucketMixin, providers.RepositoryProvider):
         return config
 
     def get_webhook_secret(self, organization):
-        lock = locks.get(f"bitbucket:webhook-secret:{organization.id}", duration=60)
+        lock = locks.get(
+            f"bitbucket:webhook-secret:{organization.id}",
+            duration=60,
+            name="bitbucket_webhook_secret",
+        )
         with lock.acquire():
             secret = OrganizationOption.objects.get_value(
                 organization=organization, key="bitbucket:webhook_secret"
             )
             if secret is None:
-                secret = uuid4().hex + uuid4().hex
+                secret = secrets.token_hex()
                 OrganizationOption.objects.set_value(
                     organization=organization, key="bitbucket:webhook_secret", value=secret
                 )
@@ -101,8 +121,8 @@ class BitbucketRepositoryProvider(BitbucketMixin, providers.RepositoryProvider):
             {
                 "id": c["hash"],
                 "repository": repo.name,
-                "author_email": parse_raw_user_email(c["author"]["raw"]),
-                "author_name": parse_raw_user_name(c["author"]["raw"]),
+                "author_email": parse_email(c["author"]["raw"]),
+                "author_name": parse_user_name(c["author"]["raw"]),
                 "message": c["message"],
                 "patch_set": c.get("patch_set"),
             }

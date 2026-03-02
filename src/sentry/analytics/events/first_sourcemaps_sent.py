@@ -1,14 +1,20 @@
 from sentry import analytics
 
 
+@analytics.eventclass("first_sourcemaps.sent")
 class FirstSourcemapsSentEvent(analytics.Event):
-    type = "first_sourcemaps.sent"
+    user_id: int
+    organization_id: int
+    project_id: int
+    platform: str | None = None
+    url: str | None = None
+    project_platform: str | None = None
 
-    attributes = (
-        analytics.Attribute("user_id"),
-        analytics.Attribute("organization_id"),
-        analytics.Attribute("project_id"),
-    )
+
+@analytics.eventclass("first_sourcemaps_for_project.sent")
+class FirstSourcemapsSentEventForProject(FirstSourcemapsSentEvent):
+    pass
 
 
 analytics.register(FirstSourcemapsSentEvent)
+analytics.register(FirstSourcemapsSentEventForProject)

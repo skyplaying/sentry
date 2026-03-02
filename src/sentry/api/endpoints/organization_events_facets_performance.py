@@ -1,22 +1,34 @@
 import math
-from typing import Any, Dict, List, Mapping, Optional
+from collections.abc import Mapping
+from typing import Any
 
 import sentry_sdk
 from django.http import Http404
 from rest_framework.exceptions import ParseError
+from rest_framework.request import Request
 from rest_framework.response import Response
+from snuba_sdk import Column, Condition, Function, Op
 
 from sentry import features, tagstore
-from sentry.api.bases import NoProjects, OrganizationEventsV2EndpointBase
+from sentry.api.api_publish_status import ApiPublishStatus
+from sentry.api.base import region_silo_endpoint
+from sentry.api.bases import NoProjects, OrganizationEventsEndpointBase
 from sentry.api.paginator import GenericOffsetPaginator
-from sentry.search.events.filter import get_filter
+from sentry.api.utils import handle_query_errors
+from sentry.models.organization import Organization
+from sentry.search.events.builder.discover import DiscoverQueryBuilder
+from sentry.search.events.types import EventsResponse, SnubaParams
 from sentry.snuba import discover
+from sentry.snuba.dataset import Dataset
 from sentry.utils.cursors import Cursor, CursorResult
-from sentry.utils.snuba import Dataset
 
 ALLOWED_AGGREGATE_COLUMNS = {
     "transaction.duration",
     "measurements.lcp",
+    "measurements.cls",
+    "measurements.fcp",
+    "measurements.fid",
+    "measurements.inp",
     "spans.browser",
     "spans.http",
     "spans.db",
@@ -27,26 +39,22 @@ TAG_ALIASES = {"release": "sentry:release", "dist": "sentry:dist", "user": "sent
 DEFAULT_TAG_KEY_LIMIT = 5
 
 
-class OrganizationEventsFacetsPerformanceEndpointBase(OrganizationEventsV2EndpointBase):
-    def has_feature(self, organization, request):
-        return features.has(
-            "organizations:performance-tag-explorer", organization, actor=request.user
-        )
+class OrganizationEventsFacetsPerformanceEndpointBase(OrganizationEventsEndpointBase):
+    publish_status = {
+        "GET": ApiPublishStatus.PRIVATE,
+    }
 
-    def has_tag_page_feature(self, organization, request):
-        return features.has("organizations:performance-tag-page", organization, actor=request.user)
+    def has_feature(self, organization, request):
+        return features.has("organizations:performance-view", organization, actor=request.user)
 
     # NOTE: This used to be called setup, but since Django 2.2 it's a View method.
     #       We don't fit its semantics, but I couldn't think of a better name, and
     #       it's only used in child classes.
-    def _setup(self, request, organization):
-        if not (
-            self.has_feature(organization, request)
-            or self.has_tag_page_feature(organization, request)
-        ):
+    def _setup(self, request: Request, organization):
+        if not self.has_feature(organization, request):
             raise Http404
 
-        params = self.get_snuba_params(request, organization)
+        snuba_params = self.get_snuba_params(request, organization)
 
         filter_query = request.GET.get("query")
         aggregate_column = request.GET.get("aggregateColumn")
@@ -57,37 +65,34 @@ class OrganizationEventsFacetsPerformanceEndpointBase(OrganizationEventsV2Endpoi
         if aggregate_column not in ALLOWED_AGGREGATE_COLUMNS:
             raise ParseError(detail=f"'{aggregate_column}' is not a supported tags column.")
 
-        if len(params.get("project_id", [])) > 1:
+        if len(snuba_params.project_ids) > 1:
             raise ParseError(detail="You cannot view facet performance for multiple projects.")
 
-        return params, aggregate_column, filter_query
+        return snuba_params, aggregate_column, filter_query
 
 
+@region_silo_endpoint
 class OrganizationEventsFacetsPerformanceEndpoint(OrganizationEventsFacetsPerformanceEndpointBase):
-    def get(self, request, organization):
+    def get(self, request: Request, organization: Organization) -> Response:
         try:
-            params, aggregate_column, filter_query = self._setup(request, organization)
+            snuba_params, aggregate_column, filter_query = self._setup(request, organization)
         except NoProjects:
             return Response([])
 
-        all_tag_keys = None
-        tag_key = None
-
-        if self.has_tag_page_feature(organization, request):
-            all_tag_keys = request.GET.get("allTagKeys")
-            tag_key = request.GET.get("tagKey")
+        all_tag_keys = bool(request.GET.get("allTagKeys"))
+        tag_key = request.GET.get("tagKey")
 
         if tag_key in TAG_ALIASES:
             tag_key = TAG_ALIASES.get(tag_key)
 
-        def data_fn(offset, limit):
-            with sentry_sdk.start_span(op="discover.endpoint", description="discover_query"):
+        def data_fn(offset, limit: int):
+            with sentry_sdk.start_span(op="discover.endpoint", name="discover_query"):
                 referrer = "api.organization-events-facets-performance.top-tags"
                 tag_data = query_tag_data(
                     filter_query=filter_query,
                     aggregate_column=aggregate_column,
                     referrer=referrer,
-                    params=params,
+                    snuba_params=snuba_params,
                 )
 
                 if not tag_data:
@@ -101,57 +106,56 @@ class OrganizationEventsFacetsPerformanceEndpoint(OrganizationEventsFacetsPerfor
                     orderby=self.get_orderby(request),
                     limit=limit,
                     offset=offset,
-                    params=params,
+                    snuba_params=snuba_params,
                     all_tag_keys=all_tag_keys,
                     tag_key=tag_key,
                 )
 
-                if not results:
-                    return {"data": []}
-
                 for row in results["data"]:
-                    row["tags_value"] = tagstore.get_tag_value_label(
+                    row["tags_value"] = tagstore.backend.get_tag_value_label(
                         row["tags_key"], row["tags_value"]
                     )
-                    row["tags_key"] = tagstore.get_standardized_key(row["tags_key"])
+                    row["tags_key"] = tagstore.backend.get_standardized_key(row["tags_key"])
 
                 return results
 
-        with self.handle_query_errors():
+        with handle_query_errors():
             return self.paginate(
                 request=request,
                 paginator=GenericOffsetPaginator(data_fn=data_fn),
                 on_results=lambda results: self.handle_results_with_meta(
-                    request, organization, params["project_id"], results
+                    request, organization, snuba_params.project_ids, results
                 ),
                 default_per_page=5,
                 max_per_page=20,
             )
 
 
+@region_silo_endpoint
 class OrganizationEventsFacetsPerformanceHistogramEndpoint(
     OrganizationEventsFacetsPerformanceEndpointBase
 ):
-    def has_feature(self, organization, request):
-        return self.has_tag_page_feature(organization, request)
+    publish_status = {
+        "GET": ApiPublishStatus.PRIVATE,
+    }
 
-    def get(self, request, organization):
+    def get(self, request: Request, organization: Organization) -> Response:
         try:
-            params, aggregate_column, filter_query = self._setup(request, organization)
+            snuba_params, aggregate_column, filter_query = self._setup(request, organization)
         except NoProjects:
             return Response([])
 
         tag_key = request.GET.get("tagKey")
-        num_buckets_per_key = request.GET.get("numBucketsPerKey")
-        per_page = request.GET.get("per_page", DEFAULT_TAG_KEY_LIMIT)
+        num_buckets_per_key_s = request.GET.get("numBucketsPerKey")
+        per_page_s = request.GET.get("per_page", DEFAULT_TAG_KEY_LIMIT)
 
-        if not num_buckets_per_key:
+        if not num_buckets_per_key_s:
             raise ParseError(
                 detail="'numBucketsPerKey' must be provided for the performance histogram."
             )
         try:
-            per_page = int(per_page)
-            num_buckets_per_key = int(num_buckets_per_key)
+            per_page = int(per_page_s)
+            num_buckets_per_key = int(num_buckets_per_key_s)
         except ValueError:
             raise ParseError(detail="Bucket and tag key per_pages must be numeric.")
 
@@ -164,17 +168,17 @@ class OrganizationEventsFacetsPerformanceHistogramEndpoint(
             raise ParseError(detail="'tagKey' must be provided when using histograms.")
 
         if tag_key in TAG_ALIASES:
-            tag_key = TAG_ALIASES.get(tag_key)
+            tag_key = TAG_ALIASES[tag_key]
 
         def data_fn(offset, limit, raw_limit):
-            with sentry_sdk.start_span(op="discover.endpoint", description="discover_query"):
+            with sentry_sdk.start_span(op="discover.endpoint", name="discover_query"):
                 referrer = "api.organization-events-facets-performance-histogram"
                 top_tags = query_top_tags(
                     tag_key=tag_key,
                     limit=limit,
                     filter_query=filter_query,
                     aggregate_column=aggregate_column,
-                    params=params,
+                    snuba_params=snuba_params,
                     orderby=self.get_orderby(request),
                     offset=offset,
                     referrer=referrer,
@@ -192,7 +196,7 @@ class OrganizationEventsFacetsPerformanceHistogramEndpoint(
                     filter_query=filter_query,
                     aggregate_column=aggregate_column,
                     referrer=referrer,
-                    params=params,
+                    snuba_params=snuba_params,
                     limit=raw_limit,
                     num_buckets_per_key=num_buckets_per_key,
                 )
@@ -201,21 +205,21 @@ class OrganizationEventsFacetsPerformanceHistogramEndpoint(
                     return {"tags": top_tags, "histogram": {"data": []}}
 
                 for row in histogram["data"]:
-                    row["tags_key"] = tagstore.get_standardized_key(row["tags_key"])
+                    row["tags_key"] = tagstore.backend.get_standardized_key(row["tags_key"])
 
                 return {"tags": top_tags, "histogram": histogram}
 
         def on_results(data):
             return {
                 "tags": self.handle_results_with_meta(
-                    request, organization, params["project_id"], {"data": data["tags"]}
+                    request, organization, snuba_params.project_ids, {"data": data["tags"]}
                 ),
                 "histogram": self.handle_results_with_meta(
-                    request, organization, params["project_id"], data["histogram"]
+                    request, organization, snuba_params.project_ids, data["histogram"]
                 ),
             }
 
-        with self.handle_query_errors():
+        with handle_query_errors():
             return self.paginate(
                 request=request,
                 paginator=HistogramPaginator(data_fn=data_fn),
@@ -248,45 +252,37 @@ class HistogramPaginator(GenericOffsetPaginator):
 
 
 def query_tag_data(
-    params: Mapping[str, str],
+    snuba_params: SnubaParams,
     referrer: str,
-    filter_query: Optional[str] = None,
-    aggregate_column: Optional[str] = None,
-) -> Optional[Dict]:
+    filter_query: str | None = None,
+    aggregate_column: str | None = None,
+) -> dict | None:
     """
     Fetch general data about all the transactions with this transaction name to feed into the facet query
     :return: Returns the row with aggregate and count if the query was successful
              Returns None if query was not successful which causes the endpoint to return early
     """
-    with sentry_sdk.start_span(
-        op="discover.discover", description="facets.filter_transform"
-    ) as span:
+    with sentry_sdk.start_span(op="discover.discover", name="facets.filter_transform") as span:
         span.set_data("query", filter_query)
-        snuba_filter = get_filter(filter_query, params)
-
-        # Resolve the public aliases into the discover dataset names.
-        snuba_filter, translated_columns = discover.resolve_discover_aliases(snuba_filter)
-
-    translated_aggregate_column = discover.resolve_discover_column(aggregate_column)
-
-    with sentry_sdk.start_span(op="discover.discover", description="facets.frequent_tags"):
-        # Get the average and count to use to filter the next request to facets
-        tag_data = discover.query(
+        tag_query = DiscoverQueryBuilder(
+            dataset=Dataset.Discover,
+            params={},
+            snuba_params=snuba_params,
+            query=filter_query,
             selected_columns=[
                 "count()",
                 f"avg({aggregate_column}) as aggregate",
                 f"max({aggregate_column}) as max",
                 f"min({aggregate_column}) as min",
             ],
-            conditions=[
-                [translated_aggregate_column, "IS NOT NULL", None],
-            ],
-            query=filter_query,
-            params=params,
-            orderby=["-count", "tags_value"],
-            referrer=f"{referrer}.all_transactions",
-            limit=1,
         )
+        tag_query.where.append(
+            Condition(tag_query.resolve_column(aggregate_column), Op.IS_NOT_NULL)
+        )
+
+    with sentry_sdk.start_span(op="discover.discover", name="facets.frequent_tags"):
+        # Get the average and count to use to filter the next request to facets
+        tag_data = tag_query.run_query(f"{referrer}.all_transactions")
 
         if len(tag_data["data"]) != 1:
             return None
@@ -303,33 +299,24 @@ def query_tag_data(
 
 
 def query_top_tags(
-    params: Mapping[str, str],
+    snuba_params: SnubaParams,
     tag_key: str,
     limit: int,
     referrer: str,
-    orderby: Optional[List[str]],
-    offset: Optional[int] = None,
-    aggregate_column: Optional[str] = None,
-    filter_query: Optional[str] = None,
-) -> Optional[List[Any]]:
+    orderby: list[str] | None,
+    offset: int | None = None,
+    aggregate_column: str | None = None,
+    *,
+    filter_query: str,
+) -> list[Any] | None:
     """
     Fetch counts by tag value, finding the top tag values for a tag key by a limit.
     :return: Returns the row with the value, the aggregate and the count if the query was successful
              Returns None if query was not successful which causes the endpoint to return early
     """
-    with sentry_sdk.start_span(
-        op="discover.discover", description="facets.filter_transform"
-    ) as span:
-        span.set_data("query", filter_query)
-        snuba_filter = get_filter(filter_query, params)
-
-        # Resolve the public aliases into the discover dataset names.
-        snuba_filter, translated_columns = discover.resolve_discover_aliases(snuba_filter)
-
     translated_aggregate_column = discover.resolve_discover_column(aggregate_column)
 
-    with sentry_sdk.start_span(op="discover.discover", description="facets.top_tags"):
-
+    with sentry_sdk.start_span(op="discover.discover", name="facets.top_tags"):
         if not orderby:
             orderby = ["-count"]
 
@@ -349,11 +336,11 @@ def query_top_tags(
                 "array_join(tags.value) as tags_value",
             ],
             query=filter_query,
-            params=params,
+            snuba_params=snuba_params,
             orderby=orderby,
             conditions=[
-                [translated_aggregate_column, "IS NOT NULL", None],
-                ["tags_key", "IN", [tag_key]],
+                Condition(Column(translated_aggregate_column), Op.IS_NOT_NULL),
+                Condition(Column("tags_key"), Op.EQ, tag_key),
             ],
             functions_acl=["array_join"],
             referrer=f"{referrer}.top_tags",
@@ -375,30 +362,18 @@ def query_top_tags(
 
 
 def query_facet_performance(
-    params: Mapping[str, str],
+    snuba_params: SnubaParams,
     tag_data: Mapping[str, Any],
     referrer: str,
-    aggregate_column: Optional[str] = None,
-    filter_query: Optional[str] = None,
-    orderby: Optional[str] = None,
-    limit: Optional[int] = None,
-    offset: Optional[int] = None,
-    all_tag_keys: Optional[bool] = None,
-    tag_key: Optional[bool] = None,
-) -> Dict:
-    with sentry_sdk.start_span(
-        op="discover.discover", description="facets.filter_transform"
-    ) as span:
-        span.set_data("query", filter_query)
-        snuba_filter = get_filter(filter_query, params)
-
-        # Resolve the public aliases into the discover dataset names.
-        snuba_filter, translated_columns = discover.resolve_discover_aliases(snuba_filter)
-    translated_aggregate_column = discover.resolve_discover_column(aggregate_column)
-
-    # Aggregate (avg) and count of all transactions for this query
-    transaction_aggregate = tag_data["aggregate"]
-
+    aggregate_column: str | None = None,
+    filter_query: str | None = None,
+    orderby: list[str] | None = None,
+    offset: int | None = None,
+    all_tag_keys: bool | None = None,
+    tag_key: str | None = None,
+    *,
+    limit: int,
+) -> EventsResponse:
     # Dynamically sample so at least 50000 transactions are selected
     sample_start_count = 50000
     transaction_count = tag_data["count"]
@@ -414,101 +389,111 @@ def query_facet_performance(
     sample_rate = min(max(dynamic_sample_rate, 0), 1) if sampling_enabled else None
     frequency_sample_rate = sample_rate if sample_rate else 1
 
-    # Exclude tags that have high cardinality are are generally unrelated to performance
-    excluded_tags = [
-        "tags_key",
-        "NOT IN",
-        ["trace", "trace.ctx", "trace.span", "project", "browser", "celery_task_id", "url"],
-    ]
+    tag_key_limit = limit if tag_key else 1
 
-    with sentry_sdk.start_span(op="discover.discover", description="facets.aggregate_tags"):
-        span.set_data("sample_rate", sample_rate)
-        span.set_data("target_sample", target_sample)
-        conditions = snuba_filter.conditions
-        aggregate_comparison = transaction_aggregate * 1.005 if transaction_aggregate else 0
-        having = [excluded_tags]
-        if not all_tag_keys and not tag_key:
-            having.append(["aggregate", ">", aggregate_comparison])
-
-        resolved_orderby = [] if orderby is None else orderby
-
-        conditions.append([translated_aggregate_column, "IS NOT NULL", None])
-
-        if tag_key:
-            conditions.append(["tags_key", "IN", [tag_key]])
-
-        tag_key_limit = limit if tag_key else 1
-
-        tag_selected_columns = [
-            [
-                "divide",
-                [
-                    ["sum", [["minus", [translated_aggregate_column, transaction_aggregate]]]],
-                    frequency_sample_rate,
-                ],
-                "sumdelta",
-            ],
-            ["count", [], "count"],
-            [
-                "divide",
-                [["divide", [["count", []], frequency_sample_rate]], transaction_count],
-                "frequency",
-            ],
-            ["divide", ["aggregate", transaction_aggregate], "comparison"],
-            ["avg", [translated_aggregate_column], "aggregate"],
-        ]
-
-        limitby = [tag_key_limit, "tags_key"] if not tag_key else None
-
-        results = discover.raw_query(
-            selected_columns=tag_selected_columns,
-            conditions=conditions,
-            start=snuba_filter.start,
-            end=snuba_filter.end,
-            filter_keys=snuba_filter.filter_keys,
-            orderby=resolved_orderby + ["tags_key", "tags_value"],
-            groupby=["tags_key", "tags_value"],
-            having=having,
+    with sentry_sdk.start_span(op="discover.discover", name="facets.filter_transform") as span:
+        span.set_data("query", filter_query)
+        tag_query = DiscoverQueryBuilder(
             dataset=Dataset.Discover,
-            referrer=f"{referrer}.tag_values".format(referrer, "tag_values"),
-            sample=sample_rate,
+            params={},
+            snuba_params=snuba_params,
+            query=filter_query,
+            selected_columns=["count()", "tags_key", "tags_value"],
+            sample_rate=sample_rate,
             turbo=sample_rate is not None,
-            limitby=limitby,
             limit=limit,
             offset=offset,
+            limitby=("tags_key", tag_key_limit) if not tag_key else None,
+        )
+    translated_aggregate_column = tag_query.resolve_column(aggregate_column)
+
+    # Aggregate (avg) and count of all transactions for this query
+    transaction_aggregate = tag_data["aggregate"]
+
+    # Exclude tags that have high cardinality are generally unrelated to performance
+    excluded_tags = Condition(
+        Column("tags_key"),
+        Op.NOT_IN,
+        ["trace", "trace.ctx", "trace.span", "project", "browser", "celery_task_id", "url"],
+    )
+
+    with sentry_sdk.start_span(op="discover.discover", name="facets.aggregate_tags"):
+        span.set_data("sample_rate", sample_rate)
+        span.set_data("target_sample", target_sample)
+        aggregate_comparison = transaction_aggregate * 1.005 if transaction_aggregate else 0
+        aggregate_column = Function("avg", [translated_aggregate_column], "aggregate")
+        tag_query.where.append(excluded_tags)
+        if not all_tag_keys and not tag_key:
+            tag_query.having.append(Condition(aggregate_column, Op.GT, aggregate_comparison))
+
+        tag_query.where.append(Condition(translated_aggregate_column, Op.IS_NOT_NULL))
+
+        if tag_key:
+            tag_query.where.append(Condition(Column("tags_key"), Op.IN, [tag_key]))
+
+        tag_query.columns.extend(
+            [
+                Function(
+                    "divide",
+                    [
+                        Function(
+                            "sum",
+                            [
+                                Function(
+                                    "minus", [translated_aggregate_column, transaction_aggregate]
+                                )
+                            ],
+                        ),
+                        frequency_sample_rate,
+                    ],
+                    "sumdelta",
+                ),
+                Function(
+                    "divide",
+                    [
+                        Function("divide", [Function("count", [], "count"), frequency_sample_rate]),
+                        transaction_count,
+                    ],
+                    "frequency",
+                ),
+                Function("divide", [aggregate_column, transaction_aggregate], "comparison"),
+                aggregate_column,
+            ]
         )
 
-        results = discover.transform_results(results, {}, translated_columns, snuba_filter)
+        # Need to wait for the custom functions to be added first since they can be orderby options
+        tag_query.orderby = tag_query.resolve_orderby([*(orderby or []), "tags_key", "tags_value"])
+
+        results = tag_query.process_results(tag_query.run_query(f"{referrer}.tag_values"))
 
         return results
 
 
 def query_facet_performance_key_histogram(
-    params: Mapping[str, str],
-    top_tags: List[Any],
+    snuba_params: SnubaParams,
+    top_tags: list[Any],
     tag_key: str,
     num_buckets_per_key: int,
     limit: int,
     referrer: str,
-    aggregate_column: Optional[str] = None,
-    filter_query: Optional[str] = None,
-) -> Dict:
+    aggregate_column: str,
+    *,
+    filter_query: str,
+) -> dict:
     precision = 0
 
     tag_values = [x["tags_value"] for x in top_tags]
 
     results = discover.histogram_query(
-        fields=[
-            aggregate_column,
-        ],
+        fields=[aggregate_column],
         user_query=filter_query,
-        params=params,
+        snuba_params=snuba_params,
         num_buckets=num_buckets_per_key,
         precision=precision,
         group_by=["tags_value", "tags_key"],
         extra_conditions=[
-            ["tags_key", "IN", [tag_key]],
-            ["tags_value", "IN", tag_values],
+            Condition(Column("tags_key"), Op.EQ, tag_key),
+            Condition(Column("tags_value"), Op.IN, tag_values),
         ],
         histogram_rows=limit,
         referrer="api.organization-events-facets-performance-histogram",

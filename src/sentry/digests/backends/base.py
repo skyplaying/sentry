@@ -1,14 +1,22 @@
-import logging
-from typing import TYPE_CHECKING, Any, Iterable, Mapping, Optional
+from __future__ import annotations
 
+import logging
+from collections.abc import Iterable, Mapping
+from typing import TYPE_CHECKING, Any, NamedTuple
+
+from sentry.digests.types import Record
 from sentry.utils.imports import import_string
 from sentry.utils.services import Service
 
 if TYPE_CHECKING:
-    from sentry.digests import Record, ScheduleEntry
-    from sentry.models import Project
+    from sentry.models.project import Project
 
 logger = logging.getLogger("sentry.digests")
+
+
+class ScheduleEntry(NamedTuple):
+    key: str
+    timestamp: float
 
 
 def load(options: Mapping[str, str]) -> Any:
@@ -25,7 +33,7 @@ class InvalidState(Exception):
     """
 
 
-class Backend(Service):  # type: ignore
+class Backend(Service):
     """
     A digest backend coordinates the addition of records to timelines, as well
     as scheduling their digestion (processing.) This allows for summarizations
@@ -105,7 +113,7 @@ class Backend(Service):  # type: ignore
             else:
                 self.truncation_chance = 0.0
 
-    def enabled(self, project: "Project") -> bool:
+    def enabled(self, project: Project) -> bool:
         """
         Check if a project has digests enabled.
         """
@@ -114,10 +122,10 @@ class Backend(Service):  # type: ignore
     def add(
         self,
         key: str,
-        record: "Record",
-        increment_delay: Optional[int] = None,
-        maximum_delay: Optional[int] = None,
-        timestamp: Optional[float] = None,
+        record: Record,
+        increment_delay: int | None = None,
+        maximum_delay: int | None = None,
+        timestamp: float | None = None,
     ) -> bool:
         """
         Add a record to a timeline.
@@ -133,7 +141,7 @@ class Backend(Service):  # type: ignore
         """
         raise NotImplementedError
 
-    def digest(self, key: str, minimum_delay: Optional[int] = None) -> Any:
+    def digest(self, key: str, minimum_delay: int | None = None) -> Any:
         """
         Extract records from a timeline for processing.
 
@@ -168,9 +176,7 @@ class Backend(Service):  # type: ignore
         """
         raise NotImplementedError
 
-    def schedule(
-        self, deadline: float, timestamp: Optional[float] = None
-    ) -> Optional[Iterable["ScheduleEntry"]]:
+    def schedule(self, deadline: float, timestamp: float | None = None) -> Iterable[ScheduleEntry]:
         """
         Identify timelines that are ready for processing.
 
@@ -181,7 +187,7 @@ class Backend(Service):  # type: ignore
         """
         raise NotImplementedError
 
-    def maintenance(self, deadline: float, timestamp: Optional[float] = None) -> None:
+    def maintenance(self, deadline: float, timestamp: float | None = None) -> None:
         """
         Identify timelines that appear to be stuck in the ready state.
 
@@ -192,7 +198,7 @@ class Backend(Service):  # type: ignore
         call.)
 
         This is designed to handle the situation where task execution is
-        managed by a separate system such as RabbitMQ & Celery from scheduling.
+        managed separately from scheduling.
         A digest task may not be able to be successfully retried after a failure
         (e.g. if the process executing the task can no longer communicate with
         the messaging broker) which can result in a task remaining in the ready

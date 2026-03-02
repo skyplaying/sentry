@@ -1,39 +1,29 @@
-import {browserHistory, RouteComponentProps} from 'react-router';
 import styled from '@emotion/styled';
 
-import IdBadge from 'app/components/idBadge';
-import LoadingIndicator from 'app/components/loadingIndicator';
-import space from 'app/styles/space';
-import {Organization, Project} from 'app/types';
-import recreateRoute from 'app/utils/recreateRoute';
-import replaceRouterParams from 'app/utils/replaceRouterParams';
-import withLatestContext from 'app/utils/withLatestContext';
-import withProjects from 'app/utils/withProjects';
-import BreadcrumbDropdown from 'app/views/settings/components/settingsBreadcrumb/breadcrumbDropdown';
-import findFirstRouteWithoutRouteParam from 'app/views/settings/components/settingsBreadcrumb/findFirstRouteWithoutRouteParam';
-import MenuItem from 'app/views/settings/components/settingsBreadcrumb/menuItem';
+import {ProjectAvatar} from '@sentry/scraps/avatar';
 
-import {RouteWithName} from './types';
+import IdBadge from 'sentry/components/idBadge';
+import LoadingIndicator from 'sentry/components/loadingIndicator';
+import {space} from 'sentry/styles/space';
+import {trackAnalytics} from 'sentry/utils/analytics';
+import recreateRoute from 'sentry/utils/recreateRoute';
+import replaceRouterParams from 'sentry/utils/replaceRouterParams';
+import {useNavigate} from 'sentry/utils/useNavigate';
+import useOrganization from 'sentry/utils/useOrganization';
+import {useParams} from 'sentry/utils/useParams';
+import useProjects from 'sentry/utils/useProjects';
+import type {SettingsBreadcrumbProps} from 'sentry/views/settings/components/settingsBreadcrumb/types';
+
+import BreadcrumbDropdown from './breadcrumbDropdown';
+import findFirstRouteWithoutRouteParam from './findFirstRouteWithoutRouteParam';
 import {CrumbLink} from '.';
 
-type Props = RouteComponentProps<{projectId?: string}, {}> & {
-  organization: Organization;
-  project: Project;
-  projects: Project[];
-  routes: RouteWithName[];
-  route: RouteWithName;
-};
-
-const ProjectCrumb = ({
-  organization: latestOrganization,
-  project: latestProject,
-  projects,
-  params,
-  routes,
-  route,
-  ...props
-}: Props) => {
-  const handleSelect = (item: {value: string}) => {
+function ProjectCrumb({routes, route, ...props}: SettingsBreadcrumbProps) {
+  const navigate = useNavigate();
+  const {projects, onSearch} = useProjects();
+  const organization = useOrganization();
+  const params = useParams();
+  const handleSelect = (projectSlug: string) => {
     // We have to make exceptions for routes like "Project Alerts Rule Edit" or "Client Key Details"
     // Since these models are project specific, we need to traverse up a route when switching projects
     //
@@ -48,62 +38,52 @@ const ProjectCrumb = ({
       return;
     }
 
-    browserHistory.push(
-      recreateRoute(returnTo, {routes, params: {...params, projectId: item.value}})
+    navigate(
+      recreateRoute(returnTo, {routes, params: {...params, projectId: projectSlug}})
     );
   };
 
-  if (!latestOrganization) {
-    return null;
-  }
-  if (!projects) {
-    return null;
-  }
-
-  const hasMenu = projects && projects.length > 1;
+  const activeProject = projects.find(project => project.slug === params.projectId);
 
   return (
     <BreadcrumbDropdown
-      hasMenu={hasMenu}
+      hasMenu={projects && projects.length > 1}
       route={route}
       name={
         <ProjectName>
-          {!latestProject ? (
-            <LoadingIndicator mini />
-          ) : (
+          {activeProject ? (
             <CrumbLink
               to={replaceRouterParams('/settings/:orgId/projects/:projectId/', {
-                orgId: latestOrganization.slug,
-                projectId: latestProject.slug,
+                orgId: organization.slug,
+                projectId: activeProject.slug,
               })}
             >
-              <IdBadge project={latestProject} avatarSize={18} disableLink />
+              <IdBadge project={activeProject} avatarSize={18} disableLink />
             </CrumbLink>
+          ) : (
+            <LoadingIndicator mini />
           )}
         </ProjectName>
       }
-      onSelect={handleSelect}
-      items={projects.map((project, index) => ({
-        index,
+      value={activeProject?.slug ?? ''}
+      onCrumbSelect={handleSelect}
+      onOpenChange={open => {
+        if (open) {
+          trackAnalytics('breadcrumbs.menu.opened', {organization: null});
+        }
+      }}
+      search={{onChange: onSearch}}
+      options={projects.map(project => ({
         value: project.slug,
-        label: (
-          <MenuItem>
-            <IdBadge
-              project={project}
-              avatarProps={{consistentWidth: true}}
-              avatarSize={18}
-              disableLink
-            />
-          </MenuItem>
-        ),
+        leadingItems: <ProjectAvatar project={project} size={20} />,
+        label: project.slug,
       }))}
       {...props}
     />
   );
-};
+}
 
-export {ProjectCrumb};
-export default withProjects(withLatestContext(ProjectCrumb));
+export default ProjectCrumb;
 
 // Set height of crumb because of spinner
 const SPINNER_SIZE = '24px';

@@ -1,118 +1,252 @@
-import logging
-from typing import TYPE_CHECKING, Any, Iterable, Mapping, MutableMapping, Optional, Tuple, Union
+from __future__ import annotations
 
-from sentry.digests import Digest
-from sentry.digests.utilities import (
-    get_digest_metadata,
+import logging
+import zoneinfo
+from collections import defaultdict
+from collections.abc import Mapping, MutableMapping, Sequence
+from datetime import UTC, tzinfo
+from typing import TYPE_CHECKING, Any
+from urllib.parse import urlencode
+
+import sentry_sdk
+
+from sentry import analytics, features
+from sentry.analytics.events.alert_sent import AlertSentEvent
+from sentry.db.models import Model
+from sentry.digests.notifications import DigestInfo
+from sentry.digests.utils import (
+    get_digest_as_context,
+    get_participants_by_event,
     get_personalized_digests,
     should_get_personalized_digests,
 )
-from sentry.notifications.notifications.base import BaseNotification
+from sentry.integrations.types import ExternalProviders, IntegrationProviderSlug
+from sentry.notifications.notifications.base import ProjectNotification
 from sentry.notifications.notify import notify
-from sentry.notifications.types import ActionTargetType
-from sentry.notifications.utils import get_integration_link, has_alert_integration
+from sentry.notifications.types import ActionTargetType, FallthroughChoiceType, UnsubscribeContext
+from sentry.notifications.utils import has_alert_integration
 from sentry.notifications.utils.digest import (
     get_digest_subject,
     send_as_alert_notification,
     should_send_as_alert_notification,
 )
-from sentry.notifications.utils.participants import get_send_to
-from sentry.types.integrations import ExternalProviders
+from sentry.notifications.utils.links import (
+    get_email_link_extra_params,
+    get_integration_link,
+    get_rules,
+)
+from sentry.services.eventstore.models import Event, GroupEvent
+from sentry.types.actor import Actor
+from sentry.types.rules import NotificationRuleDetails
+from sentry.users.services.user_option import user_option_service
+from sentry.users.services.user_option.service import get_option_from_list
 
 if TYPE_CHECKING:
-    from sentry.models import Project, Team, User
-
+    from sentry.models.organization import Organization
+    from sentry.models.project import Project
 
 logger = logging.getLogger(__name__)
 
 
-class DigestNotification(BaseNotification):
+class DigestNotification(ProjectNotification):
+    message_builder = "DigestNotificationMessageBuilder"
+    metrics_key = "digest"
+    template_path = "sentry/emails/digests/body"
+
     def __init__(
         self,
-        project: "Project",
-        digest: Digest,
+        project: Project,
+        digest: DigestInfo,
         target_type: ActionTargetType,
-        target_identifier: Optional[int] = None,
+        target_identifier: int | None = None,
+        fallthrough_choice: FallthroughChoiceType | None = None,
+        notification_uuid: str | None = None,
     ) -> None:
-        super().__init__(project)
+        super().__init__(project, notification_uuid)
         self.digest = digest
         self.target_type = target_type
         self.target_identifier = target_identifier
+        self.fallthrough_choice = fallthrough_choice
 
-    def get_participants(self) -> Mapping[ExternalProviders, Iterable[Union["Team", "User"]]]:
-        return get_send_to(
-            project=self.project,
-            target_type=self.target_type,
-            target_identifier=self.target_identifier,
+    def get_unsubscribe_key(self) -> UnsubscribeContext | None:
+        return UnsubscribeContext(
+            organization=self.project.organization,
+            key="project",
+            resource_id=self.project.id,
+            referrer="alert_digest",
         )
 
-    def get_filename(self) -> str:
-        return "digests/body"
-
-    def get_category(self) -> str:
-        return "digest_email"
-
-    def get_type(self) -> str:
-        return "notify.digest"
-
-    def get_unsubscribe_key(self) -> Optional[Tuple[str, int, Optional[str]]]:
-        return "project", self.project.id, "alert_digest"
-
-    def get_subject(self, context: Optional[Mapping[str, Any]] = None) -> str:
+    def get_subject(self, context: Mapping[str, Any] | None = None) -> str:
         if not context:
             # This shouldn't be possible but adding a message just in case.
             return "Digest Report"
-        return get_digest_subject(context["group"], context["counts"], context["start"])
 
-    def get_notification_title(self) -> str:
-        # This shouldn't be possible but adding a message just in case.
-        return "Digest Report"
+        # Use timezone and clock format from context (added by get_recipient_context)
+        timezone = context.get("timezone")
+        clock_24_hours = context.get("clock_24_hours", False)
+        return get_digest_subject(
+            context["group"], context["counts"], context["start"], timezone, clock_24_hours
+        )
 
-    def get_reference(self) -> Any:
+    def get_notification_title(
+        self, provider: ExternalProviders, context: Mapping[str, Any] | None = None
+    ) -> str:
+        if not context:
+            return "Digest Report"
+        project = context["group"].project
+        organization = project.organization
+
+        return "<!date^{:.0f}^{count} {noun} detected {date} in| Digest Report for> <{project_link}|{project_name}>".format(
+            context["start"].timestamp(),
+            count=len(context["counts"]),
+            noun="issue" if len(context["counts"]) == 1 else "issues",
+            project_link=organization.absolute_url(
+                f"/organizations/{organization.slug}/projects/{project.slug}/"
+            ),
+            project_name=project.name,
+            date="{date_pretty}",
+        )
+
+    def get_title_link(self, recipient: Actor, provider: ExternalProviders) -> str | None:
+        return None
+
+    def build_attachment_title(self, recipient: Actor) -> str:
+        return ""
+
+    @property
+    def reference(self) -> Model | None:
         return self.project
 
-    def get_context(self) -> MutableMapping[str, Any]:
-        start, end, counts = get_digest_metadata(self.digest)
-        group = next(iter(counts))
+    def get_recipient_context(
+        self, recipient: Actor, extra_context: Mapping[str, Any]
+    ) -> MutableMapping[str, Any]:
+        tz: tzinfo = UTC
+        clock_24_hours = False
+        if recipient.is_user:
+            user_options = user_option_service.get_many(
+                filter={"user_ids": [recipient.id], "keys": ["timezone", "clock_24_hours"]}
+            )
+            user_tz = get_option_from_list(user_options, key="timezone", default="UTC")
+            clock_24_hours = bool(
+                get_option_from_list(user_options, key="clock_24_hours", default=False)
+            )
+            try:
+                tz = zoneinfo.ZoneInfo(user_tz)
+            except (ValueError, zoneinfo.ZoneInfoNotFoundError):
+                pass
         return {
-            "counts": counts,
-            "digest": self.digest,
-            "end": end,
-            "group": group,
-            "has_alert_integration": has_alert_integration(self.project),
-            "project": self.project,
-            "slack_link": get_integration_link(self.organization, "slack"),
-            "start": start,
+            **super().get_recipient_context(recipient, extra_context),
+            "timezone": tz,
+            "clock_24_hours": clock_24_hours,
         }
 
-    def get_extra_context(self, recipient_ids: Iterable[int]) -> Mapping[int, Mapping[str, Any]]:
-        extra_context = {}
-        for user_id, digest in get_personalized_digests(
-            self.target_type, self.project.id, self.digest, recipient_ids
-        ):
-            start, end, counts = get_digest_metadata(digest)
-            group = next(iter(counts))
+    def get_context(self) -> MutableMapping[str, Any]:
+        rule_details = get_rules(
+            list(self.digest.digest),
+            self.project.organization,
+            self.project,
+        )
+        context = DigestNotification.build_context(
+            self.digest,
+            self.project,
+            self.project.organization,
+            rule_details,
+            notification_uuid=self.notification_uuid,
+        )
 
-            extra_context[user_id] = {
-                "counts": counts,
-                "digest": digest,
-                "group": group,
-                "end": end,
-                "start": start,
+        sentry_query_params = self.get_sentry_query_params(ExternalProviders.EMAIL)
+
+        if not features.has("organizations:workflow-engine-ui", self.project.organization):
+            # TODO(iamrajjoshi): This actually mutes a rule for a user, something we have not ported over in the new system
+            # By not including this context, the template will not show the mute button
+            snooze_alert = len(rule_details) > 0
+            snooze_alert_urls = {
+                rule.id: f"{rule.status_url}{sentry_query_params}&{urlencode({'mute': '1'})}"
+                for rule in rule_details
             }
 
-        return extra_context
+            context["snooze_alert"] = snooze_alert
+            context["snooze_alert_urls"] = snooze_alert_urls
+        else:
+            context["snooze_alert"] = False
+            context["snooze_alert_urls"] = None
+
+        return context
+
+    @staticmethod
+    def build_context(
+        digest: DigestInfo,
+        project: Project,
+        organization: Organization,
+        rule_details: Sequence[NotificationRuleDetails],
+        alert_timestamp: int | None = None,
+        notification_uuid: str | None = None,
+    ) -> MutableMapping[str, Any]:
+        has_session_replay = features.has("organizations:session-replay", organization)
+        show_replay_link = features.has("organizations:session-replay-issue-emails", organization)
+        return {
+            **get_digest_as_context(digest.digest),
+            "event_counts": digest.event_counts,
+            "user_counts": digest.user_counts,
+            "has_alert_integration": has_alert_integration(project),
+            "project": project,
+            "slack_link": get_integration_link(organization, IntegrationProviderSlug.SLACK.value),
+            "rules_details": {rule.id: rule for rule in rule_details},
+            "link_params_for_rule": get_email_link_extra_params(
+                "digest_email",
+                None,
+                rule_details,
+                alert_timestamp,
+                notification_uuid=notification_uuid,
+            ),
+            "show_replay_links": has_session_replay and show_replay_link,
+        }
+
+    def get_extra_context(
+        self,
+        participants_by_provider_by_event: Mapping[
+            Event | GroupEvent, Mapping[ExternalProviders, set[Actor]]
+        ],
+    ) -> Mapping[Actor, Mapping[str, Any]]:
+        personalized_digests = get_personalized_digests(
+            self.digest.digest, participants_by_provider_by_event
+        )
+        return {
+            actor: get_digest_as_context(digest) for actor, digest in personalized_digests.items()
+        }
 
     def send(self) -> None:
-        if not self.should_email():
-            return
+        # Only calculate shared context once.
+        shared_context = self.get_context()
 
-        participants_by_provider = self.get_participants()
-        if not participants_by_provider:
-            return
+        if should_send_as_alert_notification(shared_context):
+            return send_as_alert_notification(
+                shared_context, self.target_type, self.target_identifier, self.fallthrough_choice
+            )
 
-        # Get every user ID for every provider as a set.
-        user_ids = {user.id for users in participants_by_provider.values() for user in users}
+        participants_by_provider_by_event = get_participants_by_event(
+            self.digest.digest,
+            self.project,
+            self.target_type,
+            self.target_identifier,
+            self.fallthrough_choice,
+        )
+
+        # Get every actor ID for every provider as a set.
+        team_ids = set()
+        user_ids = set()
+        combined_participants_by_provider = defaultdict(set)
+        for participants_by_provider in participants_by_provider_by_event.values():
+            for provider, participants in participants_by_provider.items():
+                for participant in participants:
+                    if participant.is_team:
+                        team_ids.add(participant.id)
+                    elif participant.is_user:
+                        user_ids.add(participant.id)
+                    combined_participants_by_provider[provider].add(participant)
+
+        if not (team_ids or user_ids):
+            return
 
         logger.info(
             "mail.adapter.notify_digest",
@@ -120,24 +254,58 @@ class DigestNotification(BaseNotification):
                 "project_id": self.project.id,
                 "target_type": self.target_type.value,
                 "target_identifier": self.target_identifier,
+                "team_ids": team_ids,
                 "user_ids": user_ids,
+                "notification_uuid": self.notification_uuid,
+                "number_of_rules": len(shared_context.get("rules_details", [])),
+                "group_count": len(shared_context.get("counts", [])),
             },
         )
 
-        # Only calculate shared context once.
-        shared_context = self.get_context()
+        # Calculate the per-participant context.
+        extra_context: Mapping[Actor, Mapping[str, Any]] = {}
+        personalized_digests = should_get_personalized_digests(self.target_type, self.project.id)
 
-        if should_send_as_alert_notification(shared_context):
-            return send_as_alert_notification(
-                shared_context, self.target_type, self.target_identifier
+        if personalized_digests:
+            extra_context = self.get_extra_context(participants_by_provider_by_event)
+
+        for provider, participants in combined_participants_by_provider.items():
+            if personalized_digests:
+                # remove participants if the digest is empty
+                participants_to_remove = set()
+                for participant in participants:
+                    if participant not in extra_context:
+                        participants_to_remove.add(participant)
+                participants -= participants_to_remove
+            notify(provider, self, participants, shared_context, extra_context)
+
+    def get_log_params(self, recipient: Actor) -> Mapping[str, Any]:
+        try:
+            alert_id = list(self.digest.digest)[0].id
+        except Exception:
+            alert_id = None
+
+        return {
+            "target_type": self.target_type.value,
+            "target_identifier": self.target_identifier,
+            "alert_id": alert_id,
+            **super().get_log_params(recipient),
+        }
+
+    def record_notification_sent(self, recipient: Actor, provider: ExternalProviders) -> None:
+        super().record_notification_sent(recipient, provider)
+        log_params = self.get_log_params(recipient)
+        try:
+            analytics.record(
+                AlertSentEvent(
+                    organization_id=self.organization.id,
+                    project_id=self.project.id,
+                    provider=provider.name,
+                    alert_id=log_params["alert_id"] if log_params["alert_id"] else "",
+                    alert_type="issue_alert",
+                    external_id=str(recipient.id),
+                    notification_uuid=self.notification_uuid,
+                )
             )
-
-        # Calculate the per-user context. It's fine that we're doing extra work
-        # to get personalized digests for the non-email users.
-        extra_context: Mapping[int, Mapping[str, Any]] = {}
-        if should_get_personalized_digests(self.target_type, self.project.id):
-            extra_context = self.get_extra_context(user_ids)
-
-        for provider, participants in participants_by_provider.items():
-            if provider in [ExternalProviders.EMAIL]:
-                notify(provider, self, participants, shared_context, extra_context)
+        except Exception as e:
+            sentry_sdk.capture_exception(e)

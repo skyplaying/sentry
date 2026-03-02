@@ -1,25 +1,30 @@
 import calendar
+from typing import Any
 
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, router, transaction
 from django.db.models import Q
-from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework import serializers
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.request import Request
 from rest_framework.response import Response
 
-from sentry.api.base import Endpoint
-from sentry.models import Organization, Project, PromptsActivity
-from sentry.utils.compat import zip
+from sentry.api.api_publish_status import ApiPublishStatus
+from sentry.api.base import region_silo_endpoint
+from sentry.api.bases import OrganizationEndpoint
+from sentry.models.organization import Organization
+from sentry.models.project import Project
+from sentry.models.promptsactivity import PromptsActivity
 from sentry.utils.prompts import prompt_config
 
-VALID_STATUSES = frozenset(("snoozed", "dismissed"))
+VALID_STATUSES = frozenset(("snoozed", "dismissed", "visible"))
 
 
 # Endpoint to retrieve multiple PromptsActivity at once
 class PromptsActivitySerializer(serializers.Serializer):
     feature = serializers.CharField(required=True)
-    status = serializers.ChoiceField(choices=zip(VALID_STATUSES, VALID_STATUSES), required=True)
+    status = serializers.ChoiceField(
+        choices=list(zip(VALID_STATUSES, VALID_STATUSES)), required=True
+    )
 
     def validate_feature(self, value):
         if value is None:
@@ -29,39 +34,58 @@ class PromptsActivitySerializer(serializers.Serializer):
         return value
 
 
-class PromptsActivityEndpoint(Endpoint):
-    permission_classes = (IsAuthenticated,)
+@region_silo_endpoint
+class PromptsActivityEndpoint(OrganizationEndpoint):
+    publish_status = {
+        "GET": ApiPublishStatus.UNKNOWN,
+        "PUT": ApiPublishStatus.UNKNOWN,
+    }
 
-    def get(self, request):
+    def get(self, request: Request, organization: Organization, **kwargs) -> Response:
         """Return feature prompt status if dismissed or in snoozed period"""
+
+        if not request.user.is_authenticated:
+            return Response(status=400)
 
         features = request.GET.getlist("feature")
         if len(features) == 0:
             return Response({"details": "No feature specified"}, status=400)
 
-        conditions = None
+        conditions: Q | None = None
         for feature in features:
             if not prompt_config.has(feature):
                 return Response({"detail": "Invalid feature name " + feature}, status=400)
 
             required_fields = prompt_config.required_fields(feature)
-            for field in required_fields:
-                if field not in request.GET:
-                    return Response({"detail": 'Missing required field "%s"' % field}, status=400)
-            filters = {k: request.GET.get(k) for k in required_fields}
+            filters: dict[str, Any] = {}
+
+            # project_id must be provided and belong to the organization
+            if "project_id" in required_fields:
+                project_id = request.GET.get("project_id")
+                if not project_id:
+                    return Response({"detail": 'Missing required field "project_id"'}, status=400)
+                if not Project.objects.filter(
+                    id=project_id, organization_id=organization.id
+                ).exists():
+                    return Response({"detail": "Project not found"}, status=404)
+                filters["project_id"] = project_id
+
             condition = Q(feature=feature, **filters)
             conditions = condition if conditions is None else (conditions | condition)
 
-        result = PromptsActivity.objects.filter(conditions, user=request.user)
-        featuredata = {k.feature: k.data for k in result}
+        # Always scope by organization from URL - passed directly to filter() to prevent override
+        result_qs = PromptsActivity.objects.filter(
+            conditions, user_id=request.user.id, organization_id=organization.id
+        )
+        featuredata = {k.feature: k.data for k in result_qs}
         if len(features) == 1:
-            result = result.first()
+            result = result_qs.first()
             data = None if result is None else result.data
             return Response({"data": data, "features": featuredata})
         else:
             return Response({"features": featuredata})
 
-    def put(self, request):
+    def put(self, request: Request, organization: Organization, **kwargs) -> Response:
         serializer = PromptsActivitySerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=400)
@@ -76,32 +100,41 @@ class PromptsActivityEndpoint(Endpoint):
         if any(elem is None for elem in fields.values()):
             return Response({"detail": "Missing required field"}, status=400)
 
-        # if project_id or organization_id in required fields make sure they exist
-        # if NOT in required fields, insert dummy value so dups aren't recorded
+        # Validate organization_id is present and matches URL organization
+        if "organization_id" not in required_fields or str(fields["organization_id"]) != str(
+            organization.id
+        ):
+            return Response({"detail": "Organization missing or mismatched"}, status=400)
+        # Override with URL organization to prevent IDOR
+        fields["organization_id"] = organization.id
+
+        # Validate project_id if required, otherwise use dummy value to prevent duplicates
         if "project_id" in required_fields:
-            if not Project.objects.filter(id=fields["project_id"]).exists():
-                return Response({"detail": "Project no longer exists"}, status=400)
+            project_id = fields["project_id"]
+            if not project_id:
+                return Response({"detail": "Invalid project_id"}, status=400)
+            if not Project.objects.filter(id=project_id, organization_id=organization.id).exists():
+                return Response(
+                    {"detail": "Project does not belong to this organization"}, status=400
+                )
         else:
             fields["project_id"] = 0
 
-        if "organization_id" in required_fields:
-            if not Organization.objects.filter(id=fields["organization_id"]).exists():
-                return Response({"detail": "Organization no longer exists"}, status=400)
-        else:
-            fields["organization_id"] = 0
-
-        data = {}
+        data: dict[str, Any] = {}
         now = calendar.timegm(timezone.now().utctimetuple())
         if status == "snoozed":
             data["snoozed_ts"] = now
         elif status == "dismissed":
             data["dismissed_ts"] = now
+        elif status == "visible":
+            data["snoozed_ts"] = None
+            data["dismissed_ts"] = None
 
         try:
-            with transaction.atomic():
+            with transaction.atomic(router.db_for_write(PromptsActivity)):
                 PromptsActivity.objects.create_or_update(
-                    feature=feature, user=request.user, values={"data": data}, **fields
+                    feature=feature, user_id=request.user.id, values={"data": data}, **fields
                 )
         except IntegrityError:
             pass
-        return HttpResponse(status=201)
+        return Response(status=201)

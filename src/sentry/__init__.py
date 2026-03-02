@@ -1,10 +1,13 @@
+# this must import first
+
+import importlib.metadata
 import os
 import os.path
 from subprocess import check_output
 
 try:
-    VERSION = __import__("pkg_resources").get_distribution("sentry").version
-except Exception:
+    VERSION = importlib.metadata.version("sentry")
+except importlib.metadata.PackageNotFoundError:
     VERSION = "unknown"
 
 

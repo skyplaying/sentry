@@ -1,29 +1,29 @@
-import {ReactNode} from 'react';
 import {css} from '@emotion/react';
 import styled from '@emotion/styled';
 
-import Button from 'app/components/button';
-import NotAvailable from 'app/components/notAvailable';
-import Placeholder from 'app/components/placeholder';
-import Radio from 'app/components/radio';
-import {IconChevron} from 'app/icons';
-import {t} from 'app/locale';
-import overflowEllipsis from 'app/styles/overflowEllipsis';
-import space from 'app/styles/space';
-import {ReleaseComparisonChartType} from 'app/types';
-import {defined} from 'app/utils';
+import {Button} from '@sentry/scraps/button';
+import {Flex} from '@sentry/scraps/layout';
+import {Radio} from '@sentry/scraps/radio';
+import {Tooltip} from '@sentry/scraps/tooltip';
 
-import {releaseComparisonChartLabels} from '../../utils';
+import NotAvailable from 'sentry/components/notAvailable';
+import Placeholder from 'sentry/components/placeholder';
+import {IconChevron} from 'sentry/icons';
+import {t} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {ReleaseComparisonChartType} from 'sentry/types/release';
+import {defined} from 'sentry/utils';
+import {releaseComparisonChartLabels} from 'sentry/views/releases/detail/utils';
 
-import {ReleaseComparisonRow} from '.';
+import type {ReleaseComparisonRow} from '.';
 
 type Props = Omit<ReleaseComparisonRow, 'diffDirection' | 'diffColor'> & {
-  showPlaceholders: boolean;
   activeChart: ReleaseComparisonChartType;
-  onChartChange: (type: ReleaseComparisonChartType) => void;
-  chartDiff: ReactNode;
-  onExpanderToggle: (type: ReleaseComparisonChartType) => void;
+  chartDiff: React.ReactNode;
   expanded: boolean;
+  onChartChange: (type: ReleaseComparisonChartType) => void;
+  onExpanderToggle: (type: ReleaseComparisonChartType) => void;
+  showPlaceholders: boolean;
   withExpanders: boolean;
 };
 
@@ -41,6 +41,7 @@ function ReleaseComparisonChartRow({
   onExpanderToggle,
   expanded,
   withExpanders,
+  tooltip,
 }: Props) {
   return (
     <ChartTableRow
@@ -51,15 +52,22 @@ function ReleaseComparisonChartRow({
       expanded={expanded}
     >
       <DescriptionCell>
-        <TitleWrapper>
-          <Radio
-            id={type}
-            disabled={false}
-            checked={type === activeChart}
-            onChange={() => onChartChange(type)}
-          />
-          {releaseComparisonChartLabels[type]}&nbsp;{drilldown}
-        </TitleWrapper>
+        <Tooltip disabled={!tooltip} title={tooltip} showUnderline>
+          <TitleWrapper>
+            <Radio
+              id={type}
+              disabled={false}
+              checked={type === activeChart}
+              onChange={() => onChartChange(type)}
+            />
+            {releaseComparisonChartLabels[type]}
+          </TitleWrapper>
+        </Tooltip>
+        {drilldown ? (
+          <Flex gap="md" paddingLeft="2xl">
+            {drilldown}
+          </Flex>
+        ) : null}
       </DescriptionCell>
       <NumericCell>
         {showPlaceholders ? (
@@ -93,10 +101,10 @@ function ReleaseComparisonChartRow({
           {role === 'parent' && (
             <ToggleButton
               onClick={() => onExpanderToggle(type)}
-              borderless
+              priority="transparent"
               size="zero"
               icon={<IconChevron direction={expanded ? 'up' : 'down'} />}
-              label={t('Toggle chart group')}
+              aria-label={t('Toggle chart group')}
             />
           )}
         </ExpanderCell>
@@ -107,8 +115,13 @@ function ReleaseComparisonChartRow({
 
 const Cell = styled('div')`
   text-align: right;
-  color: ${p => p.theme.subText};
-  ${overflowEllipsis}
+  color: ${p => p.theme.tokens.content.secondary};
+  display: block;
+  width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: ${p => p.theme.font.size.md};
 `;
 
 const NumericCell = styled(Cell)`
@@ -118,7 +131,7 @@ const NumericCell = styled(Cell)`
 const DescriptionCell = styled(Cell)`
   text-align: left;
   overflow: visible;
-  color: ${p => p.theme.textColor};
+  color: ${p => p.theme.tokens.content.primary};
 `;
 
 const ExpanderCell = styled(Cell)`
@@ -132,13 +145,13 @@ const TitleWrapper = styled('div')`
   align-items: center;
   position: relative;
   z-index: 1;
-  background: ${p => p.theme.background};
+  background: ${p => p.theme.tokens.background.primary};
 
   input {
     width: ${space(2)};
     height: ${space(2)};
     flex-shrink: 0;
-    background-color: ${p => p.theme.background};
+    background-color: ${p => p.theme.tokens.background.primary};
     margin-right: ${space(1)} !important;
 
     &:checked:after {
@@ -153,13 +166,13 @@ const TitleWrapper = styled('div')`
 `;
 
 const ChartTableRow = styled('label')<{
-  isActive: boolean;
-  role: ReleaseComparisonRow['role'];
   expanded: boolean;
+  isActive: boolean;
   isLoading: boolean;
+  role: ReleaseComparisonRow['role'];
 }>`
   display: contents;
-  font-weight: 400;
+  font-weight: ${p => p.theme.font.weight.sans.regular};
   margin-bottom: 0;
 
   > * {
@@ -171,16 +184,14 @@ const ChartTableRow = styled('label')<{
     !p.isLoading &&
     css`
       ${Cell}, ${NumericCell}, ${DescriptionCell}, ${TitleWrapper}, ${ExpanderCell} {
-        background-color: ${p.theme.bodyBackground};
+        background-color: ${p.theme.tokens.background.secondary};
       }
     `}
 
   &:hover {
     cursor: pointer;
-    ${/* sc-selector */ Cell}, ${/* sc-selector */ NumericCell}, ${
-      /* sc-selector */ DescriptionCell
-    },${/* sc-selector */ ExpanderCell}, ${/* sc-selector */ TitleWrapper} {
-      ${p => !p.isLoading && `background-color: ${p.theme.bodyBackground}`}
+    ${Cell}, ${NumericCell}, ${DescriptionCell}, ${ExpanderCell}, ${TitleWrapper} {
+      ${p => !p.isLoading && `background-color: ${p.theme.tokens.background.secondary}`}
     }
   }
 
@@ -189,7 +200,7 @@ const ChartTableRow = styled('label')<{
     css`
       &:not(:last-child) {
         ${Cell}, ${NumericCell}, ${DescriptionCell}, ${ExpanderCell} {
-          border-bottom: 1px solid ${p.theme.border};
+          border-bottom: 1px solid ${p.theme.tokens.border.primary};
         }
       }
     `}
@@ -207,8 +218,8 @@ const ChartTableRow = styled('label')<{
           position: absolute;
           top: -17px;
           left: 24px;
-          border-bottom: 1px solid ${p.theme.border};
-          border-left: 1px solid ${p.theme.border};
+          border-bottom: 1px solid ${p.theme.tokens.border.primary};
+          border-left: 1px solid ${p.theme.tokens.border.primary};
         }
       }
     `}

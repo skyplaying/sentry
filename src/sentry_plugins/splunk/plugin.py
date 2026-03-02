@@ -1,24 +1,11 @@
-"""
-- Turn on HTTP Event Collector by enabling its endpoint. HEC is not enabled by default.
-  - http://dev.splunk.com/view/event-collector/SP-CAAAE7F
-  - Settings > Data Inputs > HTTP Event Collector > Add new
-    - Name: Sentry
-  - You'll be given an HEC token, which is needed to configure Sentry.
-- On the client that will log to HEC, create a POST request, and set its authentication header or key/value pair to include the HEC token.
-- POST data to the HEC token receiver.
-
-Note: Managed Splunk Cloud customers can turn on HTTP Event Collector by filing a request ticket with Splunk Support.
-Note: Managed Splunk Cloud customers can create a HEC token by filing a request ticket with Splunk Support.
-
-For more details on the payload: http://dev.splunk.com/view/event-collector/SP-CAAAE6M
-"""
-
-
 import logging
+from collections.abc import MutableMapping
+from typing import Any
 
 from sentry import tagstore
-from sentry.integrations import FeatureDescription, IntegrationFeatures
+from sentry.integrations.base import FeatureDescription, IntegrationFeatures
 from sentry.plugins.bases.data_forwarding import DataForwardingPlugin
+from sentry.services.eventstore.models import Event
 from sentry.shared_integrations.exceptions import ApiError, ApiHostError, ApiTimeoutError
 from sentry.utils import metrics
 from sentry.utils.hashlib import md5_text
@@ -38,17 +25,33 @@ Send Sentry events to Splunk.
 
 
 class SplunkPlugin(CorePluginMixin, DataForwardingPlugin):
+    """
+    - Turn on HTTP Event Collector by enabling its endpoint. HEC is not enabled by default.
+      - http://dev.splunk.com/view/event-collector/SP-CAAAE7F
+      - Settings > Data Inputs > HTTP Event Collector > Add new
+        - Name: Sentry
+      - You'll be given an HEC token, which is needed to configure Sentry.
+    - On the client that will log to HEC, create a POST request, and set its
+      authentication header or key/value pair to include the HEC token.
+    - POST data to the HEC token receiver.
+
+    Note: Managed Splunk Cloud customers can turn on HTTP Event Collector by filing a request ticket with Splunk Support.
+    Note: Managed Splunk Cloud customers can create a HEC token by filing a request ticket with Splunk Support.
+
+    For more details on the payload: http://dev.splunk.com/view/event-collector/SP-CAAAE6M
+    """
+
     title = "Splunk"
     slug = "splunk"
     description = DESCRIPTION
     conf_key = "splunk"
     resource_links = [("Splunk Setup Instructions", SETUP_URL)] + CorePluginMixin.resource_links
     required_field = "instance"
-    project_token = None
-    project_index = None
-    project_source = None
-    project_instance = None
-    host = None
+    project_token: str | None = None
+    project_index: str | None = None
+    project_source: str | None = None
+    project_instance: str | None = None
+    host: str | None = None
     feature_descriptions = [
         FeatureDescription(
             """
@@ -58,14 +61,11 @@ class SplunkPlugin(CorePluginMixin, DataForwardingPlugin):
         )
     ]
 
-    def get_rate_limit(self):
+    def get_rate_limit(self) -> tuple[int, int]:
         # number of requests, number of seconds (window)
         return (1000, 1)
 
-    def get_client(self):
-        return SplunkApiClient(self.project_instance, self.project_token)
-
-    def get_config(self, project, **kwargs):
+    def get_config(self, project, user=None, initial=None, add_additional_fields: bool = False):
         return [
             {
                 "name": "instance",
@@ -99,7 +99,7 @@ class SplunkPlugin(CorePluginMixin, DataForwardingPlugin):
         if host:
             return host
 
-        user_interface = event.interfaces.get("sentry.interfaces.User")
+        user_interface = event.interfaces.get("user")
         if user_interface:
             host = user_interface.ip_address
             if host:
@@ -117,7 +117,9 @@ class SplunkPlugin(CorePluginMixin, DataForwardingPlugin):
             "environment": event.get_tag("environment") or "",
             "type": event.get_event_type(),
         }
-        props["tags"] = [[k.format(tagstore.get_standardized_key(k)), v] for k, v in event.tags]
+        props["tags"] = [
+            [k.format(tagstore.backend.get_standardized_key(k)), v] for k, v in event.tags
+        ]
         for key, value in event.interfaces.items():
             if key == "request":
                 headers = value.headers
@@ -166,18 +168,14 @@ class SplunkPlugin(CorePluginMixin, DataForwardingPlugin):
 
         self.project_source = self.get_option("source", event.project) or "sentry"
 
-    def get_rl_key(self, event):
+    def get_rl_key(self, event) -> str:
         return f"{self.conf_key}:{md5_text(self.project_token).hexdigest()}"
 
     def is_ratelimited(self, event):
         if super().is_ratelimited(event):
             metrics.incr(
                 "integrations.splunk.forward-event.rate-limited",
-                tags={
-                    "project_id": event.project_id,
-                    "organization_id": event.project.organization_id,
-                    "event_type": event.get_event_type(),
-                },
+                tags={"event_type": event.get_event_type()},
             )
             return True
         return False
@@ -191,46 +189,25 @@ class SplunkPlugin(CorePluginMixin, DataForwardingPlugin):
         }
         return payload
 
-    def forward_event(self, event, payload):
+    def forward_event(self, event: Event, payload: MutableMapping[str, Any]) -> bool:
         if not (self.project_token and self.project_index and self.project_instance):
             metrics.incr(
                 "integrations.splunk.forward-event.unconfigured",
-                tags={
-                    "project_id": event.project_id,
-                    "organization_id": event.project.organization_id,
-                    "event_type": event.get_event_type(),
-                },
+                tags={"event_type": event.get_event_type()},
             )
             return False
 
         if self.host:
             payload["host"] = self.host
 
-        client = self.get_client()
+        client = SplunkApiClient(self.project_instance, self.project_token)
 
         try:
             # https://docs.splunk.com/Documentation/Splunk/7.2.3/Data/TroubleshootHTTPEventCollector
             client.request(payload)
-
-            metrics.incr(
-                "integrations.splunk.forward-event.success",
-                tags={
-                    "project_id": event.project_id,
-                    "organization_id": event.project.organization_id,
-                    "event_type": event.get_event_type(),
-                },
-            )
-            return True
         except Exception as exc:
             metric = "integrations.splunk.forward-event.error"
-            metrics.incr(
-                metric,
-                tags={
-                    "project_id": event.project_id,
-                    "organization_id": event.project.organization_id,
-                    "event_type": event.get_event_type(),
-                },
-            )
+            metrics.incr(metric, tags={"event_type": event.get_event_type()})
             logger.info(
                 metric,
                 extra={
@@ -241,19 +218,16 @@ class SplunkPlugin(CorePluginMixin, DataForwardingPlugin):
                 },
             )
 
-            if isinstance(
-                exc,
-                (
-                    ApiHostError,
-                    ApiTimeoutError,
-                ),
+            if isinstance(exc, ApiError) and (
+                # These two are already handled by the API client, Just log and return.
+                isinstance(exc, (ApiHostError, ApiTimeoutError))
+                # Most 4xxs are not errors or actionable for us do not re-raise.
+                or (exc.code is not None and (401 <= exc.code <= 405) or exc.code in (502, 504))
             ):
-                # The above errors are already handled by the API client.
-                # Just log and return.
                 return False
-
-            if isinstance(exc, ApiError) and 401 <= exc.code <= 404:
-                # Most 4xxs are not errors or actionable for us do not re-raise
-                return False
-
             raise
+
+        metrics.incr(
+            "integrations.splunk.forward-event.success", tags={"event_type": event.get_event_type()}
+        )
+        return True

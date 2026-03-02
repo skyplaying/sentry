@@ -1,29 +1,34 @@
-import * as React from 'react';
-import {RouteComponentProps} from 'react-router';
-import {FuseOptions} from 'fuse.js';
-import flattenDepth from 'lodash/flattenDepth';
+import {useCallback, useEffect, useMemo, useState} from 'react';
 
-import {Organization, Project} from 'app/types';
-import {createFuzzySearch} from 'app/utils/createFuzzySearch';
-import replaceRouterParams from 'app/utils/replaceRouterParams';
-import withLatestContext from 'app/utils/withLatestContext';
-import accountSettingsNavigation from 'app/views/settings/account/navigationConfiguration';
-import organizationSettingsNavigation from 'app/views/settings/organization/navigationConfiguration';
-import projectSettingsNavigation from 'app/views/settings/project/navigationConfiguration';
-import {NavigationItem} from 'app/views/settings/types';
+import HookStore from 'sentry/stores/hookStore';
+import type {Organization} from 'sentry/types/organization';
+import type {Project} from 'sentry/types/project';
+import type {Fuse} from 'sentry/utils/fuzzySearch';
+import {createFuzzySearch} from 'sentry/utils/fuzzySearch';
+import replaceRouterParams from 'sentry/utils/replaceRouterParams';
+import useOrganization from 'sentry/utils/useOrganization';
+import {useParams} from 'sentry/utils/useParams';
+import useProjectFromSlug from 'sentry/utils/useProjectFromSlug';
+import {getUserOrgNavigationConfiguration} from 'sentry/views/settings/organization/userOrgNavigationConfiguration';
+import projectSettingsNavigation from 'sentry/views/settings/project/navigationConfiguration';
+import type {NavigationItem, NavigationSection} from 'sentry/views/settings/types';
 
-import {ChildProps, Result} from './types';
+import type {ChildProps, ResultItem} from './types';
+import {makeResolvedTs, strGetFn} from './utils';
 
-type Config =
-  | typeof accountSettingsNavigation
-  | typeof organizationSettingsNavigation
-  | typeof projectSettingsNavigation;
+type ConfigParams = {
+  debugFilesNeedsReview?: boolean;
+  organization?: Organization;
+  project?: Project;
+};
+
+type Config = ((params: ConfigParams) => NavigationSection[]) | NavigationSection[];
 
 // XXX(epurkhiser): We use the context in mapFunc to handle both producing the
 // NavigationSection list AND filtering out items in the sections that should
 // not be shown using the `show` attribute of the NavigationItem
-type Context = Parameters<Extract<Config, Function>>[0] &
-  Parameters<Extract<NavigationItem['show'], Function>>[0];
+type Context = Parameters<Extract<Config, (args: never) => unknown>>[0] &
+  Parameters<Extract<NavigationItem['show'], (args: never) => unknown>>[0];
 
 /**
  * navigation configuration can currently be either:
@@ -37,68 +42,28 @@ type Context = Parameters<Extract<Config, Function>>[0] &
  * of all navigation item objects
  */
 const mapFunc = (config: Config, context: Context | null = null) =>
-  (Array.isArray(config) ? config : context !== null ? config(context) : []).map(
+  (Array.isArray(config) ? config : context === null ? [] : config(context)).map(
     ({items}) =>
       items.filter(({show}) =>
         typeof show === 'function' && context !== null ? show(context) : true
       )
   );
 
-type DefaultProps = {
-  /**
-   * Fuse configuration for searching NavigationItem's
-   */
-  searchOptions: FuseOptions<NavigationItem>;
-};
+interface Props {
+  children: (props: ChildProps) => React.ReactNode;
+  query: string;
+  searchOptions?: Fuse.IFuseOptions<NavigationItem>;
+}
 
-type Props = RouteComponentProps<{}, {}> &
-  DefaultProps & {
-    organization?: Organization;
-    project?: Project;
-    /**
-     * The string to search the navigation routes for
-     */
-    query: string;
-    /**
-     * Render function that renders the route matches
-     */
-    children: (props: ChildProps) => React.ReactNode;
-  };
+function RouteSource({searchOptions, query, children}: Props) {
+  const params = useParams();
+  const organization = useOrganization();
+  const project = useProjectFromSlug({organization, projectSlug: params.projectId});
 
-type State = {
-  /**
-   * A Fuse instance configured to search NavigationItem's
-   */
-  fuzzy: undefined | null | Fuse<NavigationItem, FuseOptions<NavigationItem>>;
-};
+  const resolvedTs = useMemo(() => makeResolvedTs(), []);
+  const [fuzzy, setFuzzy] = useState<Fuse<NavigationItem> | null>(null);
 
-class RouteSource extends React.Component<Props, State> {
-  static defaultProps: DefaultProps = {
-    searchOptions: {},
-  };
-
-  state: State = {
-    fuzzy: undefined,
-  };
-
-  componentDidMount() {
-    this.createSearch();
-  }
-
-  componentDidUpdate(prevProps: Props) {
-    if (
-      prevProps.project === this.props.project &&
-      prevProps.organization === this.props.organization
-    ) {
-      return;
-    }
-
-    this.createSearch();
-  }
-
-  async createSearch() {
-    const {project, organization} = this.props;
-
+  const createSearch = useCallback(async () => {
     const context = {
       project,
       organization,
@@ -106,45 +71,50 @@ class RouteSource extends React.Component<Props, State> {
       features: new Set(project?.features ?? []),
     } as Context;
 
-    const searchMap = flattenDepth<NavigationItem>(
-      [
-        mapFunc(accountSettingsNavigation, context),
-        mapFunc(projectSettingsNavigation, context),
-        mapFunc(organizationSettingsNavigation, context),
-      ],
-      2
-    );
+    const navigationFromHook = organization
+      ? HookStore.get('settings:organization-navigation-config').map(cb =>
+          cb(organization)
+        )
+      : [];
 
-    const options = {
-      ...this.props.searchOptions,
+    const searchMap: NavigationItem[] = [
+      mapFunc(getUserOrgNavigationConfiguration, context),
+      mapFunc(projectSettingsNavigation, context),
+      mapFunc(navigationFromHook, context),
+    ].flat(2);
+
+    const search = await createFuzzySearch(searchMap, {
+      ...searchOptions,
       keys: ['title', 'description'],
-    };
-
-    const fuzzy = await createFuzzySearch<NavigationItem>(searchMap ?? [], options);
-    this.setState({fuzzy});
-  }
-
-  render() {
-    const {query, params, children} = this.props;
-    const results: Result[] =
-      this.state.fuzzy
-        ?.search<NavigationItem, true, true>(query)
-        .map(({item, ...rest}) => ({
-          item: {
-            ...item,
-            sourceType: 'route',
-            resultType: 'route',
-            to: replaceRouterParams(item.path, params),
-          },
-          ...rest,
-        })) ?? [];
-
-    return children({
-      isLoading: this.state.fuzzy === undefined,
-      results,
+      getFn: strGetFn,
     });
-  }
+
+    setFuzzy(search);
+  }, [organization, project, searchOptions]);
+
+  useEffect(() => void createSearch(), [createSearch]);
+
+  const replaceParams = useMemo(
+    () => ({...params, orgId: organization.slug}),
+    [organization.slug, params]
+  );
+
+  const results = useMemo(() => {
+    return (
+      fuzzy?.search(query).map(({item, ...rest}) => ({
+        item: {
+          ...item,
+          sourceType: 'route',
+          resultType: 'route',
+          to: replaceRouterParams(item.path, replaceParams),
+          resolvedTs,
+        } as ResultItem,
+        ...rest,
+      })) ?? []
+    );
+  }, [fuzzy, query, replaceParams, resolvedTs]);
+
+  return children({isLoading: fuzzy === undefined, results});
 }
 
-export default withLatestContext(RouteSource);
-export {RouteSource};
+export default RouteSource;

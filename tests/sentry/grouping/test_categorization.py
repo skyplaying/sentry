@@ -44,16 +44,22 @@ else like actual grouping happens elsewhere like test_variants.py.
    leaked PII to the public and all of this will have been for nothing.
 """
 
-import contextlib
+from __future__ import annotations
+
 import json  # NOQA
 import os
 import uuid
+from collections.abc import Callable, Generator
+from contextlib import _GeneratorContextManager, contextmanager
+from typing import Any
 
 import pytest
 from django.utils.functional import cached_property
 
 from sentry.grouping.api import get_default_grouping_config_dict, load_grouping_config
+from sentry.grouping.strategies.base import StrategyConfiguration
 from sentry.stacktraces.processing import normalize_stacktraces_for_grouping
+from sentry.testutils.pytest.fixtures import InstaSnapshotter
 from sentry.utils.safe import get_path
 
 _fixture_path = os.path.join(os.path.dirname(__file__), "categorization_inputs")
@@ -65,19 +71,27 @@ _DELETE_KEYWORDS = [
 
 
 class CategorizationInput:
-    def __init__(self, filename):
+    def __init__(self, filename: str) -> None:
         self.filename = filename
 
     @cached_property
-    def data(self):
+    def data(self) -> dict[str, Any]:
         with open(os.path.join(_fixture_path, self.filename)) as f:
             return _pre_scrub_event(json.load(f))
 
 
-CONFIG = load_grouping_config(get_default_grouping_config_dict("mobile:2021-02-12"))
+_CONFIG: StrategyConfiguration | None = None
 
 
-def get_stacktrace_render(data):
+# NOTE: We need to lazily load the config here so that `options` work when doing so.
+def get_config() -> StrategyConfiguration:
+    global _CONFIG
+    if _CONFIG is None:
+        _CONFIG = load_grouping_config(get_default_grouping_config_dict())
+    return _CONFIG
+
+
+def get_stacktrace_render(data: dict[str, Any]) -> str:
     """
     Platform agnostic stacktrace renderer with annotations
     """
@@ -111,60 +125,37 @@ def get_stacktrace_render(data):
 
 
 INPUTS = [
-    CategorizationInput(fname) for fname in os.listdir(_fixture_path) if fname.endswith(".json")
+    CategorizationInput(fname)
+    for fname in sorted(os.listdir(_fixture_path))
+    if fname.endswith(".json")
 ]
 
 
 @pytest.mark.parametrize("input", INPUTS, ids=lambda x: x.filename[:-5].replace("-", "_"))
-def test_categorization(input: CategorizationInput, insta_snapshot, track_enhancers_coverage):
+def test_categorization(
+    input: CategorizationInput,
+    insta_snapshot: InstaSnapshotter,
+    track_enhancers_coverage: Callable[[CategorizationInput], _GeneratorContextManager[None]],
+) -> None:
     # XXX: In-process re-runs using pytest-watch or whatever will behave
     # wrongly because input.data is reused between tests, we do this for perf.
     data = input.data
     with track_enhancers_coverage(input):
-        normalize_stacktraces_for_grouping(data, CONFIG)
+        normalize_stacktraces_for_grouping(data, get_config())
 
     insta_snapshot(get_stacktrace_render(data))
 
 
 @pytest.fixture(scope="session", autouse=True)
-def track_enhancers_coverage():
-    from sentry.grouping.enhancer import VarAction
-
-    old_apply = VarAction.apply_modifications_to_frame
-
-    used_inputs = {}
-
-    current_input = None
-
-    def new_apply(self, frames, match_frames, idx, rule=None):
-        if current_input is not None:
-            inputs_for_rule = used_inputs.setdefault(rule.matcher_description, [])
-
-            # Tolerate up to four testcases per rule. This number is arbitrary but
-            # the idea is that after matching a system frame for the hundreth time,
-            # nothing is really tested anymore.
-            if len(inputs_for_rule) < 4:
-                inputs_for_rule.append(current_input)
-
-        return old_apply(self, frames, match_frames, idx, rule=rule)
-
+def track_enhancers_coverage() -> Generator[
+    Callable[[CategorizationInput], _GeneratorContextManager[None]]
+]:
     ran_tests = {}
 
-    @contextlib.contextmanager
-    def inner(input):
+    @contextmanager
+    def inner(input: CategorizationInput) -> Generator[None]:
         ran_tests[input.filename] = True
-        nonlocal current_input
-        # if this assertion is ever hit because we dare to multithread tests in
-        # some way, current_input can be changed to a thread-local
-        assert current_input is None, "context manager does not support multithreading"
-        current_input = input
-
-        VarAction.apply_modifications_to_frame = new_apply
-        try:
-            yield
-        finally:
-            current_input = None
-            VarAction.apply_modifications_to_frame = old_apply
+        yield
 
     yield inner
 
@@ -172,40 +163,11 @@ def track_enhancers_coverage():
         # need to run entire test_categorization for this test to run
         return
 
-    all_filenames = {i.filename for i in INPUTS}
-    used_filenames = {i.filename for inputs in used_inputs.values() for i in inputs}
-    delete_filenames = all_filenames - used_filenames
-
-    if delete_filenames:
-        if _SHOULD_DELETE_DATA:
-            for filename in delete_filenames:
-                os.remove(os.path.join(_fixture_path, filename))
-        else:
-            raise AssertionError(
-                f"{len(delete_filenames)} test payloads found that do not exercize additional rules. Commit your changes and run with envvar SENTRY_TEST_GROUPING_DELETE_USELESS_DATA=1"
-            )
-
-    all_rules = {
-        r.matcher_description
-        for r in CONFIG.enhancements.iter_rules()
-        if any(getattr(a, "var", None) == "category" for a in r.actions)
-    }
-    used_rules = set(used_inputs.keys())
-
-    delete_rules = all_rules - used_rules
-    if delete_rules:
-        delete_rules_str = "\n".join(delete_rules)
-        raise AssertionError(
-            f"Found {len(delete_rules)} grouping enhancement rules that do not get exercized: \n{delete_rules_str}"
-        )
-
     files_modified = []
 
     for input in INPUTS:
-        if input.filename in delete_filenames:
-            continue
-
-        data = dict(input.data)  # type: ignore
+        data = dict(input.data)
+        del data["metadata"]
 
         modified = False
         modified |= _strip_sensitive_keys(data, ["exception", "platform", "event_id"])
@@ -229,22 +191,17 @@ def track_enhancers_coverage():
                 # they should not be written back, but we should also not
                 # count removing them as modification
                 category = None
-                if frame.get("data"):
-                    category = frame["data"].pop("category", None)
+                if data := frame.pop("data", None):
+                    category = data.pop("category", None)
                     frame.pop("in_app", None)
-                    frame["data"].pop("orig_in_app", None)
-
-                if not frame.get("data"):
-                    frame.pop("data", None)
 
                 modified |= _strip_sensitive_keys(
                     frame, ["package", "filename", "function", "raw_function", "abs_path", "module"]
                 )
-
-                if not category:
-                    modified |= frame != {"function": "stripped_application_code"}
+                if not category and frame != {"function": "stripped_application_code"}:
                     frame.clear()
                     frame["function"] = "stripped_application_code"
+                    modified = True
 
         if modified:
             files_modified.append((input, data))
@@ -262,32 +219,26 @@ def track_enhancers_coverage():
             )
 
 
-def _strip_sensitive_keys(data, keys):
+def _strip_sensitive_keys(data: dict[str, Any], keep_keys: list[str]) -> bool:
     if not data:
         return False
 
-    rv = False
-    for key in list(data):
-        if key not in keys:
+    keys_stripped = False
+
+    for key in data:
+        if (
+            key not in keep_keys
+            or data[key] is None
+            or any(x in key.lower() for x in _DELETE_KEYWORDS)
+            or any(x in json.dumps(data[key]).lower() for x in _DELETE_KEYWORDS)
+        ):
             del data[key]
-            rv = True
+            keys_stripped = True
 
-        elif data[key] is None:
-            del data[key]
-            rv = True
-
-        elif any(x in key.lower() for x in _DELETE_KEYWORDS):
-            del data[key]
-            rv = True
-
-        elif any(x in json.dumps(data[key]).lower() for x in _DELETE_KEYWORDS):
-            del data[key]
-            rv = True
-
-    return rv
+    return keys_stripped
 
 
-def _pre_scrub_event(data):
+def _pre_scrub_event(data: dict[str, Any]) -> dict[str, Any]:
     # Make sure rules are only applied in exception interface. Otherwise one can:
     #
     # 1. Check in an event with a thread interface in event A1-4 and use it to exercise rules

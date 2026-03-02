@@ -1,24 +1,16 @@
-import * as React from 'react';
-import {RouteComponentProps} from 'react-router';
+import {useParams} from 'sentry/utils/useParams';
+import {useProjectSettingsOutlet} from 'sentry/views/settings/project/projectSettingsLayout';
 
-import {Organization, Project} from 'app/types';
-import withOrganization from 'app/utils/withOrganization';
+import {SourceMapsDetails} from './sourceMapsDetails';
+import {SourceMapsList} from './sourceMapsList';
 
-type RouteParams = {
-  orgId: string;
-};
+export default function ProjectSourceMapsContainer() {
+  const {project} = useProjectSettingsOutlet();
+  const params = useParams<{orgId: string; projectId: string; bundleId?: string}>();
 
-type Props = RouteComponentProps<RouteParams, {}> & {
-  organization: Organization;
-  project: Project;
-  children: React.ReactNode;
-};
+  if (params.bundleId) {
+    return <SourceMapsDetails bundleId={params.bundleId} project={project} />;
+  }
 
-function ProjectSourceMapsContainer(props: Props) {
-  const {children, organization, project} = props;
-  return React.isValidElement(children)
-    ? React.cloneElement(children, {organization, project})
-    : null;
+  return <SourceMapsList project={project} />;
 }
-
-export default withOrganization(ProjectSourceMapsContainer);

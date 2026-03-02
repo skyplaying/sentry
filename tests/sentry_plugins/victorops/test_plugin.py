@@ -1,10 +1,13 @@
-import responses
-from exam import fixture
+from functools import cached_property
 
-from sentry.models import Rule
+import orjson
+import responses
+
+from sentry.interfaces.base import Interface
+from sentry.models.rule import Rule
 from sentry.plugins.base import Notification
-from sentry.testutils import PluginTestCase
-from sentry.utils import json
+from sentry.services.eventstore.models import Event
+from sentry.testutils.cases import PluginTestCase
 from sentry_plugins.victorops.plugin import VictorOpsPlugin
 
 SUCCESS = """{
@@ -13,36 +16,30 @@ SUCCESS = """{
 }"""
 
 
-class UnicodeTestInterface:
-    def __init__(self, title, body):
-        self.title = title
-        self.body = body
-
-    def to_string(self, event):
+class UnicodeTestInterface(Interface):
+    def to_string(self, event: Event) -> str:
         return self.body
 
-    def get_title(self):
+    def get_title(self) -> str:
         return self.title
 
 
+def test_conf_key() -> None:
+    assert VictorOpsPlugin().conf_key == "victorops"
+
+
 class VictorOpsPluginTest(PluginTestCase):
-    @fixture
-    def plugin(self):
+    @cached_property
+    def plugin(self) -> VictorOpsPlugin:
         return VictorOpsPlugin()
 
-    def test_conf_key(self):
-        assert self.plugin.conf_key == "victorops"
-
-    def test_entry_point(self):
-        self.assertPluginInstalled("victorops", self.plugin)
-
-    def test_is_configured(self):
+    def test_is_configured(self) -> None:
         assert self.plugin.is_configured(self.project) is False
         self.plugin.set_option("api_key", "abcdef", self.project)
         assert self.plugin.is_configured(self.project) is True
 
     @responses.activate
-    def test_simple_notification(self):
+    def test_simple_notification(self) -> None:
         responses.add(
             "POST",
             "https://alert.victorops.com/integrations/generic/20131114/alert/secret-api-key/everyone",
@@ -70,17 +67,17 @@ class VictorOpsPluginTest(PluginTestCase):
             },
             project_id=self.project.id,
         )
+        assert event.group is not None
         group = event.group
 
         rule = Rule.objects.create(project=self.project, label="my rule")
 
         notification = Notification(event=event, rule=rule)
 
-        with self.options({"system.url-prefix": "http://example.com"}):
-            self.plugin.notify(notification)
+        self.plugin.notify(notification)
 
         request = responses.calls[0].request
-        payload = json.loads(request.body)
+        payload = orjson.loads(request.body)
         assert {
             "message_type": "WARNING",
             "entity_id": group.id,
@@ -88,18 +85,20 @@ class VictorOpsPluginTest(PluginTestCase):
             "monitoring_tool": "sentry",
             "state_message": 'Stacktrace\n-----------\n\nStacktrace (most recent call last):\n\n  File "sentry/models/foo.py", line 29, in build_msg\n    string_max_length=self.string_max_length)\n\nMessage\n-----------\n\nHello world',
             "timestamp": int(event.datetime.strftime("%s")),
-            "issue_url": "http://example.com/organizations/baz/issues/%s/" % group.id,
+            "issue_url": group.get_absolute_url(),
             "issue_id": group.id,
             "project_id": group.project.id,
         } == payload
 
-    def test_build_description_unicode(self):
+    def test_build_description_unicode(self) -> None:
         event = self.store_event(
             data={"message": "abcd\xde\xb4", "culprit": "foo.bar", "level": "error"},
             project_id=self.project.id,
         )
         event.interfaces = {
-            "Message": UnicodeTestInterface("abcd\xde\xb4", "\xdc\xea\x80\x80abcd\xde\xb4")
+            "Message": UnicodeTestInterface(
+                title="abcd\xde\xb4", body="\xdc\xea\x80\x80abcd\xde\xb4"
+            )
         }
 
         description = self.plugin.build_description(event)

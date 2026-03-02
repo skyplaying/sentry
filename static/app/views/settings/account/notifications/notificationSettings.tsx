@@ -1,165 +1,198 @@
-import React from 'react';
+import {Fragment} from 'react';
+import styled from '@emotion/styled';
+import {mutationOptions} from '@tanstack/react-query';
+import {z} from 'zod';
 
-import AlertLink from 'app/components/alertLink';
-import AsyncComponent from 'app/components/asyncComponent';
-import Link from 'app/components/links/link';
-import {IconMail} from 'app/icons';
-import {t} from 'app/locale';
+import {LinkButton} from '@sentry/scraps/button';
+import {AutoSaveField, FieldGroup, FormSearch} from '@sentry/scraps/form';
+import {Link} from '@sentry/scraps/link';
+
+import {addSuccessMessage} from 'sentry/actionCreators/indicator';
+import LoadingError from 'sentry/components/loadingError';
+import LoadingIndicator from 'sentry/components/loadingIndicator';
+import Panel from 'sentry/components/panels/panel';
+import PanelBody from 'sentry/components/panels/panelBody';
+import PanelHeader from 'sentry/components/panels/panelHeader';
+import SentryDocumentTitle from 'sentry/components/sentryDocumentTitle';
+import {t, tct} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {Organization} from 'sentry/types/organization';
+import getApiUrl from 'sentry/utils/api/getApiUrl';
+import {fetchMutation, useApiQuery} from 'sentry/utils/queryClient';
+import withOrganizations from 'sentry/utils/withOrganizations';
+import type {NotificationSettingsType} from 'sentry/views/settings/account/notifications/constants';
 import {
-  CONFIRMATION_MESSAGE,
+  NOTIFICATION_FEATURE_MAP,
+  NOTIFICATION_SETTINGS_PATHNAMES,
   NOTIFICATION_SETTINGS_TYPES,
-  NotificationSettingsObject,
-  SELF_NOTIFICATION_SETTINGS_TYPES,
-} from 'app/views/settings/account/notifications/constants';
-import FeedbackAlert from 'app/views/settings/account/notifications/feedbackAlert';
-import {NOTIFICATION_SETTING_FIELDS} from 'app/views/settings/account/notifications/fields2';
-import {
-  decideDefault,
-  getParentIds,
-  getStateToPutForDefault,
-  isSufficientlyComplex,
-  mergeNotificationSettings,
-} from 'app/views/settings/account/notifications/utils';
-import Form from 'app/views/settings/components/forms/form';
-import JsonForm from 'app/views/settings/components/forms/jsonForm';
-import {FieldObject} from 'app/views/settings/components/forms/type';
-import SettingsPageHeader from 'app/views/settings/components/settingsPageHeader';
-import TextBlock from 'app/views/settings/components/text/textBlock';
+} from 'sentry/views/settings/account/notifications/constants';
+import {NOTIFICATION_SETTING_FIELDS} from 'sentry/views/settings/account/notifications/fields';
+import SettingsPageHeader from 'sentry/views/settings/components/settingsPageHeader';
+import TextBlock from 'sentry/views/settings/components/text/textBlock';
 
-type Props = AsyncComponent['props'];
+const NOTIFICATIONS_ENDPOINT = getApiUrl('/users/$userId/notifications/', {
+  path: {userId: 'me'},
+});
 
-type State = {
-  notificationSettings: NotificationSettingsObject;
-  legacyData: {[key: string]: string};
-} & AsyncComponent['state'];
+const notificationSchema = z.object({
+  personalActivityNotifications: z.boolean(),
+  selfAssignOnResolve: z.boolean(),
+});
 
-class NotificationSettings extends AsyncComponent<Props, State> {
-  getDefaultState(): State {
-    return {
-      ...super.getDefaultState(),
-      notificationSettings: {},
-      legacyData: {},
-    };
-  }
+type NotificationFields = z.infer<typeof notificationSchema>;
 
-  getEndpoints(): ReturnType<AsyncComponent['getEndpoints']> {
-    return [
-      ['notificationSettings', `/users/me/notification-settings/`],
-      ['legacyData', '/users/me/notifications/'],
-    ];
-  }
-
-  getStateToPutForDefault = (
-    changedData: {[key: string]: string},
-    notificationType: string
-  ) => {
-    /**
-     * Update the current providers' parent-independent notification settings
-     * with the new value. If the new value is "never", then also update all
-     * parent-specific notification settings to "default". If the previous value
-     * was "never", then assume providerList should be "email" only.
-     */
-
-    const {notificationSettings} = this.state;
-
-    const updatedNotificationSettings = getStateToPutForDefault(
-      notificationType,
-      notificationSettings,
-      changedData,
-      getParentIds(notificationType, notificationSettings)
-    );
-
-    this.setState({
-      notificationSettings: mergeNotificationSettings(
-        notificationSettings,
-        updatedNotificationSettings
-      ),
-    });
-
-    return updatedNotificationSettings;
-  };
-
-  getInitialData(): {[key: string]: string} {
-    const {notificationSettings} = this.state;
-
-    return Object.fromEntries(
-      NOTIFICATION_SETTINGS_TYPES.map(notificationType => [
-        notificationType,
-        decideDefault(notificationType, notificationSettings),
-      ])
-    );
-  }
-
-  getFields(): FieldObject[] {
-    const {notificationSettings} = this.state;
-
-    const fields: FieldObject[] = [];
-    for (const notificationType of NOTIFICATION_SETTINGS_TYPES) {
-      const field = Object.assign({}, NOTIFICATION_SETTING_FIELDS[notificationType], {
-        getData: data => this.getStateToPutForDefault(data, notificationType),
-        help: (
-          <React.Fragment>
-            <p>
-              {NOTIFICATION_SETTING_FIELDS[notificationType].help}
-              &nbsp;
-              <Link
-                data-test-id="fine-tuning"
-                to={`/settings/account/notifications/${notificationType}`}
-              >
-                Fine tune
-              </Link>
-            </p>
-          </React.Fragment>
-        ),
-      }) as any;
-
-      if (
-        isSufficientlyComplex(notificationType, notificationSettings) &&
-        typeof field !== 'function'
-      ) {
-        field.confirm = {never: CONFIRMATION_MESSAGE};
-      }
-
-      fields.push(field);
-    }
-    return fields;
-  }
-
-  renderBody() {
-    const {legacyData} = this.state;
-
-    return (
-      <React.Fragment>
-        <SettingsPageHeader title="Notifications" />
-        <TextBlock>Personal notifications sent via email or an integration.</TextBlock>
-        <FeedbackAlert />
-        <Form
-          saveOnBlur
-          apiMethod="PUT"
-          apiEndpoint="/users/me/notification-settings/"
-          initialData={this.getInitialData()}
-        >
-          <JsonForm title={t('Notifications')} fields={this.getFields()} />
-        </Form>
-        <Form
-          initialData={legacyData}
-          saveOnBlur
-          apiMethod="PUT"
-          apiEndpoint="/users/me/notifications/"
-        >
-          <JsonForm
-            title={t('My Activity')}
-            fields={SELF_NOTIFICATION_SETTINGS_TYPES.map(
-              type => NOTIFICATION_SETTING_FIELDS[type] as FieldObject
-            )}
-          />
-        </Form>
-        <AlertLink to="/settings/account/emails" icon={<IconMail />}>
-          {t('Looking to add or remove an email address? Use the emails panel.')}
-        </AlertLink>
-      </React.Fragment>
-    );
-  }
+interface NotificationSettingsProps {
+  organizations: Organization[];
 }
 
-export default NotificationSettings;
+function NotificationSettings({organizations}: NotificationSettingsProps) {
+  const checkFeatureFlag = (flag: string) => {
+    return organizations.some(org => org.features?.includes(flag));
+  };
+  const notificationFields = NOTIFICATION_SETTINGS_TYPES.filter(type => {
+    const notificationFlag = NOTIFICATION_FEATURE_MAP[type];
+    if (Array.isArray(notificationFlag)) {
+      return notificationFlag.some(flag => checkFeatureFlag(flag));
+    }
+    if (notificationFlag) {
+      return checkFeatureFlag(notificationFlag);
+    }
+    return true;
+  });
+
+  const renderOneSetting = (type: NotificationSettingsType) => {
+    const field = NOTIFICATION_SETTING_FIELDS[type];
+    if (type === 'quota' && checkFeatureFlag('spend-visibility-notifications')) {
+      field.label = t('Spend');
+      field.help = t('Notifications that help avoid surprise invoices.');
+    }
+    return (
+      <FieldWrapper key={type}>
+        <div>
+          <FieldLabel>{field.label as React.ReactNode}</FieldLabel>
+          <FieldHelp>{field.help as React.ReactNode}</FieldHelp>
+        </div>
+        <IconWrapper>
+          <LinkButton
+            size="sm"
+            data-test-id="fine-tuning"
+            to={`/settings/account/notifications/${NOTIFICATION_SETTINGS_PATHNAMES[type]}/`}
+          >
+            {t('Manage')}
+          </LinkButton>
+        </IconWrapper>
+      </FieldWrapper>
+    );
+  };
+
+  // use 0 as stale time because we change the values elsewhere
+  const {
+    data: initialData,
+    isPending,
+    isError,
+    refetch,
+  } = useApiQuery<NotificationFields>([NOTIFICATIONS_ENDPOINT], {
+    staleTime: 0,
+  });
+
+  const notificationMutationOptions = mutationOptions({
+    mutationFn: (data: Partial<NotificationFields>) => {
+      return fetchMutation({
+        method: 'PUT',
+        url: NOTIFICATIONS_ENDPOINT,
+        data,
+      });
+    },
+    onSuccess: () => {
+      addSuccessMessage(t('Notification preferences saved'));
+    },
+  });
+
+  return (
+    <Fragment>
+      <SentryDocumentTitle title={t('Notifications')} />
+      <SettingsPageHeader title={t('Notifications')} />
+      <FormSearch route="/settings/account/notifications/">
+        <TextBlock>
+          {tct(
+            'Personal notifications sent by email or an integration. Looking to add or remove an email address? [link:Update your email settings.]',
+            {
+              link: <Link to="/settings/account/emails" />,
+            }
+          )}
+        </TextBlock>
+        {isError && <LoadingError onRetry={refetch} />}
+        <Panel>
+          <PanelHeader>{t('Notification')}</PanelHeader>
+          <PanelBody>{notificationFields.map(renderOneSetting)}</PanelBody>
+        </Panel>
+        {isPending && <LoadingIndicator />}
+        {initialData && (
+          <FieldGroup title={t('My Activity')}>
+            <AutoSaveField
+              name="personalActivityNotifications"
+              schema={notificationSchema}
+              initialValue={initialData.personalActivityNotifications}
+              mutationOptions={notificationMutationOptions}
+            >
+              {field => (
+                <field.Layout.Row
+                  label={t('My Own Activity')}
+                  hintText={t('Notifications about your own actions on Sentry.')}
+                >
+                  <field.Switch
+                    checked={field.state.value}
+                    onChange={field.handleChange}
+                  />
+                </field.Layout.Row>
+              )}
+            </AutoSaveField>
+            <AutoSaveField
+              name="selfAssignOnResolve"
+              schema={notificationSchema}
+              initialValue={initialData.selfAssignOnResolve}
+              mutationOptions={notificationMutationOptions}
+            >
+              {field => (
+                <field.Layout.Row
+                  label={t('Resolve and Auto-Assign')}
+                  hintText={t(
+                    "When you resolve an unassigned issue, we'll auto-assign it to you."
+                  )}
+                >
+                  <field.Switch
+                    checked={field.state.value}
+                    onChange={field.handleChange}
+                  />
+                </field.Layout.Row>
+              )}
+            </AutoSaveField>
+          </FieldGroup>
+        )}
+      </FormSearch>
+    </Fragment>
+  );
+}
+export default withOrganizations(NotificationSettings);
+
+const FieldLabel = styled('div')`
+  font-size: ${p => p.theme.font.size.md};
+`;
+
+const FieldHelp = styled('div')`
+  font-size: ${p => p.theme.font.size.sm};
+  color: ${p => p.theme.tokens.content.secondary};
+`;
+
+const FieldWrapper = styled('div')`
+  display: grid;
+  grid-template-columns: 1fr min-content;
+  padding: ${space(2)};
+  border-bottom: 1px solid ${p => p.theme.tokens.border.primary};
+`;
+
+const IconWrapper = styled('div')`
+  display: flex;
+  margin: auto;
+  cursor: pointer;
+`;

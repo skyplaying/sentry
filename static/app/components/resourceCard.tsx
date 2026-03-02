@@ -1,38 +1,31 @@
 import styled from '@emotion/styled';
 
-import ExternalLink from 'app/components/links/externalLink';
-import {Panel} from 'app/components/panels';
-import space from 'app/styles/space';
-import {analytics} from 'app/utils/analytics';
+import {ExternalLink} from '@sentry/scraps/link';
+
+import Card from 'sentry/components/card';
+import {space} from 'sentry/styles/space';
 
 type Props = {
-  title: string;
-  link: string;
   imgUrl: string;
+  link: string;
+  title: string;
 };
 
-const ResourceCard = ({title, link, imgUrl}: Props) => (
-  <ResourceCardWrapper
-    onClick={() => analytics('orgdash.resource_clicked', {link, title})}
-  >
-    <StyledLink href={link}>
-      <StyledImg src={imgUrl} alt={title} />
-      <StyledTitle>{title}</StyledTitle>
-    </StyledLink>
-  </ResourceCardWrapper>
-);
+function ResourceCard({title, link, imgUrl}: Props) {
+  return (
+    <Card interactive>
+      <StyledLink href={link}>
+        <StyledImg src={imgUrl} alt={title} />
+        <StyledTitle>{title}</StyledTitle>
+      </StyledLink>
+    </Card>
+  );
+}
 
 export default ResourceCard;
 
-const ResourceCardWrapper = styled(Panel)`
-  display: flex;
-  flex: 1;
-  align-items: center;
-  padding: ${space(3)};
-  margin-bottom: 0;
-`;
-
 const StyledLink = styled(ExternalLink)`
+  padding: ${space(3)};
   flex: 1;
 `;
 
@@ -43,8 +36,8 @@ const StyledImg = styled('img')`
 `;
 
 const StyledTitle = styled('div')`
-  color: ${p => p.theme.textColor};
-  font-size: ${p => p.theme.fontSizeLarge};
+  color: ${p => p.theme.tokens.content.primary};
+  font-size: ${p => p.theme.font.size.lg};
   text-align: center;
-  font-weight: bold;
+  font-weight: ${p => p.theme.font.weight.sans.medium};
 `;

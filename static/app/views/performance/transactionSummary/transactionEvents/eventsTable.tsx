@@ -1,336 +1,639 @@
-import * as React from 'react';
-import {browserHistory} from 'react-router';
+import type React from 'react';
+import {Fragment, useCallback, useMemo, useState, type ReactNode} from 'react';
+import type {Theme} from '@emotion/react';
 import styled from '@emotion/styled';
-import {Location, LocationDescriptorObject} from 'history';
+import type {Location, LocationDescriptor, LocationDescriptorObject} from 'history';
+import groupBy from 'lodash/groupBy';
 
-import GridEditable, {COL_WIDTH_UNDEFINED, GridColumn} from 'app/components/gridEditable';
-import SortLink from 'app/components/gridEditable/sortLink';
-import Link from 'app/components/links/link';
-import Pagination from 'app/components/pagination';
-import QuestionTooltip from 'app/components/questionTooltip';
-import Tooltip from 'app/components/tooltip';
-import {t} from 'app/locale';
-import {Organization, Project} from 'app/types';
-import {defined} from 'app/utils';
-import {trackAnalyticsEvent} from 'app/utils/analytics';
-import DiscoverQuery, {TableData, TableDataRow} from 'app/utils/discover/discoverQuery';
-import EventView, {EventData, isFieldSortable} from 'app/utils/discover/eventView';
-import {getFieldRenderer} from 'app/utils/discover/fieldRenderers';
+import {LinkButton} from '@sentry/scraps/button';
+import {Link} from '@sentry/scraps/link';
+import {Tooltip} from '@sentry/scraps/tooltip';
+
+import Pagination from 'sentry/components/pagination';
+import QuestionTooltip from 'sentry/components/questionTooltip';
+import GridEditable from 'sentry/components/tables/gridEditable';
+import SortLink from 'sentry/components/tables/gridEditable/sortLink';
+import useStateBasedColumnResize from 'sentry/components/tables/gridEditable/useStateBasedColumnResize';
+import {IconProfiling} from 'sentry/icons';
+import {t, tct} from 'sentry/locale';
+import type {IssueAttachment} from 'sentry/types/group';
+import type {RouteContextInterface} from 'sentry/types/legacyReactRouter';
+import type {Organization} from 'sentry/types/organization';
+import {trackAnalytics} from 'sentry/utils/analytics';
+import toArray from 'sentry/utils/array/toArray';
+import {browserHistory} from 'sentry/utils/browserHistory';
+import type {TableData, TableDataRow} from 'sentry/utils/discover/discoverQuery';
+import DiscoverQuery from 'sentry/utils/discover/discoverQuery';
+import type EventView from 'sentry/utils/discover/eventView';
+import {isFieldSortable} from 'sentry/utils/discover/eventView';
+import {getFieldRenderer} from 'sentry/utils/discover/fieldRenderers';
 import {
   fieldAlignment,
   getAggregateAlias,
   isSpanOperationBreakdownField,
   SPAN_OP_RELATIVE_BREAKDOWN_FIELD,
-} from 'app/utils/discover/fields';
-import {MutableSearch} from 'app/utils/tokenizeSearch';
-import CellAction, {Actions, updateQuery} from 'app/views/eventsV2/table/cellAction';
-import {TableColumn} from 'app/views/eventsV2/table/types';
+} from 'sentry/utils/discover/fields';
+import {generateLinkToEventInTraceView} from 'sentry/utils/discover/urls';
+import ViewReplayLink from 'sentry/utils/discover/viewReplayLink';
+import {isEmptyObject} from 'sentry/utils/object/isEmptyObject';
+import parseLinkHeader from 'sentry/utils/parseLinkHeader';
+import {VisuallyCompleteWithData} from 'sentry/utils/performanceForSentry';
+import useApi from 'sentry/utils/useApi';
+import CellAction, {Actions, updateQuery} from 'sentry/views/discover/table/cellAction';
+import type {TableColumn} from 'sentry/views/discover/table/types';
+import type {DomainViewFilters} from 'sentry/views/insights/pages/useFilters';
+import {COLUMN_TITLES} from 'sentry/views/performance/data';
+import {TraceViewSources} from 'sentry/views/performance/newTraceDetails/traceHeader/breadcrumbs';
+import {
+  generateProfileLink,
+  generateReplayLink,
+  generateTraceLink,
+  normalizeSearchConditions,
+} from 'sentry/views/performance/transactionSummary/utils';
 
-import {COLUMN_TITLES} from '../../data';
-import {generateTraceLink, generateTransactionLink} from '../utils';
+import type {TitleProps} from './operationSort';
+import OperationSort from './operationSort';
 
-import OperationSort, {TitleProps} from './operationSort';
-
-export function getProjectID(
-  eventData: EventData,
-  projects: Project[]
-): string | undefined {
-  const projectSlug = (eventData?.project as string) || undefined;
-
-  if (typeof projectSlug === undefined) {
-    return undefined;
+function shouldRenderColumn(containsSpanOpsBreakdown: boolean, col: string): boolean {
+  if (containsSpanOpsBreakdown && isSpanOperationBreakdownField(col)) {
+    return false;
   }
 
-  const project = projects.find(currentProject => currentProject.slug === projectSlug);
-
-  if (!project) {
-    return undefined;
+  if (
+    col === 'profiler.id' ||
+    col === 'thread.id' ||
+    col === 'precise.start_ts' ||
+    col === 'precise.finish_ts'
+  ) {
+    return false;
   }
 
-  return project.id;
+  return true;
 }
 
-class OperationTitle extends React.Component<TitleProps> {
-  render() {
-    const {onClick} = this.props;
-    return (
-      <div onClick={onClick}>
-        <span>{t('operation duration')}</span>
-        <StyledIconQuestion
-          size="xs"
-          position="top"
-          title={t(
-            `Span durations are summed over the course of an entire transaction. Any overlapping spans are only counted once.`
-          )}
-        />
-      </div>
-    );
-  }
+function OperationTitle({onClick}: TitleProps) {
+  return (
+    <div onClick={onClick}>
+      <span>{t('operation duration')}</span>
+      <StyledIconQuestion
+        size="xs"
+        position="top"
+        title={t(
+          `Span durations are summed over the course of an entire transaction. Any overlapping spans are only counted once.`
+        )}
+      />
+    </div>
+  );
 }
 
 type Props = {
   eventView: EventView;
-  organization: Organization;
   location: Location;
+  organization: Organization;
+  routes: RouteContextInterface['routes'];
   setError: (msg: string | undefined) => void;
-  columnTitles?: string[];
+  theme: Theme;
   transactionName: string;
+  applyEnvironmentFilter?: boolean;
+  columnTitles?: string[];
+  customColumns?: Array<'attachments' | 'minidump'>;
+  domainViewFilters?: DomainViewFilters;
+  excludedTags?: string[];
+  hidePagination?: boolean;
+  isEventLoading?: boolean;
+  isRegressionIssue?: boolean;
+  issueId?: string;
+  projectSlug?: string;
+  referrer?: string;
+  renderTableHeader?: (props: {
+    isPending: boolean;
+    pageEventsCount: number;
+    pageLinks: string | null;
+    totalEventsCount: string | number;
+  }) => ReactNode;
 };
 
-type State = {
-  widths: number[];
-};
+export default function EventsTable({
+  eventView,
+  location,
+  organization,
+  routes,
+  setError,
+  theme,
+  transactionName,
+  applyEnvironmentFilter,
+  columnTitles: initialColumnTitles,
+  customColumns,
+  domainViewFilters,
+  excludedTags,
+  hidePagination,
+  isEventLoading,
+  isRegressionIssue,
+  issueId,
+  projectSlug,
+  referrer,
+  renderTableHeader,
+}: Props) {
+  const api = useApi({persistInFlight: true});
+  const [lastFetchedCursor, setLastFetchedCursor] = useState('');
+  const [attachments, setAttachments] = useState<IssueAttachment[]>([]);
+  const [hasMinidumps, setHasMinidumps] = useState(false);
 
-class EventsTable extends React.Component<Props, State> {
-  state: State = {
-    widths: [],
-  };
+  const replayLinkGenerator = useMemo(() => generateReplayLink(routes), [routes]);
 
-  handleCellAction = (column: TableColumn<keyof TableDataRow>) => {
-    return (action: Actions, value: React.ReactText) => {
-      const {eventView, location, organization} = this.props;
+  const handleCellAction = useCallback(
+    (column: TableColumn<keyof TableDataRow>) => {
+      return (action: Actions, value: string | number) => {
+        trackAnalytics('performance_views.transactionEvents.cellaction', {
+          organization,
+          action,
+        });
 
-      trackAnalyticsEvent({
-        eventKey: 'performance_views.transactionEvents.cellaction',
-        eventName: 'Performance Views: Transaction Events Tab Cell Action Clicked',
-        organization_id: parseInt(organization.id, 10),
-        action,
+        const searchConditions = normalizeSearchConditions(eventView.query);
+
+        if (excludedTags) {
+          excludedTags.forEach(tag => {
+            searchConditions.removeFilter(tag);
+          });
+        }
+
+        updateQuery(searchConditions, action, column, value);
+
+        if (applyEnvironmentFilter && column.key === 'environment') {
+          let newEnvs = toArray(location.query.environment);
+
+          if (action === Actions.ADD) {
+            if (!newEnvs.includes(String(value))) {
+              newEnvs.push(String(value));
+            }
+          } else {
+            newEnvs = newEnvs.filter(env => env !== value);
+          }
+
+          browserHistory.push({
+            pathname: location.pathname,
+            query: {
+              ...location.query,
+              cursor: undefined,
+              environment: newEnvs,
+            },
+          });
+          return;
+        }
+
+        browserHistory.push({
+          pathname: location.pathname,
+          query: {
+            ...location.query,
+            cursor: undefined,
+            query: searchConditions.formatString(),
+          },
+        });
+      };
+    },
+    [organization, eventView, excludedTags, applyEnvironmentFilter, location]
+  );
+
+  const renderBodyCell = useCallback(
+    (
+      tableData: TableData | null,
+      column: TableColumn<keyof TableDataRow>,
+      dataRow: TableDataRow
+    ): React.ReactNode => {
+      if (!tableData?.meta) {
+        return dataRow[column.key];
+      }
+      const tableMeta = tableData.meta;
+      const field = String(column.key);
+      const fieldRenderer = getFieldRenderer(field, tableMeta);
+      const rendered = fieldRenderer(dataRow, {
+        organization,
+        location,
+        eventView,
+        theme,
+        projectSlug,
       });
 
-      const searchConditions = new MutableSearch(eventView.query);
+      const allowActions = [
+        Actions.ADD,
+        Actions.EXCLUDE,
+        Actions.SHOW_GREATER_THAN,
+        Actions.SHOW_LESS_THAN,
+        Actions.OPEN_EXTERNAL_LINK,
+        Actions.OPEN_INTERNAL_LINK,
+      ];
 
-      // remove any event.type queries since it is implied to apply to only transactions
-      searchConditions.removeFilter('event.type');
+      if (['attachments', 'minidump'].includes(field)) {
+        return rendered;
+      }
 
-      updateQuery(searchConditions, action, column, value);
+      const cellActionHandler = handleCellAction(column);
 
-      browserHistory.push({
-        pathname: location.pathname,
-        query: {
-          ...location.query,
-          cursor: undefined,
-          query: searchConditions.formatString(),
-        },
-      });
-    };
-  };
+      if (field === 'id' || field === 'trace') {
+        const isIssue = !!issueId;
+        let target: LocationDescriptor = {};
+        if (isIssue && !isRegressionIssue && field === 'id') {
+          target.pathname = `/organizations/${organization.slug}/issues/${issueId}/events/${dataRow.id}/`;
+        } else {
+          if (field === 'id') {
+            target = generateLinkToEventInTraceView({
+              traceSlug: dataRow.trace?.toString()!,
+              eventId: dataRow.id,
+              timestamp: dataRow.timestamp!,
+              location,
+              organization,
+              source: TraceViewSources.PERFORMANCE_TRANSACTION_SUMMARY,
+              view: domainViewFilters?.view,
+            });
+          } else {
+            target = generateTraceLink(transactionName, domainViewFilters?.view)(
+              organization,
+              dataRow,
+              location
+            );
+          }
+        }
 
-  renderBodyCell(
-    tableData: TableData | null,
-    column: TableColumn<keyof TableDataRow>,
-    dataRow: TableDataRow
-  ): React.ReactNode {
-    const {eventView, organization, location, transactionName} = this.props;
+        return (
+          <CellAction
+            column={column}
+            dataRow={dataRow}
+            handleCellAction={cellActionHandler}
+            allowActions={allowActions}
+          >
+            <Link to={target}>{rendered}</Link>
+          </CellAction>
+        );
+      }
 
-    if (!tableData || !tableData.meta) {
-      return dataRow[column.key];
-    }
-    const tableMeta = tableData.meta;
-    const field = String(column.key);
-    const fieldRenderer = getFieldRenderer(field, tableMeta);
-    const rendered = fieldRenderer(dataRow, {organization, location, eventView});
+      if (field === 'replayId') {
+        const target: LocationDescriptor | null = dataRow.replayId
+          ? replayLinkGenerator(organization, dataRow, undefined)
+          : null;
 
-    const allowActions = [
-      Actions.ADD,
-      Actions.EXCLUDE,
-      Actions.SHOW_GREATER_THAN,
-      Actions.SHOW_LESS_THAN,
-    ];
+        return (
+          <CellAction
+            column={column}
+            dataRow={dataRow}
+            handleCellAction={cellActionHandler}
+            allowActions={allowActions}
+          >
+            {target ? (
+              <ViewReplayLink replayId={dataRow.replayId!} to={target}>
+                {rendered}
+              </ViewReplayLink>
+            ) : (
+              rendered
+            )}
+          </CellAction>
+        );
+      }
 
-    if (field === 'id' || field === 'trace') {
-      const generateLink = field === 'id' ? generateTransactionLink : generateTraceLink;
-      const target = generateLink(transactionName)(organization, dataRow, location.query);
+      if (field === 'profile.id') {
+        const target = generateProfileLink()(organization, dataRow, undefined);
+        const transactionMeetsProfilingRequirements =
+          typeof dataRow['transaction.duration'] === 'number' &&
+          dataRow['transaction.duration'] > 20;
+
+        return (
+          <Tooltip
+            title={
+              !transactionMeetsProfilingRequirements && !dataRow['profile.id']
+                ? t('Profiles require a transaction duration of at least 20ms')
+                : null
+            }
+          >
+            <CellAction
+              column={column}
+              dataRow={dataRow}
+              handleCellAction={cellActionHandler}
+              allowActions={allowActions}
+            >
+              <div>
+                <LinkButton
+                  disabled={!target || isEmptyObject(target)}
+                  to={target || {}}
+                  size="xs"
+                >
+                  <IconProfiling size="xs" />
+                </LinkButton>
+              </div>
+            </CellAction>
+          </Tooltip>
+        );
+      }
+
+      const fieldName = getAggregateAlias(field);
+      const value = dataRow[fieldName];
+      if (
+        tableMeta[fieldName] === 'integer' &&
+        typeof value === 'number' &&
+        value > 999
+      ) {
+        return (
+          <Tooltip
+            title={value.toLocaleString()}
+            containerDisplayMode="block"
+            position="right"
+          >
+            <CellAction
+              column={column}
+              dataRow={dataRow}
+              handleCellAction={cellActionHandler}
+              allowActions={allowActions}
+            >
+              {rendered}
+            </CellAction>
+          </Tooltip>
+        );
+      }
 
       return (
         <CellAction
           column={column}
           dataRow={dataRow}
-          handleCellAction={this.handleCellAction(column)}
+          handleCellAction={cellActionHandler}
           allowActions={allowActions}
         >
-          <Link to={target}>{rendered}</Link>
+          {rendered}
         </CellAction>
       );
-    }
+    },
+    [
+      organization,
+      location,
+      eventView,
+      theme,
+      projectSlug,
+      transactionName,
+      issueId,
+      isRegressionIssue,
+      domainViewFilters,
+      replayLinkGenerator,
+      handleCellAction,
+    ]
+  );
 
-    const fieldName = getAggregateAlias(field);
-    const value = dataRow[fieldName];
-    if (tableMeta[fieldName] === 'integer' && defined(value) && value > 999) {
+  const renderBodyCellWithData = useCallback(
+    (tableData: TableData | null) => {
       return (
-        <Tooltip
-          title={value.toLocaleString()}
-          containerDisplayMode="block"
-          position="right"
-        >
-          <CellAction
-            column={column}
-            dataRow={dataRow}
-            handleCellAction={this.handleCellAction(column)}
-            allowActions={allowActions}
-          >
-            {rendered}
-          </CellAction>
-        </Tooltip>
-      );
-    }
+        column: TableColumn<keyof TableDataRow>,
+        dataRow: TableDataRow
+      ): React.ReactNode => renderBodyCell(tableData, column, dataRow);
+    },
+    [renderBodyCell]
+  );
 
-    return (
-      <CellAction
-        column={column}
-        dataRow={dataRow}
-        handleCellAction={this.handleCellAction(column)}
-        allowActions={allowActions}
-      >
-        {rendered}
-      </CellAction>
-    );
-  }
+  const onSortClick = useCallback(
+    (currentSortKind?: string, currentSortField?: string) => {
+      trackAnalytics('performance_views.transactionEvents.sort', {
+        organization,
+        field: currentSortField,
+        direction: currentSortKind,
+      });
+    },
+    [organization]
+  );
 
-  renderBodyCellWithData = (tableData: TableData | null) => {
-    return (
+  const renderHeadCell = useCallback(
+    (
+      tableMeta: TableData['meta'],
       column: TableColumn<keyof TableDataRow>,
-      dataRow: TableDataRow
-    ): React.ReactNode => this.renderBodyCell(tableData, column, dataRow);
-  };
+      title: React.ReactNode
+    ): React.ReactNode => {
+      const align = fieldAlignment(column.name, column.type, tableMeta);
+      const field = {field: column.name, width: column.width};
 
-  onSortClick(currentSortKind?: string, currentSortField?: string) {
-    const {organization} = this.props;
-    trackAnalyticsEvent({
-      eventKey: 'performance_views.transactionEvents.sort',
-      eventName: 'Performance Views: Transaction Events Tab Sorted',
-      organization_id: parseInt(organization.id, 10),
-      field: currentSortField,
-      direction: currentSortKind,
+      function generateSortLink(): LocationDescriptorObject | undefined {
+        if (!tableMeta) {
+          return undefined;
+        }
+
+        const nextEventView = eventView.sortOnField(field, tableMeta);
+        const queryStringObject = nextEventView.generateQueryStringObject();
+
+        return {
+          ...location,
+          query: {...location.query, sort: queryStringObject.sort},
+        };
+      }
+      const currentSort = eventView.sortForField(field, tableMeta);
+      const canSort =
+        field.field !== 'id' &&
+        field.field !== 'trace' &&
+        field.field !== 'replayId' &&
+        field.field !== SPAN_OP_RELATIVE_BREAKDOWN_FIELD &&
+        isFieldSortable(field, tableMeta);
+
+      const currentSortKind = currentSort ? currentSort.kind : undefined;
+      const currentSortField = currentSort ? currentSort.field : undefined;
+
+      if (field.field === SPAN_OP_RELATIVE_BREAKDOWN_FIELD) {
+        title = (
+          <OperationSort
+            title={OperationTitle}
+            eventView={eventView}
+            tableMeta={tableMeta}
+            location={location}
+          />
+        );
+      }
+
+      const sortLink = (
+        <SortLink
+          align={align}
+          title={title || field.field}
+          direction={currentSortKind}
+          canSort={canSort}
+          generateSortLink={generateSortLink}
+          onClick={() => onSortClick(currentSortKind, currentSortField)}
+        />
+      );
+      return sortLink;
+    },
+    [eventView, location, onSortClick]
+  );
+
+  const renderHeadCellWithMeta = useCallback(
+    (tableMeta: TableData['meta']) => {
+      const columnTitles = initialColumnTitles ?? COLUMN_TITLES;
+      return (column: TableColumn<keyof TableDataRow>, index: number): React.ReactNode =>
+        renderHeadCell(tableMeta, column, columnTitles[index]);
+    },
+    [renderHeadCell, initialColumnTitles]
+  );
+
+  const joinCustomData = useCallback(
+    (tableData: TableData | null) => {
+      if (!tableData?.data) {
+        return;
+      }
+      const attachmentsByEvent = groupBy(attachments, 'event_id');
+      tableData.data.forEach(event => {
+        event.attachments = (attachmentsByEvent[event.id] || []) as any;
+      });
+    },
+    [attachments]
+  );
+
+  const fetchAttachments = useCallback(
+    async (tableData: TableData, cursor: string) => {
+      const eventIds = tableData.data.map(value => value.id);
+      const fetchOnlyMinidumps = !customColumns?.includes('attachments');
+
+      const queries: string = [
+        'per_page=50',
+        ...(fetchOnlyMinidumps ? ['types=event.minidump'] : []),
+        ...eventIds.map(eventId => `event_id=${eventId}`),
+      ].join('&');
+
+      const res: IssueAttachment[] = await api.requestPromise(
+        `/api/0/organizations/${organization.slug}/issues/${issueId}/attachments/?${queries}`
+      );
+
+      let newHasMinidumps = false;
+
+      res.forEach(attachment => {
+        if (attachment.type === 'event.minidump') {
+          newHasMinidumps = true;
+        }
+      });
+
+      setLastFetchedCursor(cursor);
+      setAttachments(res);
+      setHasMinidumps(newHasMinidumps);
+    },
+    [api, customColumns, issueId, organization.slug]
+  );
+
+  const totalEventsView = eventView.clone();
+  totalEventsView.sorts = [];
+  totalEventsView.fields = [{field: 'count()', width: -1}];
+
+  const containsSpanOpsBreakdown = eventView
+    .getColumns()
+    .some(
+      (col: TableColumn<string | number>) => col.name === SPAN_OP_RELATIVE_BREAKDOWN_FIELD
+    );
+
+  const {columns, handleResizeColumn} = useStateBasedColumnResize({
+    columns: eventView.getColumns(),
+  });
+
+  const columnOrder = columns.filter((col: TableColumn<string | number>) =>
+    shouldRenderColumn(containsSpanOpsBreakdown, col.name)
+  );
+
+  if (customColumns?.includes('attachments') && attachments.length) {
+    columnOrder.push({
+      isSortable: false,
+      key: 'attachments',
+      name: 'attachments',
+      type: 'never',
+      column: {field: 'attachments', kind: 'field', alias: undefined},
     });
   }
 
-  renderHeadCell(
-    tableMeta: TableData['meta'],
-    column: TableColumn<keyof TableDataRow>,
-    title: React.ReactNode
-  ): React.ReactNode {
-    const {eventView, location} = this.props;
-
-    const align = fieldAlignment(column.name, column.type, tableMeta);
-    const field = {field: column.name, width: column.width};
-
-    function generateSortLink(): LocationDescriptorObject | undefined {
-      if (!tableMeta) {
-        return undefined;
-      }
-
-      const nextEventView = eventView.sortOnField(field, tableMeta);
-      const queryStringObject = nextEventView.generateQueryStringObject();
-
-      return {
-        ...location,
-        query: {...location.query, sort: queryStringObject.sort},
-      };
-    }
-    const currentSort = eventView.sortForField(field, tableMeta);
-    // Event id and Trace id are technically sortable but we don't want to sort them here since sorting by a uuid value doesn't make sense
-    const canSort =
-      field.field !== 'id' &&
-      field.field !== 'trace' &&
-      field.field !== SPAN_OP_RELATIVE_BREAKDOWN_FIELD &&
-      isFieldSortable(field, tableMeta);
-
-    const currentSortKind = currentSort ? currentSort.kind : undefined;
-    const currentSortField = currentSort ? currentSort.field : undefined;
-
-    if (field.field === SPAN_OP_RELATIVE_BREAKDOWN_FIELD) {
-      title = (
-        <OperationSort
-          title={OperationTitle}
-          eventView={eventView}
-          tableMeta={tableMeta}
-          location={location}
-        />
-      );
-    }
-
-    const sortLink = (
-      <SortLink
-        align={align}
-        title={title || field.field}
-        direction={currentSortKind}
-        canSort={canSort}
-        generateSortLink={generateSortLink}
-        onClick={() => this.onSortClick(currentSortKind, currentSortField)}
-      />
-    );
-    return sortLink;
+  if (customColumns?.includes('minidump') && hasMinidumps) {
+    columnOrder.push({
+      isSortable: false,
+      key: 'minidump',
+      name: 'minidump',
+      type: 'never',
+      column: {field: 'minidump', kind: 'field', alias: undefined},
+    });
   }
 
-  renderHeadCellWithMeta = (tableMeta: TableData['meta']) => {
-    const columnTitles = this.props.columnTitles ?? COLUMN_TITLES;
-    return (column: TableColumn<keyof TableDataRow>, index: number): React.ReactNode =>
-      this.renderHeadCell(tableMeta, column, columnTitles[index]);
-  };
+  return (
+    <div data-test-id="events-table">
+      <DiscoverQuery
+        eventView={totalEventsView}
+        orgSlug={organization.slug}
+        location={location}
+        setError={error => setError(error?.message)}
+        referrer="api.insights.transaction-summary"
+        cursor="0:0:0"
+      >
+        {({isLoading: isTotalEventsLoading, tableData: table}) => {
+          const totalEventsCount = table?.data[0]?.['count()'] ?? 0;
 
-  handleResizeColumn = (columnIndex: number, nextColumn: GridColumn) => {
-    const widths: number[] = [...this.state.widths];
-    widths[columnIndex] = nextColumn.width
-      ? Number(nextColumn.width)
-      : COL_WIDTH_UNDEFINED;
-    this.setState({widths});
-  };
+          return (
+            <DiscoverQuery
+              eventView={eventView}
+              orgSlug={organization.slug}
+              location={location}
+              setError={error => setError(error?.message)}
+              referrer={referrer || 'api.insights.transaction-events'}
+            >
+              {({pageLinks, isLoading: isDiscoverQueryLoading, tableData}) => {
+                tableData ??= {data: []};
+                const pageEventsCount = tableData?.data?.length ?? 0;
+                const parsedPageLinks = parseLinkHeader(pageLinks);
+                const cursor = parsedPageLinks?.next?.cursor;
+                const shouldFetchAttachments: boolean =
+                  organization.features.includes('event-attachments') &&
+                  !!issueId &&
+                  !!cursor &&
+                  lastFetchedCursor !== cursor; // Only fetch on issue details page
 
-  render() {
-    const {eventView, organization, location, setError} = this.props;
-
-    const {widths} = this.state;
-    const containsSpanOpsBreakdown = eventView
-      .getColumns()
-      .find(
-        (col: TableColumn<React.ReactText>) =>
-          col.name === SPAN_OP_RELATIVE_BREAKDOWN_FIELD
-      );
-    const columnOrder = eventView
-      .getColumns()
-      .filter(
-        (col: TableColumn<React.ReactText>) =>
-          !containsSpanOpsBreakdown || !isSpanOperationBreakdownField(col.name)
-      )
-      .map((col: TableColumn<React.ReactText>, i: number) => {
-        if (typeof widths[i] === 'number') {
-          return {...col, width: widths[i]};
-        }
-        return col;
-      });
-
-    return (
-      <div>
-        <DiscoverQuery
-          eventView={eventView}
-          orgSlug={organization.slug}
-          location={location}
-          setError={setError}
-          referrer="api.performance.transaction-events"
-        >
-          {({pageLinks, isLoading, tableData}) => {
-            return (
-              <React.Fragment>
-                <GridEditable
-                  isLoading={isLoading}
-                  data={tableData ? tableData.data : []}
-                  columnOrder={columnOrder}
-                  columnSortBy={eventView.getSorts()}
-                  grid={{
-                    onResizeColumn: this.handleResizeColumn,
-                    renderHeadCell: this.renderHeadCellWithMeta(tableData?.meta) as any,
-                    renderBodyCell: this.renderBodyCellWithData(tableData) as any,
-                  }}
-                  location={location}
-                />
-                <Pagination pageLinks={pageLinks} />
-              </React.Fragment>
-            );
-          }}
-        </DiscoverQuery>
-      </div>
-    );
-  }
+                const paginationCaption =
+                  totalEventsCount && pageEventsCount
+                    ? tct('Showing [pageEventsCount] of [totalEventsCount] events', {
+                        pageEventsCount: pageEventsCount.toLocaleString(),
+                        totalEventsCount: totalEventsCount.toLocaleString(),
+                      })
+                    : undefined;
+                if (cursor && shouldFetchAttachments) {
+                  fetchAttachments(tableData, cursor);
+                }
+                joinCustomData(tableData);
+                return (
+                  <Fragment>
+                    <VisuallyCompleteWithData
+                      id="TransactionEvents-EventsTable"
+                      hasData={!!tableData?.data?.length}
+                    >
+                      {renderTableHeader
+                        ? renderTableHeader({
+                            isPending: isDiscoverQueryLoading,
+                            pageLinks,
+                            pageEventsCount,
+                            totalEventsCount,
+                          })
+                        : null}
+                      <GridEditable
+                        isLoading={
+                          isTotalEventsLoading ||
+                          isDiscoverQueryLoading ||
+                          shouldFetchAttachments ||
+                          isEventLoading
+                        }
+                        data={tableData?.data ?? []}
+                        columnOrder={columnOrder}
+                        columnSortBy={eventView.getSorts()}
+                        grid={{
+                          onResizeColumn: handleResizeColumn,
+                          renderHeadCell: renderHeadCellWithMeta(tableData?.meta) as any,
+                          renderBodyCell: renderBodyCellWithData(tableData) as any,
+                        }}
+                      />
+                    </VisuallyCompleteWithData>
+                    {hidePagination ? null : (
+                      <Pagination
+                        disabled={isDiscoverQueryLoading}
+                        caption={paginationCaption}
+                        pageLinks={pageLinks}
+                      />
+                    )}
+                  </Fragment>
+                );
+              }}
+            </DiscoverQuery>
+          );
+        }}
+      </DiscoverQuery>
+    </div>
+  );
 }
 
 const StyledIconQuestion = styled(QuestionTooltip)`
@@ -338,5 +641,3 @@ const StyledIconQuestion = styled(QuestionTooltip)`
   top: 1px;
   left: 4px;
 `;
-
-export default EventsTable;

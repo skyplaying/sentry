@@ -1,8 +1,10 @@
-from sentry.testutils import AcceptanceTestCase, SnubaTestCase
+from sentry.testutils.cases import AcceptanceTestCase, SnubaTestCase
+from sentry.testutils.silo import no_silo_test
 
 
+@no_silo_test
 class ProjectReleaseTrackingSettingsTest(AcceptanceTestCase, SnubaTestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         super().setUp()
         self.user = self.create_user("foo@example.com")
         self.org = self.create_organization(name="Rowdy Tiger", owner=None)
@@ -13,7 +15,7 @@ class ProjectReleaseTrackingSettingsTest(AcceptanceTestCase, SnubaTestCase):
         self.login_as(self.user)
         self.path1 = f"/{self.org.slug}/{self.project.slug}/settings/release-tracking/"
 
-    def test_tags_list(self):
+    def test_tags_list(self) -> None:
         self.store_event(
             data={
                 "event_id": "a" * 32,
@@ -25,5 +27,4 @@ class ProjectReleaseTrackingSettingsTest(AcceptanceTestCase, SnubaTestCase):
             project_id=self.project.id,
         )
         self.browser.get(self.path1)
-        self.browser.wait_until_not(".loading-indicator")
-        self.browser.snapshot("project settings - release tracking")
+        self.browser.wait_until_not('[data-test-id="loading-indicator"]')

@@ -1,44 +1,42 @@
-import {Component} from 'react';
-import {RouteComponentProps} from 'react-router';
-import moment from 'moment';
+import {useCallback, useState} from 'react';
+import moment from 'moment-timezone';
 
-import {Client} from 'app/api';
-import LinkWithConfirmation from 'app/components/links/linkWithConfirmation';
-import ResultGrid from 'app/components/resultGrid';
-import {t} from 'app/locale';
-import withApi from 'app/utils/withApi';
+import {Button} from '@sentry/scraps/button';
+
+import Confirm from 'sentry/components/confirm';
+import ResultGrid from 'sentry/components/resultGrid';
+import {IconDelete} from 'sentry/icons';
+import {t} from 'sentry/locale';
+import useApi from 'sentry/utils/useApi';
 
 const prettyDate = (x: string) => moment(x).format('ll LTS');
 
-type Props = RouteComponentProps<{}, {}> & {api: Client};
-
-type State = {
-  loading: boolean;
-};
-
 type RelayRow = {
-  id: string;
-  relayId: string;
-  publicKey: string;
   firstSeen: string;
+  id: string;
   lastSeen: string;
+  publicKey: string;
+  relayId: string;
 };
 
-class AdminRelays extends Component<Props, State> {
-  state: State = {
-    loading: false,
-  };
+export default function AdminRelays() {
+  const api = useApi();
+  // TODO: Loading not hooked up to anything?
+  const [, setLoading] = useState(false);
 
-  onDelete(key: string) {
-    this.setState({loading: true});
-    this.props.api.request(`/relays/${key}/`, {
-      method: 'DELETE',
-      success: () => this.setState({loading: false}),
-      error: () => this.setState({loading: false}),
-    });
-  }
+  const onDelete = useCallback(
+    (key: string) => {
+      setLoading(true);
+      api.request(`/relays/${key}/`, {
+        method: 'DELETE',
+        success: () => setLoading(false),
+        error: () => setLoading(false),
+      });
+    },
+    [api]
+  );
 
-  getRow(row: RelayRow) {
+  const getRow = (row: RelayRow) => {
     return [
       <td key="id">
         <strong>{row.relayId}</strong>
@@ -52,57 +50,50 @@ class AdminRelays extends Component<Props, State> {
       </td>,
       <td key="tools" style={{textAlign: 'right'}}>
         <span className="editor-tools">
-          <LinkWithConfirmation
-            className="danger"
-            title="Remove"
+          <Confirm
             message={t('Are you sure you wish to delete this relay?')}
-            onConfirm={() => this.onDelete(row.id)}
+            onConfirm={() => onDelete(row.id)}
           >
-            {t('Remove')}
-          </LinkWithConfirmation>
+            <Button priority="danger" size="sm" icon={<IconDelete />}>
+              {t('Remove Relay')}
+            </Button>
+          </Confirm>
         </span>
       </td>,
     ];
-  }
+  };
 
-  render() {
-    const columns = [
-      <th key="id" style={{width: 350, textAlign: 'left'}}>
-        Relay
-      </th>,
-      <th key="key">Public Key</th>,
-      <th key="firstSeen" style={{width: 150, textAlign: 'right'}}>
-        First seen
-      </th>,
-      <th key="lastSeen" style={{width: 150, textAlign: 'right'}}>
-        Last seen
-      </th>,
-      <th key="tools" />,
-    ];
+  const columns = [
+    <th key="id" style={{width: 350, textAlign: 'left'}}>
+      Relay
+    </th>,
+    <th key="key">Public Key</th>,
+    <th key="firstSeen" style={{width: 150, textAlign: 'right'}}>
+      First seen
+    </th>,
+    <th key="lastSeen" style={{width: 150, textAlign: 'right'}}>
+      Last seen
+    </th>,
+    <th key="tools" />,
+  ];
 
-    return (
-      <div>
-        <h3>{t('Relays')}</h3>
-        <ResultGrid
-          path="/manage/relays/"
-          endpoint="/relays/"
-          method="GET"
-          columns={columns}
-          columnsForRow={this.getRow}
-          hasSearch={false}
-          sortOptions={[
-            ['firstSeen', 'First seen'],
-            ['lastSeen', 'Last seen'],
-            ['relayId', 'Relay ID'],
-          ]}
-          defaultSort="firstSeen"
-          {...this.props}
-        />
-      </div>
-    );
-  }
+  return (
+    <div>
+      <h3>{t('Relays')}</h3>
+      <ResultGrid
+        path="/manage/relays/"
+        endpoint="/relays/"
+        method="GET"
+        columns={columns}
+        columnsForRow={getRow}
+        hasSearch={false}
+        sortOptions={[
+          ['firstSeen', 'First seen'],
+          ['lastSeen', 'Last seen'],
+          ['relayId', 'Relay ID'],
+        ]}
+        defaultSort="firstSeen"
+      />
+    </div>
+  );
 }
-
-export {AdminRelays};
-
-export default withApi(AdminRelays);

@@ -1,13 +1,16 @@
-from selenium.common.exceptions import TimeoutException
+import pytest
 
-from sentry.models import Project
-from sentry.testutils import AcceptanceTestCase
-from sentry.utils.compat import mock
-from sentry.utils.retries import TimedRetryPolicy
+from sentry.models.project import Project
+from sentry.testutils.asserts import assert_existing_projects_status
+from sentry.testutils.cases import AcceptanceTestCase
+from sentry.testutils.silo import no_silo_test
+
+pytestmark = pytest.mark.sentry_metrics
 
 
+@no_silo_test
 class OrganizationOnboardingTest(AcceptanceTestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         super().setUp()
         self.user = self.create_user("foo@example.com")
         self.org = self.create_organization(name="Rowdy Tiger", owner=None)
@@ -17,39 +20,77 @@ class OrganizationOnboardingTest(AcceptanceTestCase):
         )
         self.login_as(self.user)
 
-    @mock.patch("sentry.models.ProjectKey.generate_api_key", return_value="test-dsn")
-    def test_onboarding(self, generate_api_key):
+    def start_onboarding(self) -> None:
         self.browser.get("/onboarding/%s/" % self.org.slug)
-
-        # Welcome step
         self.browser.wait_until('[data-test-id="onboarding-step-welcome"]')
-        self.browser.snapshot(name="onboarding - welcome")
-
-        # Platform selection step
-        self.browser.click('[data-test-id="welcome-next"]')
+        self.browser.click('[data-test-id="onboarding-welcome-start"]')
         self.browser.wait_until('[data-test-id="onboarding-step-select-platform"]')
 
-        self.browser.snapshot(name="onboarding - select platform")
+    def test_onboarding_happy_path(self) -> None:
+        self.start_onboarding()
+        self.browser.click('[data-test-id="platform-javascript-react"]')
+        self.browser.wait_until(xpath='//h2[text()="Configure React SDK"]')
+        project = Project.objects.get(organization=self.org, slug="javascript-react")
+        assert project.name == "javascript-react"
+        assert project.platform == "javascript-react"
+        assert_existing_projects_status(
+            self.org, active_project_ids=[project.id], deleted_project_ids=[]
+        )
 
-        # Select and create node JS project
-        self.browser.click('[data-test-id="platform-node"]')
-        self.browser.wait_until_not('[data-test-id="platform-select-next"][aria-disabled="true"]')
-        self.browser.wait_until('[data-test-id="platform-select-next"][aria-disabled="false"]')
+    def test_project_deletion_on_going_back(self) -> None:
+        self.start_onboarding()
+        self.browser.click('[data-test-id="platform-javascript-nextjs"]')
+        self.browser.wait_until(xpath='//h2[text()="Configure Next.js SDK"]')
+        project1 = Project.objects.get(organization=self.org, slug="javascript-nextjs")
+        assert project1.name == "javascript-nextjs"
+        assert project1.platform == "javascript-nextjs"
+        self.browser.click('[aria-label="Back"]')
+        self.browser.click('[data-test-id="platform-javascript-react"]')
+        self.browser.wait_until(xpath='//h2[text()="Configure React SDK"]')
+        project2 = Project.objects.get(organization=self.org, slug="javascript-react")
+        assert project2.name == "javascript-react"
+        assert project2.platform == "javascript-react"
+        self.browser.back()
+        self.browser.click(xpath='//a[text()="Skip Onboarding"]')
+        self.browser.get("/organizations/%s/projects/" % self.org.slug)
+        self.browser.wait_until(xpath='//h1[text()="Remain Calm"]')
+        assert_existing_projects_status(
+            self.org, active_project_ids=[], deleted_project_ids=[project1.id, project2.id]
+        )
 
-        @TimedRetryPolicy.wrap(timeout=5, exceptions=((TimeoutException,)))
-        def click_platform_select_name(browser):
-            browser.click('[data-test-id="platform-select-next"]')
-            # Project getting started
-            browser.wait_until('[data-test-id="onboarding-step-get-started"]')
+    def test_framework_modal_open_by_selecting_vanilla_platform(self) -> None:
+        self.start_onboarding()
+        self.browser.click('[data-test-id="platform-javascript"]')
+        self.browser.wait_until(xpath='//h6[text()="Do you use a framework?"]')
+        self.browser.click('[aria-label="Close Modal"]')
+        assert not self.browser.element_exists('[aria-label="Clear"]')
+        self.browser.click('[data-test-id="platform-javascript"]')
+        self.browser.click('[aria-label="Configure SDK"]')
+        self.browser.wait_until(xpath='//h2[text()="Configure Browser JavaScript SDK"]')
+        project = Project.objects.get(organization=self.org, slug="javascript")
+        assert project.name == "javascript"
+        assert project.platform == "javascript"
+        assert_existing_projects_status(
+            self.org, active_project_ids=[project.id], deleted_project_ids=[]
+        )
 
-        click_platform_select_name(self.browser)
-        self.browser.snapshot(name="onboarding - get started")
-
-        # Verify project was created for org
-        project = Project.objects.get(organization=self.org)
-        assert project.name == "rowdy-tiger"
-        assert project.platform == "node"
-
-        self.browser.click('[data-test-id="onboarding-getting-started-invite-members"]')
-        self.browser.wait_until("[role='dialog']")
-        self.browser.snapshot(name="onboarding - invite members")
+    def test_create_delete_create_same_platform(self) -> None:
+        "This test ensures that the regression fixed in PR https://github.com/getsentry/sentry/pull/87869 no longer occurs."
+        self.start_onboarding()
+        self.browser.click('[data-test-id="platform-javascript-nextjs"]')
+        self.browser.wait_until(xpath='//h2[text()="Configure Next.js SDK"]')
+        project1 = Project.objects.get(organization=self.org, slug="javascript-nextjs")
+        assert project1.name == "javascript-nextjs"
+        assert project1.platform == "javascript-nextjs"
+        self.browser.click('[aria-label="Back"]')
+        self.browser.click('[data-test-id="platform-javascript-nextjs"]')
+        self.browser.wait_until(xpath='//h2[text()="Configure Next.js SDK"]')
+        project2 = Project.objects.get(organization=self.org, slug="javascript-nextjs")
+        assert project2.name == "javascript-nextjs"
+        assert project2.platform == "javascript-nextjs"
+        self.browser.click(xpath='//a[text()="Skip Onboarding"]')
+        self.browser.get("/organizations/%s/projects/" % self.org.slug)
+        self.browser.wait_until("[data-test-id='javascript-nextjs']")
+        assert_existing_projects_status(
+            self.org, active_project_ids=[project2.id], deleted_project_ids=[project1.id]
+        )

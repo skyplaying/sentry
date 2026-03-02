@@ -1,19 +1,18 @@
-import * as React from 'react';
+import {Fragment} from 'react';
 
-import {Organization} from 'app/types';
-import {MobileVital, WebVital} from 'app/utils/discover/fields';
+import type {MobileVital, WebVital} from 'sentry/utils/fields';
 import {
   MOBILE_VITAL_DETAILS,
   WEB_VITAL_DETAILS,
-} from 'app/utils/performance/vitals/constants';
-import {Vital} from 'app/utils/performance/vitals/types';
+} from 'sentry/utils/performance/vitals/constants';
+import type {Vital} from 'sentry/utils/performance/vitals/types';
 
-type Measurement = {
-  name: string;
+export type Measurement = {
   key: string;
+  name: string;
 };
 
-type MeasurementCollection = Record<string, Measurement>;
+export type MeasurementCollection = Record<string, Measurement>;
 
 type VitalType = WebVital | MobileVital;
 
@@ -34,20 +33,21 @@ function measurementsFromDetails(
 const MOBILE_MEASUREMENTS = measurementsFromDetails(MOBILE_VITAL_DETAILS);
 const WEB_MEASUREMENTS = measurementsFromDetails(WEB_VITAL_DETAILS);
 
+export function getMeasurements() {
+  return {...WEB_MEASUREMENTS, ...MOBILE_MEASUREMENTS};
+}
+
 type ChildrenProps = {
   measurements: MeasurementCollection;
 };
 
 type Props = {
-  organization: Organization;
   children: (props: ChildrenProps) => React.ReactNode;
 };
 
-function Measurements({organization, children}: Props) {
-  const measurements = organization.features.includes('performance-mobile-vitals')
-    ? {...WEB_MEASUREMENTS, ...MOBILE_MEASUREMENTS}
-    : WEB_MEASUREMENTS;
-  return <React.Fragment>{children({measurements})}</React.Fragment>;
+function Measurements({children}: Props) {
+  const measurements = getMeasurements();
+  return <Fragment>{children({measurements})}</Fragment>;
 }
 
 export default Measurements;

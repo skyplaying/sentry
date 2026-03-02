@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import itertools
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Iterator, Tuple
+from typing import Generic
 
 import pytest
 
@@ -9,23 +12,23 @@ from sentry.utils.kvstore.abstract import K, KVStorage, V
 
 
 @dataclass
-class Properties:
+class Properties(Generic[K, V]):
     store: KVStorage[K, V]
     keys: Iterator[K]
     values: Iterator[V]
 
     @property
-    def items(self) -> Iterator[Tuple[K, V]]:
+    def items(self) -> Iterator[tuple[K, V]]:
         return zip(self.keys, self.values)
 
 
 @pytest.fixture(params=["bigtable", "cache/default", "memory", "memory+cachewrapper", "redis"])
 def properties(request) -> Properties:
     if request.param == "bigtable":
-        from tests.sentry.utils.kvstore.test_bigtable import create_store, get_credentials
+        from tests.sentry.utils.kvstore.test_bigtable import create_store
 
         return Properties(
-            create_store(request, get_credentials()),
+            create_store(request),
             keys=(f"{i}" for i in itertools.count()),
             values=(f"{i}".encode() for i in itertools.count()),
         )
@@ -39,7 +42,7 @@ def properties(request) -> Properties:
         if backend_label == "default":
             from sentry.cache import default_cache as cache
         else:
-            raise ValueError("unknown cache backend label")
+            raise AssertionError("unknown cache backend label")
 
         return Properties(
             CacheKVStorage(cache),
@@ -74,7 +77,7 @@ def properties(request) -> Properties:
             values=itertools.count(),
         )
     else:
-        raise ValueError("unknown kvstore label")
+        raise AssertionError("unknown kvstore label")
 
 
 def test_single_key_operations(properties: Properties) -> None:

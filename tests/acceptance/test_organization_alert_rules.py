@@ -1,25 +1,27 @@
 from django.utils import timezone
 
-from sentry.incidents.models import AlertRuleThresholdType, IncidentTrigger, TriggerStatus
-from sentry.models import Rule
-from sentry.testutils import AcceptanceTestCase, SnubaTestCase
+from sentry.incidents.models.alert_rule import AlertRuleThresholdType
+from sentry.incidents.models.incident import IncidentTrigger, TriggerStatus
+from sentry.models.rule import Rule
+from sentry.testutils.cases import AcceptanceTestCase, SnubaTestCase
+from sentry.testutils.silo import no_silo_test
 
 FEATURE_NAME = ["organizations:incidents"]
 
 
+@no_silo_test
 class OrganizationAlertRulesListTest(AcceptanceTestCase, SnubaTestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         super().setUp()
         self.login_as(self.user)
         self.path = f"/organizations/{self.organization.slug}/alerts/rules/"
 
-    def test_empty_alert_rules(self):
+    def test_empty_alert_rules(self) -> None:
         with self.feature(FEATURE_NAME):
             self.browser.get(self.path)
-            self.browser.wait_until_not(".loading-indicator")
-            self.browser.snapshot("alert rules - empty state")
+            self.browser.wait_until_not('[data-test-id="loading-indicator"]')
 
-    def test_alert_rules_list(self):
+    def test_alert_rules_list(self) -> None:
         Rule.objects.filter(project=self.project).update(date_added=timezone.now())
         self.create_alert_rule(
             name="My Alert Rule",
@@ -29,10 +31,9 @@ class OrganizationAlertRulesListTest(AcceptanceTestCase, SnubaTestCase):
 
         with self.feature(FEATURE_NAME):
             self.browser.get(self.path)
-            self.browser.wait_until_not(".loading-indicator")
-            self.browser.snapshot("alert rules - list")
+            self.browser.wait_until_not('[data-test-id="loading-indicator"]')
 
-    def test_alert_rules_alert_list(self):
+    def test_alert_rules_alert_list(self) -> None:
         self.create_alert_rule(
             name="My Alert Rule",
             projects=[self.project],
@@ -58,12 +59,6 @@ class OrganizationAlertRulesListTest(AcceptanceTestCase, SnubaTestCase):
             incident=crit_incident, alert_rule_trigger=trigger, status=TriggerStatus.ACTIVE.value
         )
 
-        with self.feature(
-            [
-                "organizations:incidents",
-                "organizations:alert-details-redesign",
-            ]
-        ):
+        with self.feature(["organizations:incidents"]):
             self.browser.get(self.path)
-            self.browser.wait_until_not(".loading-indicator")
-            self.browser.snapshot("alert rules - alert list")
+            self.browser.wait_until_not('[data-test-id="loading-indicator"]')

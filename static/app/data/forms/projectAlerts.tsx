@@ -1,5 +1,5 @@
-import {t, tn} from 'app/locale';
-import {Field} from 'app/views/settings/components/forms/type';
+import type {Field} from 'sentry/components/forms/types';
+import {t, tn} from 'sentry/locale';
 
 // Export route to make these forms searchable by label/help
 export const route = '/settings/:orgId/projects/:projectId/alerts/';
@@ -9,7 +9,7 @@ const formatMinutes = (value: number | '') => {
   return tn('%s minute', '%s minutes', value);
 };
 
-export const fields: {[key: string]: Field} = {
+export const fields = {
   subjectTemplate: {
     name: 'subjectTemplate',
     type: 'string',
@@ -43,4 +43,4 @@ export const fields: {[key: string]: Field} = {
     help: t('Notifications will be delivered at least this often.'),
     formatLabel: formatMinutes,
   },
-};
+} satisfies Record<string, Field>;

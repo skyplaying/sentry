@@ -1,25 +1,35 @@
-import {Component} from 'react';
+import {useState} from 'react';
 
-import Button from 'app/components/button';
-import ButtonBar from 'app/components/buttonBar';
-import EventDataSection from 'app/components/events/eventDataSection';
-import KeyValueList from 'app/components/events/interfaces/keyValueList';
-import {getMeta} from 'app/components/events/meta/metaProxy';
-import {t} from 'app/locale';
+import {SegmentedControl} from '@sentry/scraps/segmentedControl';
 
-function getView(view: View, data: State['data']) {
+import KeyValueList from 'sentry/components/events/interfaces/keyValueList';
+import {AnnotatedText} from 'sentry/components/events/meta/annotatedText';
+import {t} from 'sentry/locale';
+import {InterimSection} from 'sentry/views/issueDetails/streamline/interimSection';
+
+function getView({
+  data,
+  meta,
+  view,
+}: {
+  data: Props['data'];
+  view: View;
+  meta?: Record<any, any>;
+}) {
   switch (view) {
     case 'report':
-      return (
+      return data ? (
         <KeyValueList
           data={Object.entries(data).map(([key, value]) => ({
             key,
             value,
             subject: key,
-            meta: getMeta(data, key),
+            meta: meta?.[key]?.[''],
           }))}
           isContextData
         />
+      ) : (
+        <AnnotatedText value={data} meta={meta?.['']} />
       );
     case 'raw':
       return <pre>{JSON.stringify({'csp-report': data}, null, 2)}</pre>;
@@ -29,56 +39,32 @@ function getView(view: View, data: State['data']) {
 }
 
 type Props = {
+  data: Record<string, any> | null;
   type: string;
-  data: Record<string, any>;
+  meta?: Record<string, any>;
 };
 
 type View = 'report' | 'raw';
 
-type State = {
-  view: View;
-} & Pick<Props, 'data'>;
-
-export default class GenericInterface extends Component<Props, State> {
-  state: State = {
-    view: 'report',
-    data: this.props.data,
-  };
-
-  toggleView = (value: View) => {
-    this.setState({
-      view: value,
-    });
-  };
-
-  render() {
-    const {view, data} = this.state;
-    const {type} = this.props;
-
-    const title = (
-      <div>
-        <ButtonBar merged active={view}>
-          <Button
-            barId="report"
-            size="xsmall"
-            onClick={this.toggleView.bind(this, 'report')}
-          >
-            {t('Report')}
-          </Button>
-          <Button barId="raw" size="xsmall" onClick={this.toggleView.bind(this, 'raw')}>
-            {t('Raw')}
-          </Button>
-        </ButtonBar>
-        <h3>{t('Report')}</h3>
-      </div>
-    );
-
-    const children = getView(view, data);
-
-    return (
-      <EventDataSection type={type} title={title} wrapTitle={false}>
-        {children}
-      </EventDataSection>
-    );
-  }
+export function Generic({type, data, meta}: Props) {
+  const [view, setView] = useState<View>('report');
+  return (
+    <InterimSection
+      type={type}
+      title={t('Report')}
+      actions={
+        <SegmentedControl
+          aria-label={t('View')}
+          size="xs"
+          value={view}
+          onChange={setView}
+        >
+          <SegmentedControl.Item key="report">{t('Report')}</SegmentedControl.Item>
+          <SegmentedControl.Item key="raw">{t('Raw')}</SegmentedControl.Item>
+        </SegmentedControl>
+      }
+    >
+      {getView({view, data, meta})}
+    </InterimSection>
+  );
 }

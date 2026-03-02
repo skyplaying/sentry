@@ -1,206 +1,233 @@
 import {Fragment} from 'react';
 import styled from '@emotion/styled';
-import {Location} from 'history';
+import type {Location} from 'history';
 import pick from 'lodash/pick';
 
-import {fetchAnyReleaseExistence} from 'app/actionCreators/projects';
-import AsyncComponent from 'app/components/asyncComponent';
-import {SectionHeading} from 'app/components/charts/styles';
-import DateTime from 'app/components/dateTime';
-import EmptyStateWarning from 'app/components/emptyStateWarning';
-import Placeholder from 'app/components/placeholder';
-import TextOverflow from 'app/components/textOverflow';
-import Version from 'app/components/version';
-import {URL_PARAM} from 'app/constants/globalSelectionHeader';
-import {IconOpen} from 'app/icons';
-import {t} from 'app/locale';
-import overflowEllipsis from 'app/styles/overflowEllipsis';
-import space from 'app/styles/space';
-import {Organization, Release} from 'app/types';
-import {analytics} from 'app/utils/analytics';
-import {RELEASES_TOUR_STEPS} from 'app/views/releases/list/releasePromo';
+import {Link} from '@sentry/scraps/link';
+
+import {SectionHeading} from 'sentry/components/charts/styles';
+import {DateTime} from 'sentry/components/dateTime';
+import EmptyStateWarning from 'sentry/components/emptyStateWarning';
+import LoadingError from 'sentry/components/loadingError';
+import {URL_PARAM} from 'sentry/components/pageFilters/constants';
+import {extractSelectionParameters} from 'sentry/components/pageFilters/parse';
+import Placeholder from 'sentry/components/placeholder';
+import TextOverflow from 'sentry/components/textOverflow';
+import Version from 'sentry/components/version';
+import {IconOpen} from 'sentry/icons';
+import {t} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {Organization} from 'sentry/types/organization';
+import type {Project} from 'sentry/types/project';
+import type {Release} from 'sentry/types/release';
+import getApiUrl from 'sentry/utils/api/getApiUrl';
+import {useApiQuery} from 'sentry/utils/queryClient';
+import {makeReleasesPathname} from 'sentry/views/releases/utils/pathnames';
 
 import MissingReleasesButtons from './missingFeatureButtons/missingReleasesButtons';
-import {SectionHeadingLink, SectionHeadingWrapper, SidebarSection} from './styles';
-import {didProjectOrEnvironmentChange} from './utils';
+import {SectionHeadingWrapper, SidebarSection} from './styles';
 
 const PLACEHOLDER_AND_EMPTY_HEIGHT = '160px';
 
-type Props = AsyncComponent['props'] & {
+type Props = {
+  isProjectStabilized: boolean;
+  location: Location;
   organization: Organization;
   projectSlug: string;
-  location: Location;
-  isProjectStabilized: boolean;
-  projectId?: string;
+  project?: Project;
 };
 
-type State = {
+type BodyProps = {
+  isError: boolean;
+  isLoading: boolean;
+  isProjectStabilized: boolean;
+  organization: Organization;
+  project: Project | undefined;
   releases: Release[] | null;
-  hasOlderReleases?: boolean;
-} & AsyncComponent['state'];
+};
 
-class ProjectLatestReleases extends AsyncComponent<Props, State> {
-  shouldComponentUpdate(nextProps: Props, nextState: State) {
-    const {location, isProjectStabilized} = this.props;
-    // TODO(project-detail): we temporarily removed refetching based on timeselector
-    if (
-      this.state !== nextState ||
-      didProjectOrEnvironmentChange(location, nextProps.location) ||
-      isProjectStabilized !== nextProps.isProjectStabilized
-    ) {
-      return true;
-    }
+function useHasOlderReleases({
+  releases,
+  releasesLoading,
+  organization,
+  project,
+  isProjectStabilized,
+}: {
+  isProjectStabilized: boolean;
+  organization: Organization;
+  project: Project | undefined;
+  releases: Release[] | null;
+  releasesLoading: boolean;
+}) {
+  const skipOldReleaseCheck =
+    releasesLoading ||
+    (releases ?? []).length !== 0 ||
+    !project?.id ||
+    !isProjectStabilized;
 
-    return false;
-  }
-
-  componentDidUpdate(prevProps: Props) {
-    const {location, isProjectStabilized} = this.props;
-
-    if (
-      didProjectOrEnvironmentChange(prevProps.location, location) ||
-      prevProps.isProjectStabilized !== isProjectStabilized
-    ) {
-      this.remountComponent();
-    }
-  }
-
-  getEndpoints(): ReturnType<AsyncComponent['getEndpoints']> {
-    const {location, organization, projectSlug, isProjectStabilized} = this.props;
-
-    if (!isProjectStabilized) {
-      return [];
-    }
-
-    const query = {
-      ...pick(location.query, Object.values(URL_PARAM)),
-      per_page: 5,
-    };
-
-    // TODO(project-detail): this does not filter releases for the given time
-    return [
-      ['releases', `/projects/${organization.slug}/${projectSlug}/releases/`, {query}],
-    ];
-  }
-
-  /**
-   * If our releases are empty, determine if we had a release in the last 90 days (empty message differs then)
-   */
-  async onLoadAllEndpointsSuccess() {
-    const {releases} = this.state;
-    const {organization, projectId, isProjectStabilized} = this.props;
-
-    if (!isProjectStabilized) {
-      return;
-    }
-
-    if ((releases ?? []).length !== 0 || !projectId) {
-      this.setState({hasOlderReleases: true});
-      return;
-    }
-
-    this.setState({loading: true});
-
-    const hasOlderReleases = await fetchAnyReleaseExistence(
-      this.api,
-      organization.slug,
-      projectId
-    );
-
-    this.setState({hasOlderReleases, loading: false});
-  }
-
-  handleTourAdvance = (index: number) => {
-    const {organization, projectId} = this.props;
-
-    analytics('releases.landing_card_clicked', {
-      org_id: parseInt(organization.id, 10),
-      project_id: projectId && parseInt(projectId, 10),
-      step_id: index,
-      step_title: RELEASES_TOUR_STEPS[index].title,
-    });
-  };
-
-  get releasesLink() {
-    const {organization} = this.props;
-
-    // as this is a link to latest releases, we want to only preserve project and environment
-    return {
-      pathname: `/organizations/${organization.slug}/releases/`,
-      query: {
-        statsPeriod: undefined,
-        start: undefined,
-        end: undefined,
-        utc: undefined,
+  const {data: olderReleases, isPending} = useApiQuery<Release[]>(
+    [
+      getApiUrl(`/organizations/$organizationIdOrSlug/releases/stats/`, {
+        path: {organizationIdOrSlug: organization.slug},
+      }),
+      {
+        query: {
+          statsPeriod: '90d',
+          project: project?.id,
+          per_page: 1,
+        },
       },
-    };
+    ],
+    {staleTime: 0, enabled: !skipOldReleaseCheck}
+  );
+
+  if (skipOldReleaseCheck) {
+    return true;
   }
 
-  renderReleaseRow = (release: Release) => {
-    const {projectId} = this.props;
-    const {lastDeploy, dateCreated} = release;
-
-    return (
-      <Fragment key={release.version}>
-        <DateTime date={lastDeploy?.dateFinished || dateCreated} seconds={false} />
-        <TextOverflow>
-          <StyledVersion
-            version={release.version}
-            tooltipRawVersion
-            projectId={projectId}
-          />
-        </TextOverflow>
-      </Fragment>
-    );
-  };
-
-  renderInnerBody() {
-    const {organization, projectId, isProjectStabilized} = this.props;
-    const {loading, releases, hasOlderReleases} = this.state;
-    const checkingForOlderReleases =
-      !(releases ?? []).length && hasOlderReleases === undefined;
-    const showLoadingIndicator =
-      loading || checkingForOlderReleases || !isProjectStabilized;
-
-    if (showLoadingIndicator) {
-      return <Placeholder height={PLACEHOLDER_AND_EMPTY_HEIGHT} />;
-    }
-
-    if (!hasOlderReleases) {
-      return <MissingReleasesButtons organization={organization} projectId={projectId} />;
-    }
-
-    if (!releases || releases.length === 0) {
-      return (
-        <StyledEmptyStateWarning small>{t('No releases found')}</StyledEmptyStateWarning>
-      );
-    }
-
-    return <ReleasesTable>{releases.map(this.renderReleaseRow)}</ReleasesTable>;
+  if (isPending) {
+    return null;
   }
 
-  renderLoading() {
-    return this.renderBody();
-  }
-
-  renderBody() {
-    return (
-      <SidebarSection>
-        <SectionHeadingWrapper>
-          <SectionHeading>{t('Latest Releases')}</SectionHeading>
-          <SectionHeadingLink to={this.releasesLink}>
-            <IconOpen />
-          </SectionHeadingLink>
-        </SectionHeadingWrapper>
-        <div>{this.renderInnerBody()}</div>
-      </SidebarSection>
-    );
-  }
+  return (olderReleases?.length ?? 0) > 0;
 }
+
+function ReleasesBody({
+  organization,
+  project,
+  isProjectStabilized,
+  releases,
+  isLoading,
+  isError,
+}: BodyProps) {
+  const hasOlderReleases = useHasOlderReleases({
+    organization,
+    project,
+    releases,
+    releasesLoading: isLoading,
+    isProjectStabilized,
+  });
+  const checkingForOlderReleases = !(releases ?? []).length && hasOlderReleases === null;
+  const showLoadingIndicator =
+    isLoading || checkingForOlderReleases || !isProjectStabilized;
+
+  if (isError) {
+    return <LoadingError />;
+  }
+
+  if (showLoadingIndicator) {
+    return <Placeholder height={PLACEHOLDER_AND_EMPTY_HEIGHT} />;
+  }
+
+  if (!hasOlderReleases) {
+    return (
+      <MissingReleasesButtons
+        organization={organization}
+        projectId={project?.id}
+        platform={project?.platform}
+      />
+    );
+  }
+
+  if (!releases || releases.length === 0) {
+    return (
+      <StyledEmptyStateWarning small>{t('No releases found')}</StyledEmptyStateWarning>
+    );
+  }
+
+  return (
+    <ReleasesTable>
+      {releases.map(release => (
+        <Fragment key={release.version}>
+          <DateTime
+            date={release.lastDeploy?.dateFinished || release.dateCreated}
+            seconds={false}
+          />
+          <TextOverflow>
+            <StyledVersion
+              version={release.version}
+              tooltipRawVersion
+              projectId={project?.id}
+            />
+          </TextOverflow>
+        </Fragment>
+      ))}
+    </ReleasesTable>
+  );
+}
+
+function ProjectLatestReleases({
+  isProjectStabilized,
+  location,
+  organization,
+  projectSlug,
+  project,
+}: Props) {
+  const {
+    data: releases = null,
+    isLoading,
+    isError,
+  } = useApiQuery<Release[]>(
+    [
+      getApiUrl(`/projects/$organizationIdOrSlug/$projectIdOrSlug/releases/`, {
+        path: {organizationIdOrSlug: organization.slug, projectIdOrSlug: projectSlug},
+      }),
+      {
+        query: {
+          ...pick(location.query, Object.values(URL_PARAM)),
+          per_page: 5,
+        },
+      },
+    ],
+    {
+      staleTime: 0,
+      enabled: isProjectStabilized,
+    }
+  );
+
+  return (
+    <SidebarSection>
+      <SectionHeadingWrapper>
+        <SectionHeading>{t('Latest Releases')}</SectionHeading>
+        <StyledLink
+          to={{
+            pathname: makeReleasesPathname({
+              organization,
+              path: '/',
+            }),
+            query: {
+              ...extractSelectionParameters(location.query),
+              statsPeriod: undefined,
+              start: undefined,
+              end: undefined,
+              utc: undefined,
+            },
+          }}
+        >
+          <IconOpen />
+        </StyledLink>
+      </SectionHeadingWrapper>
+      <div>
+        <ReleasesBody
+          organization={organization}
+          project={project}
+          isProjectStabilized={isProjectStabilized}
+          releases={releases}
+          isLoading={isLoading}
+          isError={isError}
+        />
+      </div>
+    </SidebarSection>
+  );
+}
+
+const StyledLink = styled(Link)`
+  display: flex;
+`;
 
 const ReleasesTable = styled('div')`
   display: grid;
-  font-size: ${p => p.theme.fontSizeMedium};
+  font-size: ${p => p.theme.font.size.md};
   white-space: nowrap;
   grid-template-columns: 1fr auto;
   margin-bottom: ${space(2)};
@@ -216,12 +243,16 @@ const ReleasesTable = styled('div')`
 
   & > *:nth-child(4n + 1),
   & > *:nth-child(4n + 2) {
-    background-color: ${p => p.theme.rowBackground};
+    background-color: ${p => p.theme.tokens.background.primary};
   }
 `;
 
 const StyledVersion = styled(Version)`
-  ${overflowEllipsis}
+  display: block;
+  width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   line-height: 1.6;
   font-variant-numeric: tabular-nums;
 `;

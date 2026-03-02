@@ -1,39 +1,33 @@
 import styled from '@emotion/styled';
 
-import {Theme} from 'app/utils/theme';
+type Props = {
+  color?: string;
+  /**
+   * @default true
+   */
+  enabled?: boolean;
+  /**
+   * @default 14
+   */
+  size?: number;
+};
 
 const defaultProps = {
   enabled: true,
   size: 14,
 };
 
-type DefaultProps = Readonly<typeof defaultProps>;
-
-type Props = {
-  color?: string;
-} & Partial<DefaultProps>;
-
-const getBackgroundColor = (p: Props & {theme: Theme}) => {
-  if (p.color) {
-    return `background: ${p.color};`;
-  }
-
-  return `background: ${p.enabled ? p.theme.success : p.theme.error};`;
-};
-
-const getSize = (p: Props) => `
-  height: ${p.size}px;
-  width: ${p.size}px;
-`;
-
 const CircleIndicator = styled('div')<Props>`
   display: inline-block;
   position: relative;
   border-radius: 50%;
-  ${getSize};
-  ${getBackgroundColor};
+  height: ${p => p.size ?? defaultProps.size}px;
+  width: ${p => p.size ?? defaultProps.size}px;
+  background: ${p =>
+    p.color ??
+    ((p.enabled ?? defaultProps.enabled)
+      ? p.theme.tokens.background.success.vibrant
+      : p.theme.tokens.background.danger.vibrant)};
 `;
-
-CircleIndicator.defaultProps = defaultProps;
 
 export default CircleIndicator;

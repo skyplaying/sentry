@@ -1,59 +1,54 @@
-from datetime import datetime
-
-import pytz
-from exam import fixture
+from functools import cached_property
 
 from sentry.api.serializers import serialize
-from sentry.incidents.models import Incident, IncidentActivity, IncidentStatus
-from sentry.testutils import APITestCase
-from sentry.utils.compat import mock
+from sentry.incidents.models.incident import Incident, IncidentStatus
+from sentry.testutils.abstract import Abstract
+from sentry.testutils.cases import APITestCase
+from sentry.testutils.helpers.datetime import freeze_time
 
 
-class BaseIncidentDetailsTest:
+class BaseIncidentDetailsTest(APITestCase):
+    __test__ = Abstract(__module__, __qualname__)
+
     endpoint = "sentry-api-0-organization-incident-details"
 
-    def setUp(self):
+    def setUp(self) -> None:
         self.create_team(organization=self.organization, members=[self.user])
         self.login_as(self.user)
 
-    @fixture
+    @cached_property
     def organization(self):
         return self.create_organization(owner=self.create_user())
 
-    @fixture
+    @cached_property
     def project(self):
         return self.create_project(organization=self.organization)
 
-    @fixture
+    @cached_property
     def user(self):
         return self.create_user()
 
-    def test_no_perms(self):
+    def test_no_perms(self) -> None:
         incident = self.create_incident()
         self.login_as(self.create_user())
         with self.feature("organizations:incidents"):
             resp = self.get_response(incident.organization.slug, incident.id)
         assert resp.status_code == 403
 
-    def test_no_feature(self):
+    def test_no_feature(self) -> None:
         incident = self.create_incident()
         resp = self.get_response(incident.organization.slug, incident.id)
         assert resp.status_code == 404
 
 
-class OrganizationIncidentDetailsTest(BaseIncidentDetailsTest, APITestCase):
-    @mock.patch("django.utils.timezone.now")
-    def test_simple(self, mock_now):
-        mock_now.return_value = datetime.utcnow().replace(tzinfo=pytz.utc)
-
-        incident = self.create_incident(seen_by=[self.user])
+class OrganizationIncidentDetailsTest(BaseIncidentDetailsTest):
+    @freeze_time()
+    def test_simple(self) -> None:
+        incident = self.create_incident()
         with self.feature("organizations:incidents"):
-            resp = self.get_valid_response(incident.organization.slug, incident.identifier)
+            resp = self.get_success_response(incident.organization.slug, incident.identifier)
 
         expected = serialize(incident)
-
-        user_data = serialize(self.user)
-        seen_by = [user_data]
 
         assert resp.data["id"] == expected["id"]
         assert resp.data["identifier"] == expected["identifier"]
@@ -61,27 +56,26 @@ class OrganizationIncidentDetailsTest(BaseIncidentDetailsTest, APITestCase):
         assert resp.data["dateDetected"] == expected["dateDetected"]
         assert resp.data["dateCreated"] == expected["dateCreated"]
         assert resp.data["projects"] == expected["projects"]
-        assert [item["id"] for item in resp.data["seenBy"]] == [item["id"] for item in seen_by]
 
 
-class OrganizationIncidentUpdateStatusTest(BaseIncidentDetailsTest, APITestCase):
+class OrganizationIncidentUpdateStatusTest(BaseIncidentDetailsTest):
     method = "put"
 
-    def get_valid_response(self, *args, **params):
+    def get_success_response(self, *args, **params):
         params.setdefault("status", IncidentStatus.CLOSED.value)
-        return super().get_valid_response(*args, **params)
+        return super().get_success_response(*args, **params)
 
-    def test_simple(self):
+    def test_simple(self) -> None:
         incident = self.create_incident()
         with self.feature("organizations:incidents"):
-            self.get_valid_response(
+            self.get_success_response(
                 incident.organization.slug, incident.identifier, status=IncidentStatus.CLOSED.value
             )
 
         incident = Incident.objects.get(id=incident.id)
         assert incident.status == IncidentStatus.CLOSED.value
 
-    def test_cannot_open(self):
+    def test_cannot_open(self) -> None:
         incident = self.create_incident()
         with self.feature("organizations:incidents"):
             resp = self.get_response(
@@ -90,23 +84,7 @@ class OrganizationIncidentUpdateStatusTest(BaseIncidentDetailsTest, APITestCase)
             assert resp.status_code == 400
             assert resp.data.startswith("Status cannot be changed")
 
-    def test_comment(self):
-        incident = self.create_incident()
-        status = IncidentStatus.CLOSED.value
-        comment = "fixed"
-        with self.feature("organizations:incidents"):
-            self.get_valid_response(
-                incident.organization.slug, incident.identifier, status=status, comment=comment
-            )
-
-        incident = Incident.objects.get(id=incident.id)
-        assert incident.status == status
-        activity = IncidentActivity.objects.filter(incident=incident).order_by("-id")[:1].get()
-        assert activity.value == str(status)
-        assert activity.comment == comment
-        assert activity.user == self.user
-
-    def test_invalid_status(self):
+    def test_invalid_status(self) -> None:
         incident = self.create_incident()
         with self.feature("organizations:incidents"):
             resp = self.get_response(incident.organization.slug, incident.identifier, status=5000)

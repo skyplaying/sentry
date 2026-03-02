@@ -4,8 +4,6 @@ from sentry.conf.server import *
 
 import os.path
 
-CONF_ROOT = os.path.dirname(__file__)
-
 DATABASES = {
     'default': {
         'ENGINE': 'sentry.db.postgres',
@@ -18,10 +16,6 @@ DATABASES = {
         'ATOMIC_REQUESTS': False,
     }
 }
-
-# You should not change this setting after your database has been created
-# unless you have altered all schemas first
-SENTRY_USE_BIG_INTS = True
 
 # If you're expecting any kind of real traffic on Sentry, we highly recommend
 # configuring the CACHES and Redis settings
@@ -42,30 +36,18 @@ DEBUG = %(debug_flag)s
 # Sentry currently utilizes two separate mechanisms. While CACHES is not a
 # requirement, it will optimize several high throughput patterns.
 
-# If you wish to use memcached, install the dependencies and adjust the config
-# as shown:
-#
-#   pip install python-memcached
+# If you wish to use memcached, uncomment the following:
 #
 # CACHES = {
 #     'default': {
-#         'BACKEND': 'django.core.cache.backends.memcached.MemcachedCache',
+#         'BACKEND': 'django.core.cache.backends.memcached.PyMemcacheCache',
 #         'LOCATION': ['127.0.0.1:11211'],
+#         'OPTIONS': {'ignore_exc': True},
 #     }
 # }
 
 # A primary cache is required for things such as processing events
 SENTRY_CACHE = 'sentry.cache.redis.RedisCache'
-
-#########
-# Queue #
-#########
-
-# See https://docs.sentry.io/on-premise/server/queue/ for more
-# information on configuring your queue broker and workers. Sentry relies
-# on a Python framework called Celery to manage queues.
-
-BROKER_URL = 'redis://localhost:6379'
 
 ###############
 # Rate Limits #
@@ -127,5 +109,12 @@ SENTRY_WEB_HOST = '0.0.0.0'
 SENTRY_WEB_PORT = 9000
 SENTRY_WEB_OPTIONS = {
     # 'workers': 1,  # the number of web workers
-    # 'protocol': 'uwsgi',  # Enable uwsgi protocol instead of http
 }
+
+##############
+# Devserver #
+##############
+
+# Exclude logs caused by Relay polling every 100ms.
+# Makes it rather hard to use Python debugger
+DEVSERVER_REQUEST_LOG_EXCLUDES = ["/api/0/relays/projectconfigs/"]

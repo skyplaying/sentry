@@ -1,50 +1,55 @@
-import {Frame} from 'app/types';
+import type {Frame} from './event';
 
-export enum STACK_VIEW {
+export enum StackView {
   RAW = 'raw',
   FULL = 'full',
   APP = 'app',
 }
 
-export enum STACK_TYPE {
+export enum StackType {
   ORIGINAL = 'original',
   MINIFIED = 'minified',
 }
 
-export type StacktraceType = {
+export interface StacktraceType {
+  /**
+   * Omitted segment of frames (start, end)
+   */
+  framesOmitted: [start: number, end: number] | null;
   hasSystemFrames: boolean;
-  registers: Record<string, any> | null;
-  framesOmitted: any;
-  frames?: Array<Frame>;
-};
+  registers: Record<string, string | null> | null;
+  frames?: Frame[];
+}
 
-export type RawStacktrace = StacktraceType | null;
-
-type MechanismMeta = {
+interface MechanismMeta {
   errno?: {
     number: number;
     name?: string;
   };
   mach_exception?: {
-    exception: number;
     code: number;
+    exception: number;
     subcode: number;
     name?: string;
   };
   signal?: {
     number: number;
     code?: number;
-    name?: string;
     code_name?: string;
+    name?: string;
   };
-};
+}
 
-export type Mechanism = {
+export interface StackTraceMechanism {
   handled: boolean;
-  synthetic: boolean;
   type: string;
-  meta?: MechanismMeta;
-  data?: object;
+  data?: Record<PropertyKey, string | unknown[] | Record<PropertyKey, unknown> | Date>;
   description?: string;
+  exception_id?: number;
   help_link?: string;
-};
+  is_exception_group?: boolean;
+  meta?: MechanismMeta;
+  parent_id?: number;
+  source?: string;
+  synthetic?: boolean;
+}

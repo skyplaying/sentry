@@ -1,41 +1,36 @@
-import * as React from 'react';
 import styled from '@emotion/styled';
 
-import {IconSearch} from 'app/icons';
-import space from 'app/styles/space';
-import EmptyMessage from 'app/views/settings/components/emptyMessage';
+import EmptyMessage from 'sentry/components/emptyMessage';
+import {IconSearch} from 'sentry/icons';
+import {space} from 'sentry/styles/space';
 
 type Props = {
-  small?: boolean;
   children?: React.ReactNode;
-  withIcon?: boolean;
   className?: string;
+  small?: boolean;
+  withIcon?: boolean;
 };
 
-const EmptyStateWarning = ({
-  small = false,
-  withIcon = true,
-  children,
-  className,
-}: Props) =>
-  small ? (
+function EmptyStateWarning({small = false, withIcon = true, children, className}: Props) {
+  return small ? (
     <EmptyMessage className={className}>
       <SmallMessage>
-        {withIcon && <StyledIconSearch color="gray300" size="lg" />}
+        {withIcon && <StyledIconSearch variant="muted" size="lg" />}
         {children}
       </SmallMessage>
     </EmptyMessage>
   ) : (
     <EmptyStreamWrapper data-test-id="empty-state" className={className}>
-      {withIcon && <IconSearch size="54px" />}
+      {withIcon && <IconSearch variant="muted" legacySize="54px" />}
       {children}
     </EmptyStreamWrapper>
   );
+}
 
-const EmptyStreamWrapper = styled('div')`
+export const EmptyStreamWrapper = styled('div')`
   text-align: center;
   font-size: 22px;
-  padding: 48px ${space(1)};
+  padding: ${space(4)} ${space(2)};
 
   p {
     line-height: 1.2;
@@ -45,8 +40,7 @@ const EmptyStreamWrapper = styled('div')`
     }
   }
 
-  svg {
-    fill: ${p => p.theme.gray200};
+  > svg {
     margin-bottom: ${space(2)};
   }
 `;
@@ -54,8 +48,8 @@ const EmptyStreamWrapper = styled('div')`
 const SmallMessage = styled('div')`
   display: flex;
   align-items: center;
-  color: ${p => p.theme.gray300};
-  font-size: ${p => p.theme.fontSizeExtraLarge};
+  color: ${p => p.theme.tokens.content.secondary};
+  font-size: ${p => p.theme.font.size.xl};
   line-height: 1em;
 `;
 

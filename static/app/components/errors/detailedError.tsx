@@ -1,24 +1,25 @@
-import * as React from 'react';
+import styled from '@emotion/styled';
 import * as Sentry from '@sentry/react';
-import classNames from 'classnames';
 
-import Button from 'app/components/button';
-import {IconFlag} from 'app/icons';
-import {t} from 'app/locale';
+import {Button, LinkButton} from '@sentry/scraps/button';
+import {Grid} from '@sentry/scraps/layout';
 
-type DefaultProps = {
-  /**
-   * Hide support links in footer of error message
-   */
-  hideSupportLinks: boolean;
-};
+import {getLastEventId} from 'sentry/bootstrap/initializeSdk';
+import {IconFlag} from 'sentry/icons';
+import {SvgIcon} from 'sentry/icons/svgIcon';
+import {t} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
 
-type Props = DefaultProps & {
-  className?: string;
+type Props = {
   /**
    * Error heading
    */
   heading: React.ReactNode;
+  className?: string;
+  /**
+   * Hide support links in footer of error message
+   */
+  hideSupportLinks?: boolean;
   /**
    * Detailed error explanation
    */
@@ -26,68 +27,73 @@ type Props = DefaultProps & {
   /**
    * Retry callback
    */
-  onRetry?: (e: React.MouseEvent<HTMLAnchorElement>) => void;
+  onRetry?: (e: React.MouseEvent) => void;
 };
 
-function openFeedback(e: React.MouseEvent) {
-  e.preventDefault();
-  Sentry.showReportDialog();
-}
+function DetailedError({className, heading, message, onRetry, hideSupportLinks}: Props) {
+  const showFooter = !!onRetry || !hideSupportLinks;
+  const lastEventId = getLastEventId();
 
-class DetailedError extends React.Component<Props> {
-  static defaultProps: DefaultProps = {
-    hideSupportLinks: false,
-  };
+  return (
+    <Wrapper className={className}>
+      <ErrorHeading>
+        <IconFlag size="md" variant="danger" />
+        {heading}
+      </ErrorHeading>
 
-  componentDidMount() {
-    // XXX(epurkhiser): Why is this here?
-    setTimeout(() => this.forceUpdate(), 100);
-  }
+      {message}
 
-  render() {
-    const {className, heading, message, onRetry, hideSupportLinks} = this.props;
-    const cx = classNames('detailed-error', className);
+      {showFooter && (
+        <ErrorFooter>
+          <div>{onRetry && <Button onClick={onRetry}>{t('Retry')}</Button>}</div>
 
-    const showFooter = !!onRetry || !hideSupportLinks;
-
-    return (
-      <div className={cx}>
-        <div className="detailed-error-icon">
-          <IconFlag size="lg" />
-        </div>
-        <div className="detailed-error-content">
-          <h4>{heading}</h4>
-
-          <div className="detailed-error-content-body">{message}</div>
-
-          {showFooter && (
-            <div className="detailed-error-content-footer">
-              <div>
-                {onRetry && (
-                  <a onClick={onRetry} className="btn btn-default">
-                    {t('Retry')}
-                  </a>
-                )}
-              </div>
-
-              {!hideSupportLinks && (
-                <div className="detailed-error-support-links">
-                  {Sentry.lastEventId() && (
-                    <Button priority="link" onClick={openFeedback}>
-                      {t('Fill out a report')}
-                    </Button>
-                  )}
-                  <a href="https://status.sentry.io/">{t('Service status')}</a>
-
-                  <a href="https://sentry.io/support/">{t('Contact support')}</a>
-                </div>
+          {!hideSupportLinks && (
+            <Grid flow="column" align="center" gap="lg">
+              {lastEventId && (
+                <Button
+                  priority="link"
+                  onClick={e => {
+                    e.preventDefault();
+                    Sentry.showReportDialog({eventId: lastEventId});
+                  }}
+                >
+                  {t('Fill out a report')}
+                </Button>
               )}
-            </div>
+              <LinkButton priority="link" external href="https://status.sentry.io/">
+                {t('Service status')}
+              </LinkButton>
+              <LinkButton priority="link" external href="https://sentry.io/support/">
+                {t('Contact support')}
+              </LinkButton>
+            </Grid>
           )}
-        </div>
-      </div>
-    );
-  }
+        </ErrorFooter>
+      )}
+    </Wrapper>
+  );
 }
+
+const Wrapper = styled('div')`
+  margin: ${space(2)} auto 0 auto;
+  padding: ${space(2)};
+  width: fit-content;
+`;
+
+const ErrorHeading = styled('h4')`
+  display: flex;
+  gap: ${space(1.5)};
+  align-items: center;
+  margin-left: calc(-1 * (${() => SvgIcon.ICON_SIZES.md} + ${space(1.5)}));
+`;
+
+const ErrorFooter = styled('div')`
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: ${space(2)};
+  border-top: 1px solid ${p => p.theme.tokens.border.secondary};
+  padding-top: ${space(2)};
+`;
 
 export default DetailedError;

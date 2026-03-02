@@ -1,93 +1,70 @@
-import * as React from 'react';
-import {withRouter, WithRouterProps} from 'react-router';
-import {
-  Result as SearchResult,
-  SentryGlobalSearch,
-  standardSDKSlug,
-} from '@sentry-internal/global-search';
+import {useCallback, useEffect, useState} from 'react';
+import type {Result as SearchResult} from '@sentry-internal/global-search';
+import {SentryGlobalSearch, standardSDKSlug} from '@sentry-internal/global-search';
 import dompurify from 'dompurify';
-import debounce from 'lodash/debounce';
 
-import {Organization, Project} from 'app/types';
-import parseHtmlMarks from 'app/utils/parseHtmlMarks';
-import withLatestContext from 'app/utils/withLatestContext';
+import parseHtmlMarks from 'sentry/utils/parseHtmlMarks';
+import {useDebouncedValue} from 'sentry/utils/useDebouncedValue';
 
-import {ChildProps, Result, ResultItem} from './types';
+import type {ChildProps, Result, ResultItem} from './types';
+import {makeResolvedTs} from './utils';
 
-type Props = WithRouterProps & {
-  organization: Organization;
-  project: Project;
+interface Props {
   /**
-   * Specific platforms to filter reults to
+   * Render function that renders the global search result
    */
-  platforms: string[];
+  children: (props: ChildProps) => React.ReactNode;
   /**
    * The string to search the navigation routes for
    */
   query: string;
   /**
-   * Render function that renders the global search result
+   * Specific platforms to filter results to
    */
-  children: (props: ChildProps) => React.ReactNode;
-};
-
-type State = {
-  loading: boolean;
-  results: Result[];
-};
+  platforms?: string[];
+}
 
 const MARK_TAGS = {
   highlightPreTag: '<mark>',
   highlightPostTag: '</mark>',
 };
 
-class HelpSource extends React.Component<Props, State> {
-  state: State = {
-    loading: false,
-    results: [],
-  };
+function HelpSource({children, query, platforms}: Props) {
+  const [results, setResults] = useState<Result[]>([]);
+  const [isLoading, setLoading] = useState(true);
+  const [search] = useState(
+    () => new SentryGlobalSearch(['docs', 'zendesk_sentry_articles', 'develop', 'blog'])
+  );
 
-  componentDidMount() {
-    if (this.props.query !== undefined) {
-      this.doSearch(this.props.query);
-    }
-  }
+  const debouncedQuery = useDebouncedValue(query);
 
-  componentDidUpdate(nextProps: Props) {
-    if (nextProps.query !== this.props.query) {
-      this.doSearch(nextProps.query);
-    }
-  }
+  const handleSearch = useCallback(async () => {
+    setLoading(true);
+    const searchResults = await search.query(
+      debouncedQuery,
+      {
+        searchAllIndexes: true,
+        platforms: platforms?.map(platform => standardSDKSlug(platform)?.slug!),
+      },
+      {
+        analyticsTags: ['source:dashboard'],
+      }
+    );
+    setResults(mapSearchResults(searchResults));
+    setLoading(false);
+  }, [platforms, debouncedQuery, search]);
 
-  search = new SentryGlobalSearch(['docs', 'help-center', 'develop', 'blog']);
+  useEffect(() => void handleSearch(), [handleSearch]);
 
-  async unbouncedSearch(query: string) {
-    this.setState({loading: true});
-    const {platforms = []} = this.props;
-
-    const searchResults = await this.search.query(query, {
-      platforms: platforms.map(platform => standardSDKSlug(platform)?.slug!),
-    });
-    const results = mapSearchResults(searchResults);
-
-    this.setState({loading: false, results});
-  }
-
-  doSearch = debounce(this.unbouncedSearch, 300);
-
-  render() {
-    return this.props.children({
-      isLoading: this.state.loading,
-      results: this.state.results,
-    });
-  }
+  return children({isLoading, results});
 }
 
 function mapSearchResults(results: SearchResult[]) {
+  const resolvedTs = makeResolvedTs();
   const items: Result[] = [];
 
   results.forEach(section => {
-    const sectionItems = section.hits.map<Result>(hit => {
+    const sectionItems = section.hits.map(hit => {
       const title = parseHtmlMarks({
         key: 'title',
         htmlString: hit.title ?? '',
@@ -107,15 +84,16 @@ function mapSearchResults(results: SearchResult[]) {
         extra: hit.context.context1,
         description: hit.text ? dompurify.sanitize(hit.text) : undefined,
         to: hit.url,
+        resolvedTs,
       };
 
-      return {item, matches: [title, description], score: 1};
+      return {item, matches: [title, description], score: 1, refIndex: 0};
     });
 
     // The first element should indicate the section.
     if (sectionItems.length > 0) {
-      sectionItems[0].item.sectionHeading = section.name;
-      sectionItems[0].item.sectionCount = sectionItems.length;
+      sectionItems[0]!.item.sectionHeading = section.name;
+      sectionItems[0]!.item.sectionCount = sectionItems.length;
 
       items.push(...sectionItems);
       return;
@@ -128,13 +106,13 @@ function mapSearchResults(results: SearchResult[]) {
       title: `No results in ${section.name}`,
       sectionHeading: section.name,
       empty: true,
+      resolvedTs,
     };
 
-    items.push({item: emptyHeaderItem, score: 1});
+    items.push({item: emptyHeaderItem, score: 1, refIndex: 0});
   });
 
   return items;
 }
 
-export {HelpSource};
-export default withLatestContext(withRouter(HelpSource));
+export default HelpSource;

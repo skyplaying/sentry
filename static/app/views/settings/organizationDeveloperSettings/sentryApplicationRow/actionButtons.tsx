@@ -1,26 +1,26 @@
-import styled from '@emotion/styled';
+import {Button, LinkButton} from '@sentry/scraps/button';
+import {Grid} from '@sentry/scraps/layout';
 
-import Button from 'app/components/button';
-import ConfirmDelete from 'app/components/confirmDelete';
-import {IconDelete, IconStats, IconUpgrade} from 'app/icons';
-import {t} from 'app/locale';
-import space from 'app/styles/space';
-import {Organization, SentryApp} from 'app/types';
+import ConfirmDelete from 'sentry/components/confirmDelete';
+import {IconDelete, IconStats, IconUpgrade} from 'sentry/icons';
+import {t} from 'sentry/locale';
+import type {SentryApp} from 'sentry/types/integrations';
+import type {Organization} from 'sentry/types/organization';
 
 type Props = {
-  org: Organization;
   app: SentryApp;
-
-  showPublish: boolean;
-  showDelete: boolean;
-  onPublish?: () => void;
   onDelete: (app: SentryApp) => void;
+
+  org: Organization;
+  showDelete: boolean;
+  showPublish: boolean;
+  disableDeleteReason?: string;
   // If you want to disable the publish or delete buttons, pass in a reason to display to the user in a tooltip
   disablePublishReason?: string;
-  disableDeleteReason?: string;
+  onPublish?: () => void;
 };
 
-const ActionButtons = ({
+function ActionButtons({
   org,
   app,
   showPublish,
@@ -29,41 +29,41 @@ const ActionButtons = ({
   onDelete,
   disablePublishReason,
   disableDeleteReason,
-}: Props) => {
+}: Props) {
   const appDashboardButton = (
-    <StyledButton
-      size="small"
+    <LinkButton
+      size="sm"
       icon={<IconStats />}
       to={`/settings/${org.slug}/developer-settings/${app.slug}/dashboard/`}
     >
       {t('Dashboard')}
-    </StyledButton>
+    </LinkButton>
   );
 
   const publishRequestButton = showPublish ? (
-    <StyledButton
+    <Button
       disabled={!!disablePublishReason}
-      title={disablePublishReason}
+      tooltipProps={{title: disablePublishReason}}
       icon={<IconUpgrade />}
-      size="small"
+      size="sm"
       onClick={onPublish}
     >
       {t('Publish')}
-    </StyledButton>
+    </Button>
   ) : null;
 
   const deleteConfirmMessage = t(
-    `Deleting ${app.slug} will also delete any and all of its installations. \
-         This is a permanent action. Do you wish to continue?`
+    `Deleting %s will also delete any and all of its installations. This is a permanent action. Do you wish to continue?`,
+    app.slug
   );
   const deleteButton = showDelete ? (
     disableDeleteReason ? (
-      <StyledButton
+      <Button
         disabled
-        title={disableDeleteReason}
-        size="small"
+        tooltipProps={{title: disableDeleteReason}}
+        size="sm"
         icon={<IconDelete />}
-        label="Delete"
+        aria-label={t('Delete')}
       />
     ) : (
       onDelete && (
@@ -73,31 +73,19 @@ const ActionButtons = ({
           priority="danger"
           onConfirm={() => onDelete(app)}
         >
-          <StyledButton size="small" icon={<IconDelete />} label="Delete" />
+          <Button size="sm" icon={<IconDelete />} aria-label={t('Delete')} />
         </ConfirmDelete>
       )
     )
   ) : null;
 
   return (
-    <ButtonHolder>
+    <Grid flow="column" align="center" gap="md">
       {appDashboardButton}
       {publishRequestButton}
       {deleteButton}
-    </ButtonHolder>
+    </Grid>
   );
-};
-
-const ButtonHolder = styled('div')`
-  flex-direction: row;
-  display: flex;
-  & > * {
-    margin-left: ${space(0.5)};
-  }
-`;
-
-const StyledButton = styled(Button)`
-  color: ${p => p.theme.subText};
-`;
+}
 
 export default ActionButtons;

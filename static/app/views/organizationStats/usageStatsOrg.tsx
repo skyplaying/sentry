@@ -1,127 +1,419 @@
-import {Fragment} from 'react';
+import type {MouseEvent as ReactMouseEvent} from 'react';
+import React, {Fragment, useCallback, useMemo} from 'react';
 import styled from '@emotion/styled';
-import * as Sentry from '@sentry/react';
-import moment from 'moment';
+import moment from 'moment-timezone';
 
-import AsyncComponent from 'app/components/asyncComponent';
-import OptionSelector from 'app/components/charts/optionSelector';
-import {InlineContainer, SectionHeading} from 'app/components/charts/styles';
-import {DateTimeObject, getSeriesApiInterval} from 'app/components/charts/utils';
-import NotAvailable from 'app/components/notAvailable';
-import ScoreCard from 'app/components/scoreCard';
-import {DEFAULT_STATS_PERIOD} from 'app/constants';
-import {t, tct} from 'app/locale';
-import space from 'app/styles/space';
-import {DataCategory, IntervalPeriod, Organization, RelativePeriod} from 'app/types';
-import {parsePeriodToHours} from 'app/utils/dates';
+import {LinkButton} from '@sentry/scraps/button';
+import {Flex} from '@sentry/scraps/layout';
+import {ExternalLink} from '@sentry/scraps/link';
+import {Switch} from '@sentry/scraps/switch';
+
+import {navigateTo} from 'sentry/actionCreators/navigation';
+import type {TooltipSubLabel} from 'sentry/components/charts/components/tooltip';
+import OptionSelector from 'sentry/components/charts/optionSelector';
+import {InlineContainer, SectionHeading} from 'sentry/components/charts/styles';
+import type {DateTimeObject} from 'sentry/components/charts/utils';
+import {getSeriesApiInterval} from 'sentry/components/charts/utils';
+import NotAvailable from 'sentry/components/notAvailable';
+import QuestionTooltip from 'sentry/components/questionTooltip';
+import {ScoreCard} from 'sentry/components/scoreCard';
+import {DEFAULT_STATS_PERIOD} from 'sentry/constants';
+import {IconSettings} from 'sentry/icons';
+import {t, tct} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {
+  DataCategory,
+  DataCategoryExact,
+  DataCategoryInfo,
+  IntervalPeriod,
+} from 'sentry/types/core';
+import type {Organization} from 'sentry/types/organization';
+import {trackAnalytics} from 'sentry/utils/analytics';
+import getApiUrl from 'sentry/utils/api/getApiUrl';
+import {shouldUse24Hours} from 'sentry/utils/dates';
+import {parsePeriodToHours} from 'sentry/utils/duration/parsePeriodToHours';
+import {hasDynamicSamplingCustomFeature} from 'sentry/utils/dynamicSampling/features';
+import type {UseApiQueryResult} from 'sentry/utils/queryClient';
+import {useApiQuery} from 'sentry/utils/queryClient';
+import type RequestError from 'sentry/utils/requestError/requestError';
+import useRouter from 'sentry/utils/useRouter';
 
 import {
   FORMAT_DATETIME_DAILY,
   FORMAT_DATETIME_HOURLY,
-  getDateFromMoment,
+  FORMAT_DATETIME_HOURLY_24H,
+  getTooltipFormatter,
 } from './usageChart/utils';
-import {Outcome, UsageSeries, UsageStat} from './types';
+import {mapSeriesToChart} from './mapSeriesToChart';
+import type {UsageSeries} from './types';
+import type {ChartStats, UsageChartProps} from './usageChart';
 import UsageChart, {
   CHART_OPTIONS_DATA_TRANSFORM,
   ChartDataTransform,
-  ChartStats,
+  SeriesTypes,
 } from './usageChart';
 import UsageStatsPerMin from './usageStatsPerMin';
-import {formatUsageWithUnits, getFormatUsageOptions, isDisplayUtc} from './utils';
+import {isDisplayUtc} from './utils';
 
-type Props = {
-  organization: Organization;
-  dataCategory: DataCategory;
-  dataCategoryName: string;
+type ChartData = {
+  cardStats: {
+    accepted?: string;
+    accepted_stored?: string;
+    clientDiscard?: string;
+    filtered?: string;
+    invalid?: string;
+    rateLimited?: string;
+    total?: string;
+  };
+  chartDateEnd: string;
+  chartDateEndDisplay: string;
+  chartDateInterval: IntervalPeriod;
+  chartDateStart: string;
+  chartDateStartDisplay: string;
+  chartDateTimezoneDisplay: string;
+  chartDateUtc: boolean;
+  chartStats: ChartStats;
+  chartSubLabels: TooltipSubLabel[];
+  chartTransform: ChartDataTransform;
+  dataError?: Error;
+};
+
+export function getEndpointQueryDatetime(dataDatetime: DateTimeObject) {
+  return dataDatetime.start && dataDatetime.end
+    ? {
+        start: dataDatetime.start,
+        end: dataDatetime.end,
+        utc: dataDatetime.utc,
+      }
+    : {
+        statsPeriod: dataDatetime.period || DEFAULT_STATS_PERIOD,
+      };
+}
+
+export function getEndpointQuery({
+  dataDatetime,
+  organization,
+  projectIds,
+  dataCategoryApiName,
+  endpointQueryDatetime,
+}: {
+  dataCategoryApiName: string;
   dataDatetime: DateTimeObject;
-  chartTransform?: string;
+  endpointQueryDatetime: DateTimeObject;
+  organization: Organization;
+  projectIds: number[];
+}) {
+  const queryDatetime = endpointQueryDatetime;
+
+  const groupBy = ['outcome', 'reason'];
+  const category: string[] = [dataCategoryApiName];
+
+  if (hasDynamicSamplingCustomFeature(organization) && dataCategoryApiName === 'span') {
+    groupBy.push('category');
+    category.push('span_indexed');
+  }
+
+  return {
+    ...queryDatetime,
+    interval: getSeriesApiInterval(dataDatetime),
+    groupBy,
+    project: projectIds,
+    field: ['sum(quantity)'],
+    category,
+  };
+}
+
+export function getChartProps({
+  dataError,
+  chartData,
+  dataCategory,
+  clientDiscard,
+  handleChangeState,
+  error,
+  loading,
+  handleOnDocsClick,
+}: {
+  chartData: Pick<
+    ChartData,
+    | 'chartDateEnd'
+    | 'chartDateInterval'
+    | 'chartDateStart'
+    | 'chartDateUtc'
+    | 'chartStats'
+    | 'chartSubLabels'
+    | 'chartTransform'
+    | 'chartDateStartDisplay'
+    | 'chartDateTimezoneDisplay'
+    | 'chartDateEndDisplay'
+    | 'chartStats'
+    | 'cardStats'
+  >;
+  dataCategory: DataCategory;
+  error: RequestError | null;
   handleChangeState: (state: {
+    clientDiscard?: boolean;
     dataCategory?: DataCategory;
-    pagePeriod?: RelativePeriod;
+    pagePeriod?: string | null;
     transform?: ChartDataTransform;
   }) => void;
-} & AsyncComponent['props'];
+  handleOnDocsClick: (
+    source:
+      | 'card-accepted'
+      | 'card-filtered'
+      | 'card-rate-limited'
+      | 'card-invalid'
+      | 'chart-title'
+  ) => void;
+  loading: boolean;
+  clientDiscard?: boolean;
+  dataError?: Error;
+}): UsageChartProps & {
+  footer: React.ReactNode;
+  title: React.ReactNode;
+} {
+  const errors: Record<string, Error> | undefined =
+    error || dataError
+      ? {
+          ...(error ? {error} : {}),
+          ...(dataError ? {data: dataError} : {}),
+        }
+      : undefined;
 
-type State = {
-  orgStats: UsageSeries | undefined;
-} & AsyncComponent['state'];
+  return {
+    isLoading: loading,
+    isError: Boolean(error || !!dataError),
+    errors,
+    title: (
+      <Fragment>
+        {t('Project(s) Stats')}
+        <QuestionTooltip
+          size="xs"
+          title={tct(
+            'You can find more information about each category in our [link:docs]',
+            {
+              link: (
+                <ExternalLink
+                  href="https://docs.sentry.io/product/stats/#usage-stats"
+                  onClick={() => handleOnDocsClick('chart-title')}
+                />
+              ),
+            }
+          )}
+          isHoverable
+        />
+      </Fragment>
+    ),
+    footer: (
+      <Footer>
+        <InlineContainer>
+          <FooterDate>
+            <SectionHeading>{t('Date Range:')}</SectionHeading>
+            <span>
+              {loading || error ? (
+                <NotAvailable />
+              ) : (
+                tct('[start] — [end] ([timezone] UTC, [interval] interval)', {
+                  start: chartData.chartDateStartDisplay,
+                  end: chartData.chartDateEndDisplay,
+                  timezone: chartData.chartDateTimezoneDisplay,
+                  interval: chartData.chartDateInterval,
+                })
+              )}
+            </span>
+          </FooterDate>
+        </InlineContainer>
+        <InlineContainer>
+          {(chartData.chartStats.clientDiscard ?? []).length > 0 && (
+            <Flex align="center" gap="md">
+              <strong>
+                {chartData.cardStats.clientDiscard
+                  ? tct('Show client-discarded data ([count]):', {
+                      count: chartData.cardStats.clientDiscard,
+                    })
+                  : t('Show client-discarded data:')}
+              </strong>
+              <Switch
+                onChange={() => {
+                  handleChangeState({clientDiscard: !clientDiscard});
+                }}
+                checked={clientDiscard}
+              />
+            </Flex>
+          )}
+        </InlineContainer>
+        <InlineContainer>
+          <OptionSelector
+            title={t('Type')}
+            selected={chartData.chartTransform}
+            options={CHART_OPTIONS_DATA_TRANSFORM}
+            onChange={(val: string) =>
+              handleChangeState({transform: val as ChartDataTransform})
+            }
+          />
+        </InlineContainer>
+      </Footer>
+    ),
+    dataCategory,
+    dataTransform: chartData.chartTransform,
+    usageDateStart: chartData.chartDateStart,
+    usageDateEnd: chartData.chartDateEnd,
+    usageDateShowUtc: chartData.chartDateUtc,
+    usageDateInterval: chartData.chartDateInterval,
+    usageStats: chartData.chartStats,
+    chartTooltip: {
+      subLabels: chartData.chartSubLabels,
+      skipZeroValuedSubLabels: true,
+      trigger: 'axis',
+      valueFormatter: getTooltipFormatter(dataCategory),
+    },
+    legendSelected: {[SeriesTypes.CLIENT_DISCARD]: !!clientDiscard},
+    onLegendSelectChanged: ({name, selected}) => {
+      if (name === SeriesTypes.CLIENT_DISCARD) {
+        handleChangeState({clientDiscard: selected[name]});
+      }
+    },
+  };
+}
 
-class UsageStatsOrganization extends AsyncComponent<Props, State> {
-  componentDidUpdate(prevProps: Props) {
-    const {dataDatetime: prevDateTime} = prevProps;
-    const {dataDatetime: currDateTime} = this.props;
+function ScoreCards({
+  cardMetadata,
+  loading,
+}: {
+  cardMetadata: CardMetadata;
+  loading: boolean;
+}) {
+  return Object.values(cardMetadata).map((card, i) => (
+    <StyledScoreCard
+      key={i}
+      title={card.title}
+      score={loading ? undefined : card.score}
+      help={card.help}
+      trend={card.trend}
+      isTooltipHoverable
+    />
+  ));
+}
 
-    if (
-      prevDateTime.start !== currDateTime.start ||
-      prevDateTime.end !== currDateTime.end ||
-      prevDateTime.period !== currDateTime.period ||
-      prevDateTime.utc !== currDateTime.utc
-    ) {
-      this.reloadData();
+function ChartContainer({children}: {children: React.ReactNode}) {
+  return <ChartWrapper data-test-id="usage-stats-chart">{children}</ChartWrapper>;
+}
+
+export interface UsageStatsOrganizationProps {
+  dataCategory: DataCategory;
+  dataCategoryApiName: DataCategoryExact;
+  dataCategoryName: DataCategoryInfo['titleName'];
+  dataDatetime: DateTimeObject;
+  handleChangeState: (state: {
+    clientDiscard?: boolean;
+    dataCategory?: DataCategory;
+    pagePeriod?: string | null;
+    transform?: ChartDataTransform;
+  }) => void;
+  organization: Organization;
+  projectIds: number[];
+  chartTransform?: string;
+  children?: (props: {
+    cardMetadata: CardMetadata;
+    chartData: ChartData;
+    handleOnDocsClick: (
+      source:
+        | 'card-accepted'
+        | 'card-filtered'
+        | 'card-rate-limited'
+        | 'card-invalid'
+        | 'chart-title'
+    ) => void;
+    orgStats: UseApiQueryResult<UsageSeries | undefined, RequestError>;
+    usageChart: React.ReactNode;
+  }) => React.ReactNode | React.ReactNode;
+  clientDiscard?: boolean;
+  clock24Hours?: boolean;
+  endpointQuery?: ReturnType<typeof getEndpointQuery>;
+  projectDetails?: React.ReactNode[];
+}
+
+type CardMetadata = Record<
+  'total' | 'accepted' | 'filtered' | 'rateLimited' | 'invalid',
+  {
+    title: React.ReactNode;
+    help?: React.ReactNode;
+    score?: string;
+    trend?: React.ReactNode;
+  }
+>;
+
+function UsageStatsOrganization({
+  dataDatetime,
+  projectIds,
+  dataCategoryApiName,
+  organization,
+  dataCategory,
+  dataCategoryName,
+  clientDiscard,
+  handleChangeState,
+  chartTransform,
+  children,
+  endpointQuery,
+}: UsageStatsOrganizationProps) {
+  const router = useRouter();
+  const orgStatsQuery = useMemo(() => {
+    return (
+      endpointQuery ??
+      getEndpointQuery({
+        dataCategoryApiName,
+        dataDatetime,
+        organization,
+        projectIds,
+        endpointQueryDatetime: getEndpointQueryDatetime(dataDatetime),
+      })
+    );
+  }, [endpointQuery, dataCategoryApiName, dataDatetime, organization, projectIds]);
+
+  const orgStatsReponse = useApiQuery<UsageSeries | undefined>(
+    [
+      getApiUrl(`/organizations/$organizationIdOrSlug/stats_v2/`, {
+        path: {organizationIdOrSlug: organization.slug},
+      }),
+      {
+        query: orgStatsQuery,
+      },
+    ],
+    {
+      staleTime: Infinity,
+      retry: false,
     }
-  }
+  );
 
-  getEndpoints(): ReturnType<AsyncComponent['getEndpoints']> {
-    return [['orgStats', this.endpointPath, {query: this.endpointQuery}]];
-  }
+  const handleOnDocsClick = useCallback(
+    (
+      source:
+        | 'card-accepted'
+        | 'card-filtered'
+        | 'card-rate-limited'
+        | 'card-invalid'
+        | 'chart-title'
+    ) => {
+      trackAnalytics('stats.docs_clicked', {
+        organization,
+        source,
+        dataCategory,
+      });
+    },
+    [organization, dataCategory]
+  );
 
-  get endpointPath() {
-    const {organization} = this.props;
-    return `/organizations/${organization.slug}/stats_v2/`;
-  }
+  const navigateToInboundFilterSettings = useCallback(
+    (event: ReactMouseEvent) => {
+      event.preventDefault();
+      const url = `/settings/${organization.slug}/projects/:projectId/filters/data-filters/`;
+      if (router) {
+        navigateTo(url, router);
+      }
+    },
+    [router, organization]
+  );
 
-  get endpointQuery() {
-    const {dataDatetime} = this.props;
-
-    const queryDatetime =
-      dataDatetime.start && dataDatetime.end
-        ? {
-            start: dataDatetime.start,
-            end: dataDatetime.end,
-            utc: dataDatetime.utc,
-          }
-        : {
-            statsPeriod: dataDatetime.period || DEFAULT_STATS_PERIOD,
-          };
-
-    return {
-      ...queryDatetime,
-      interval: getSeriesApiInterval(dataDatetime),
-      groupBy: ['category', 'outcome'],
-      field: ['sum(quantity)'],
-    };
-  }
-
-  get chartData(): {
-    chartStats: ChartStats;
-    cardStats: {
-      total?: string;
-      accepted?: string;
-      dropped?: string;
-      filtered?: string;
-    };
-    dataError?: Error;
-    chartDateInterval: IntervalPeriod;
-    chartDateStart: string;
-    chartDateEnd: string;
-    chartDateUtc: boolean;
-    chartDateStartDisplay: string;
-    chartDateEndDisplay: string;
-    chartDateTimezoneDisplay: string;
-    chartTransform: ChartDataTransform;
-  } {
-    const {orgStats} = this.state;
-
-    return {
-      ...this.mapSeriesToChart(orgStats),
-      ...this.chartDateRange,
-      ...this.chartTransform,
-    };
-  }
-
-  get chartTransform(): {chartTransform: ChartDataTransform} {
-    const {chartTransform} = this.props;
-
+  const chartDataTransform: {chartTransform: ChartDataTransform} = useMemo(() => {
     switch (chartTransform) {
       case ChartDataTransform.CUMULATIVE:
       case ChartDataTransform.PERIODIC:
@@ -129,24 +421,13 @@ class UsageStatsOrganization extends AsyncComponent<Props, State> {
       default:
         return {chartTransform: ChartDataTransform.PERIODIC};
     }
-  }
+  }, [chartTransform]);
 
-  get chartDateRange(): {
-    chartDateInterval: IntervalPeriod;
-    chartDateStart: string;
-    chartDateEnd: string;
-    chartDateUtc: boolean;
-    chartDateStartDisplay: string;
-    chartDateEndDisplay: string;
-    chartDateTimezoneDisplay: string;
-  } {
-    const {orgStats} = this.state;
-    const {dataDatetime} = this.props;
-
+  const chartDateRange = useMemo(() => {
     const interval = getSeriesApiInterval(dataDatetime);
 
     // Use fillers as loading/error states will not display datetime at all
-    if (!orgStats || !orgStats.intervals) {
+    if (!orgStatsReponse.data?.intervals) {
       return {
         chartDateInterval: interval,
         chartDateStart: '',
@@ -158,7 +439,7 @@ class UsageStatsOrganization extends AsyncComponent<Props, State> {
       };
     }
 
-    const {intervals} = orgStats;
+    const {intervals} = orgStatsReponse.data;
     const intervalHours = parsePeriodToHours(interval);
 
     // Keep datetime in UTC until we want to display it to users
@@ -171,8 +452,15 @@ class UsageStatsOrganization extends AsyncComponent<Props, State> {
 
     // If interval is a day or more, use UTC to format date. Otherwise, the date
     // may shift ahead/behind when converting to the user's local time.
-    const FORMAT_DATETIME =
-      intervalHours >= 24 ? FORMAT_DATETIME_DAILY : FORMAT_DATETIME_HOURLY;
+    let FORMAT_DATETIME: string;
+    if (intervalHours >= 24) {
+      // Daily format doesn't have time, so no change needed
+      FORMAT_DATETIME = FORMAT_DATETIME_DAILY;
+    } else if (shouldUse24Hours()) {
+      FORMAT_DATETIME = FORMAT_DATETIME_HOURLY_24H;
+    } else {
+      FORMAT_DATETIME = FORMAT_DATETIME_HOURLY;
+    }
 
     const xAxisStart = moment(startTime);
     const xAxisEnd = moment(endTime);
@@ -192,285 +480,200 @@ class UsageStatsOrganization extends AsyncComponent<Props, State> {
       chartDateEndDisplay: displayEnd.format(FORMAT_DATETIME),
       chartDateTimezoneDisplay: displayStart.format('Z'),
     };
-  }
+  }, [orgStatsReponse.data, dataDatetime]);
 
-  mapSeriesToChart(orgStats?: UsageSeries): {
-    chartStats: ChartStats;
+  const chartData: {
     cardStats: {
-      total?: string;
       accepted?: string;
-      dropped?: string;
+      accepted_stored?: string;
+      clientDiscard?: string;
       filtered?: string;
+      invalid?: string;
+      rateLimited?: string;
+      total?: string;
     };
+    chartDateEnd: string;
+    chartDateEndDisplay: string;
+    chartDateInterval: IntervalPeriod;
+    chartDateStart: string;
+    chartDateStartDisplay: string;
+    chartDateTimezoneDisplay: string;
+    chartDateUtc: boolean;
+    chartStats: ChartStats;
+    chartSubLabels: TooltipSubLabel[];
+    chartTransform: ChartDataTransform;
     dataError?: Error;
-  } {
-    const cardStats = {
-      total: undefined,
-      accepted: undefined,
-      dropped: undefined,
-      filtered: undefined,
+  } = useMemo(() => {
+    return {
+      ...mapSeriesToChart({
+        orgStats: orgStatsReponse.data,
+        chartDateInterval: chartDateRange.chartDateInterval,
+        chartDateUtc: chartDateRange.chartDateUtc,
+        dataCategory,
+        endpointQuery: orgStatsQuery,
+      }),
+      ...chartDateRange,
+      ...chartDataTransform,
     };
-    const chartStats: ChartStats = {
-      accepted: [],
-      dropped: [],
-      projected: [],
-      filtered: [],
-    };
+  }, [
+    orgStatsReponse.data,
+    orgStatsQuery,
+    chartDateRange,
+    dataCategory,
+    chartDataTransform,
+  ]);
 
-    if (!orgStats) {
-      return {cardStats, chartStats};
-    }
+  const cardMetadata: CardMetadata = useMemo(() => {
+    const {total, accepted, accepted_stored, invalid, rateLimited, filtered} =
+      chartData.cardStats;
 
-    try {
-      const {dataCategory} = this.props;
-      const {chartDateInterval, chartDateUtc} = this.chartDateRange;
-
-      const usageStats: UsageStat[] = orgStats.intervals.map(interval => {
-        const dateTime = moment(interval);
-
-        return {
-          date: getDateFromMoment(dateTime, chartDateInterval, chartDateUtc),
-          total: 0,
-          accepted: 0,
-          filtered: 0,
-          dropped: {total: 0},
-        };
-      });
-
-      // Tally totals for card data
-      const count: Record<'total' | Outcome, number> = {
-        total: 0,
-        [Outcome.ACCEPTED]: 0,
-        [Outcome.FILTERED]: 0,
-        [Outcome.DROPPED]: 0,
-        [Outcome.INVALID]: 0, // Combined with dropped later
-        [Outcome.RATE_LIMITED]: 0, // Combined with dropped later
-        [Outcome.CLIENT_DISCARD]: 0, // Not exposed yet
-      };
-
-      orgStats.groups.forEach(group => {
-        const {outcome, category} = group.by;
-        // HACK: The backend enum are singular, but the frontend enums are plural
-        if (!dataCategory.includes(`${category}`)) {
-          return;
-        }
-
-        if (outcome !== Outcome.CLIENT_DISCARD) {
-          count.total += group.totals['sum(quantity)'];
-        }
-
-        count[outcome] += group.totals['sum(quantity)'];
-
-        group.series['sum(quantity)'].forEach((stat, i) => {
-          switch (outcome) {
-            case Outcome.ACCEPTED:
-            case Outcome.FILTERED:
-              usageStats[i][outcome] += stat;
-              return;
-            case Outcome.DROPPED:
-            case Outcome.RATE_LIMITED:
-            case Outcome.INVALID:
-              usageStats[i].dropped.total += stat;
-              // TODO: add client discards to dropped?
-              return;
-            default:
-              return;
-          }
-        });
-      });
-
-      // Invalid and rate_limited data is combined with dropped
-      count[Outcome.DROPPED] += count[Outcome.INVALID];
-      count[Outcome.DROPPED] += count[Outcome.RATE_LIMITED];
-
-      usageStats.forEach(stat => {
-        stat.total = stat.accepted + stat.filtered + stat.dropped.total;
-
-        // Chart Data
-        chartStats.accepted.push({value: [stat.date, stat.accepted]} as any);
-        chartStats.dropped.push({value: [stat.date, stat.dropped.total]} as any);
-        chartStats.filtered?.push({value: [stat.date, stat.filtered]} as any);
-      });
-
-      return {
-        cardStats: {
-          total: formatUsageWithUnits(
-            count.total,
-            dataCategory,
-            getFormatUsageOptions(dataCategory)
-          ),
-          accepted: formatUsageWithUnits(
-            count[Outcome.ACCEPTED],
-            dataCategory,
-            getFormatUsageOptions(dataCategory)
-          ),
-          filtered: formatUsageWithUnits(
-            count[Outcome.FILTERED],
-            dataCategory,
-            getFormatUsageOptions(dataCategory)
-          ),
-          dropped: formatUsageWithUnits(
-            count[Outcome.DROPPED],
-            dataCategory,
-            getFormatUsageOptions(dataCategory)
-          ),
-        },
-        chartStats,
-      };
-    } catch (err) {
-      Sentry.withScope(scope => {
-        scope.setContext('query', this.endpointQuery);
-        scope.setContext('body', orgStats);
-        Sentry.captureException(err);
-      });
-
-      return {
-        cardStats,
-        chartStats,
-        dataError: new Error('Failed to parse stats data'),
-      };
-    }
-  }
-
-  renderCards() {
-    const {dataCategory, dataCategoryName, organization} = this.props;
-    const {loading} = this.state;
-    const {total, accepted, dropped, filtered} = this.chartData.cardStats;
-
-    const cardMetadata = [
-      {
+    return {
+      total: {
         title: tct('Total [dataCategory]', {dataCategory: dataCategoryName}),
-        value: total,
+        score: total,
       },
-      {
-        title: t('Accepted'),
-        help: tct('Accepted [dataCategory] were successfully processed by Sentry', {
-          dataCategory,
-        }),
-        value: accepted,
-        secondaryValue: (
-          <UsageStatsPerMin organization={organization} dataCategory={dataCategory} />
-        ),
-      },
-      {
-        title: t('Filtered'),
+      accepted: {
+        title: tct('Accepted [dataCategory]', {dataCategory: dataCategoryName}),
         help: tct(
-          'Filtered [dataCategory] were blocked due to your inbound data filter rules',
-          {dataCategory}
+          'Accepted [dataCategory] were successfully processed by Sentry. For more information, read our [docsLink:docs].',
+          {
+            dataCategory: dataCategoryName,
+            docsLink: (
+              <ExternalLink
+                href="https://docs.sentry.io/product/stats/#accepted"
+                onClick={() => handleOnDocsClick('card-accepted')}
+              />
+            ),
+          }
         ),
-        value: filtered,
+        score: accepted,
+        trend:
+          dataCategoryApiName === 'span' && accepted_stored ? (
+            <SpansStored organization={organization} acceptedStored={accepted_stored} />
+          ) : (
+            <UsageStatsPerMin
+              dataCategoryApiName={dataCategoryApiName}
+              dataCategory={dataCategory}
+              organization={organization}
+              projectIds={projectIds}
+            />
+          ),
       },
-      {
-        title: t('Dropped'),
+      filtered: {
+        title: tct('Filtered [dataCategory]', {dataCategory: dataCategoryName}),
         help: tct(
-          'Dropped [dataCategory] were discarded due to invalid data, rate-limits, quota limits, or spike protection',
-          {dataCategory}
+          'Filtered [dataCategory] were blocked due to your [filterSettings: inbound data filter] rules. For more information, read our [docsLink:docs].',
+          {
+            dataCategory: dataCategoryName,
+            filterSettings: (
+              <a href="#" onClick={event => navigateToInboundFilterSettings(event)} />
+            ),
+            docsLink: (
+              <ExternalLink
+                href="https://docs.sentry.io/product/stats/#filtered"
+                onClick={() => handleOnDocsClick('card-filtered')}
+              />
+            ),
+          }
         ),
-        value: dropped,
+        score: filtered,
       },
-    ];
+      rateLimited: {
+        title: tct('Rate Limited [dataCategory]', {dataCategory: dataCategoryName}),
+        help: tct(
+          'Rate Limited [dataCategory] were discarded due to rate limits or quota. For more information, read our [docsLink:docs].',
+          {
+            dataCategory: dataCategoryName,
+            docsLink: (
+              <ExternalLink
+                href="https://docs.sentry.io/product/stats/#rate-limited"
+                onClick={() => handleOnDocsClick('card-rate-limited')}
+              />
+            ),
+          }
+        ),
+        score: rateLimited,
+      },
+      invalid: {
+        title: tct('Invalid [dataCategory]', {dataCategory: dataCategoryName}),
+        help: tct(
+          'Invalid [dataCategory] were sent by the SDK and were discarded because the data did not meet the basic schema requirements. For more information, read our [docsLink:docs].',
+          {
+            dataCategory: dataCategoryName,
+            docsLink: (
+              <ExternalLink
+                href="https://docs.sentry.io/product/stats/#invalid"
+                onClick={() => handleOnDocsClick('card-invalid')}
+              />
+            ),
+          }
+        ),
+        score: invalid,
+      },
+    };
+  }, [
+    handleOnDocsClick,
+    dataCategory,
+    dataCategoryName,
+    dataCategoryApiName,
+    organization,
+    projectIds,
+    chartData,
+    navigateToInboundFilterSettings,
+  ]);
 
-    return cardMetadata.map((card, i) => (
-      <StyledScoreCard
-        key={i}
-        title={card.title}
-        score={loading ? undefined : card.value}
-        help={card.help}
-        trend={card.secondaryValue}
-      />
-    ));
-  }
+  const chartProps = useMemo(() => {
+    return getChartProps({
+      chartData,
+      clientDiscard,
+      dataCategory,
+      error: orgStatsReponse.error,
+      loading: orgStatsReponse.isPending,
+      handleChangeState,
+      handleOnDocsClick,
+    });
+  }, [
+    handleOnDocsClick,
+    chartData,
+    clientDiscard,
+    dataCategory,
+    orgStatsReponse.error,
+    orgStatsReponse.isPending,
+    handleChangeState,
+  ]);
 
-  renderChart() {
-    const {dataCategory} = this.props;
-    const {error, errors, loading} = this.state;
-
-    const {
-      chartStats,
-      dataError,
-      chartDateInterval,
-      chartDateStart,
-      chartDateEnd,
-      chartDateUtc,
-      chartTransform,
-    } = this.chartData;
-
-    const hasError = error || !!dataError;
-    const chartErrors: any = dataError ? {...errors, data: dataError} : errors; // TODO(ts): AsyncComponent
-
-    return (
-      <UsageChart
-        isLoading={loading}
-        isError={hasError}
-        errors={chartErrors}
-        title=" " // Force the title to be blank
-        footer={this.renderChartFooter()}
-        dataCategory={dataCategory}
-        dataTransform={chartTransform}
-        usageDateStart={chartDateStart}
-        usageDateEnd={chartDateEnd}
-        usageDateShowUtc={chartDateUtc}
-        usageDateInterval={chartDateInterval}
-        usageStats={chartStats}
-      />
-    );
-  }
-
-  renderChartFooter = () => {
-    const {handleChangeState} = this.props;
-    const {loading, error} = this.state;
-    const {
-      chartDateInterval,
-      chartTransform,
-      chartDateStartDisplay,
-      chartDateEndDisplay,
-      chartDateTimezoneDisplay,
-    } = this.chartData;
-
-    return (
-      <Footer>
-        <InlineContainer>
-          <FooterDate>
-            <SectionHeading>{t('Date Range:')}</SectionHeading>
-            <span>
-              {loading || error ? (
-                <NotAvailable />
-              ) : (
-                tct('[start] — [end] ([timezone] UTC, [interval] interval)', {
-                  start: chartDateStartDisplay,
-                  end: chartDateEndDisplay,
-                  timezone: chartDateTimezoneDisplay,
-                  interval: chartDateInterval,
-                })
-              )}
-            </span>
-          </FooterDate>
-        </InlineContainer>
-        <InlineContainer>
-          <OptionSelector
-            title={t('Type')}
-            selected={chartTransform}
-            options={CHART_OPTIONS_DATA_TRANSFORM}
-            onChange={(val: string) =>
-              handleChangeState({transform: val as ChartDataTransform})
-            }
-          />
-        </InlineContainer>
-      </Footer>
-    );
-  };
-
-  renderComponent() {
-    return (
-      <Fragment>
-        {this.renderCards()}
-        <ChartWrapper>{this.renderChart()}</ChartWrapper>
-      </Fragment>
-    );
-  }
+  return typeof children === 'function' ? (
+    children({
+      usageChart: <UsageChart {...chartProps} />,
+      cardMetadata,
+      orgStats: orgStatsReponse,
+      handleOnDocsClick,
+      chartData,
+    })
+  ) : (
+    <PageGrid>
+      <ScoreCards cardMetadata={cardMetadata} loading={orgStatsReponse.isPending} />
+      <ChartContainer>
+        <UsageChart {...chartProps} />
+      </ChartContainer>
+    </PageGrid>
+  );
 }
 
 export default UsageStatsOrganization;
+
+const PageGrid = styled('div')`
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: ${space(2)};
+
+  @media (min-width: ${p => p.theme.breakpoints.sm}) {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  @media (min-width: ${p => p.theme.breakpoints.lg}) {
+    grid-template-columns: repeat(5, 1fr);
+  }
+`;
 
 const StyledScoreCard = styled(ScoreCard)`
   grid-column: auto / span 1;
@@ -484,10 +687,16 @@ const ChartWrapper = styled('div')`
 const Footer = styled('div')`
   display: flex;
   flex-direction: row;
-  justify-content: space-between;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: ${space(1.5)};
   padding: ${space(1)} ${space(3)};
-  border-top: 1px solid ${p => p.theme.border};
+  border-top: 1px solid ${p => p.theme.tokens.border.primary};
+  > *:first-child {
+    flex-grow: 1;
+  }
 `;
+
 const FooterDate = styled('div')`
   display: flex;
   flex-direction: row;
@@ -498,7 +707,45 @@ const FooterDate = styled('div')`
   }
 
   > span:last-child {
-    font-weight: 400;
-    font-size: ${p => p.theme.fontSizeMedium};
+    font-weight: ${p => p.theme.font.weight.sans.regular};
+    font-size: ${p => p.theme.font.size.md};
   }
 `;
+
+type SpansStoredProps = {
+  acceptedStored: string;
+  organization: Organization;
+};
+
+const StyledSettingsButton = styled(LinkButton)`
+  top: 2px;
+`;
+
+const StyledTextWrapper = styled('div')`
+  min-height: 22px;
+`;
+
+function SpansStored({organization, acceptedStored}: SpansStoredProps) {
+  return (
+    <StyledTextWrapper>
+      {t('%s stored', acceptedStored)}{' '}
+      {organization.access.includes('org:read') &&
+        hasDynamicSamplingCustomFeature(organization) && (
+          <StyledSettingsButton
+            priority="transparent"
+            size="zero"
+            icon={<IconSettings variant="muted" />}
+            tooltipProps={{title: t('Dynamic Sampling Settings')}}
+            aria-label={t('Dynamic Sampling Settings')}
+            to={`/settings/${organization.slug}/dynamic-sampling/`}
+          />
+        )}
+    </StyledTextWrapper>
+  );
+}
+
+export const UsageStatsOrgComponents = {
+  PageGrid,
+  ChartContainer,
+  ScoreCards,
+};

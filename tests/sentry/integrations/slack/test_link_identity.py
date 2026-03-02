@@ -1,14 +1,21 @@
-import responses
+from collections.abc import Generator
+from unittest.mock import MagicMock, patch
+
+import pytest
+from slack_sdk.errors import SlackApiError
+from slack_sdk.web import SlackResponse
+from slack_sdk.webhook import WebhookResponse
 
 from sentry.integrations.slack.views.link_identity import build_linking_url
 from sentry.integrations.slack.views.unlink_identity import build_unlinking_url
-from sentry.models import Identity, IdentityStatus, OrganizationIntegration
-from sentry.testutils import TestCase
-from tests.sentry.integrations.slack import add_identity, install_slack
+from sentry.testutils.cases import TestCase
+from sentry.testutils.helpers import add_identity, install_slack
+from sentry.testutils.silo import control_silo_test
+from sentry.users.models.identity import Identity, IdentityStatus
 
 
 class SlackIntegrationLinkIdentityTestBase(TestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         super().setUp()
         self.login_as(self.user)
 
@@ -19,24 +26,42 @@ class SlackIntegrationLinkIdentityTestBase(TestCase):
         self.integration = install_slack(self.organization)
         self.idp = add_identity(self.integration, self.user, self.external_id)
 
-        responses.add(
-            method=responses.POST,
-            url=self.response_url,
-            body='{"ok": true}',
-            status=200,
-            content_type="application/json",
-        )
+    @pytest.fixture(autouse=True)
+    def mock_webhook_send(self) -> Generator[None]:
+        with patch(
+            "slack_sdk.webhook.WebhookClient.send",
+            return_value=WebhookResponse(
+                url="",
+                body='{"ok": true}',
+                headers={},
+                status_code=200,
+            ),
+        ) as self.mock_webhook:
+            yield
+
+    @pytest.fixture(autouse=True)
+    def mock_chat_postMessage(self) -> Generator[None]:
+        with patch(
+            "slack_sdk.web.WebClient.chat_postMessage",
+            return_value=SlackResponse(
+                client=None,
+                http_verb="POST",
+                api_url="https://slack.com/api/chat.postMessage",
+                req_args={},
+                data={"ok": True},
+                headers={},
+                status_code=200,
+            ),
+        ) as self.mock_post:
+            yield
 
 
+@control_silo_test
 class SlackIntegrationLinkIdentityTest(SlackIntegrationLinkIdentityTestBase):
-    @responses.activate
-    def test_basic_flow(self):
+    def test_basic_flow_with_webhook_client(self) -> None:
+        """Do the auth flow and assert that the identity was created."""
         linking_url = build_linking_url(
-            self.integration,
-            self.organization,
-            self.external_id,
-            self.channel_id,
-            self.response_url,
+            self.integration, self.external_id, self.channel_id, self.response_url
         )
 
         # Load page.
@@ -52,10 +77,67 @@ class SlackIntegrationLinkIdentityTest(SlackIntegrationLinkIdentityTestBase):
         assert len(identity) == 1
         assert identity[0].idp == self.idp
         assert identity[0].status == IdentityStatus.VALID
-        assert len(responses.calls) == 1
+        assert self.mock_webhook.call_count == 1
 
-    @responses.activate
-    def test_overwrites_existing_identities(self):
+    def test_basic_flow_with_webhook_client_error(self) -> None:
+        """Do the auth flow and assert that the identity was created."""
+        self.mock_webhook.side_effect = SlackApiError("", response={"ok": False})
+
+        linking_url = build_linking_url(
+            self.integration, self.external_id, self.channel_id, self.response_url
+        )
+
+        # Load page.
+        response = self.client.get(linking_url)
+        assert response.status_code == 200
+        self.assertTemplateUsed(response, "sentry/auth-link-identity.html")
+
+        # Link identity of user
+        self.client.post(linking_url)
+
+        identity = Identity.objects.filter(external_id="new-slack-id", user=self.user)
+
+        assert len(identity) == 1
+
+    def test_basic_flow_with_web_client(self) -> None:
+        """No response URL is provided, so we use WebClient."""
+        linking_url = build_linking_url(self.integration, self.external_id, self.channel_id, "")
+
+        # Load page.
+        response = self.client.get(linking_url)
+        assert response.status_code == 200
+        self.assertTemplateUsed(response, "sentry/auth-link-identity.html")
+
+        # Link identity of user
+        self.client.post(linking_url)
+
+        identity = Identity.objects.filter(external_id="new-slack-id", user=self.user)
+
+        assert len(identity) == 1
+        assert identity[0].idp == self.idp
+        assert identity[0].status == IdentityStatus.VALID
+        assert self.mock_post.call_count == 1
+
+    @patch("sentry.integrations.slack.utils.notifications._logger")
+    def test_basic_flow_with_web_client_error(self, mock_logger: MagicMock) -> None:
+        """No response URL is provided, so we use WebClient."""
+        self.mock_post.side_effect = SlackApiError("", response={"ok": False})
+
+        linking_url = build_linking_url(self.integration, self.external_id, self.channel_id, "")
+
+        # Load page.
+        response = self.client.get(linking_url)
+        assert response.status_code == 200
+        self.assertTemplateUsed(response, "sentry/auth-link-identity.html")
+
+        # Link identity of user
+        self.client.post(linking_url)
+
+        identity = Identity.objects.filter(external_id="new-slack-id", user=self.user)
+
+        assert len(identity) == 1
+
+    def test_overwrites_existing_identities_with_sdk(self) -> None:
         external_id_2 = "slack-id2"
 
         # Create a second user.
@@ -68,11 +150,7 @@ class SlackIntegrationLinkIdentityTest(SlackIntegrationLinkIdentityTestBase):
         )
 
         linking_url = build_linking_url(
-            self.integration,
-            self.organization,
-            external_id_2,
-            self.channel_id,
-            self.response_url,
+            self.integration, external_id_2, self.channel_id, self.response_url
         )
         self.client.post(linking_url)
 
@@ -81,8 +159,9 @@ class SlackIntegrationLinkIdentityTest(SlackIntegrationLinkIdentityTestBase):
         assert not Identity.objects.filter(external_id=external_id_2, user=user2).exists()
 
 
+@control_silo_test
 class SlackIntegrationUnlinkIdentityTest(SlackIntegrationLinkIdentityTestBase):
-    def setUp(self):
+    def setUp(self) -> None:
         super().setUp()
 
         self.unlinking_url = build_unlinking_url(
@@ -92,26 +171,28 @@ class SlackIntegrationUnlinkIdentityTest(SlackIntegrationLinkIdentityTestBase):
             self.response_url,
         )
 
-    @responses.activate
-    def test_basic_flow(self):
+    def test_basic_flow(self) -> None:
         # Load page.
         response = self.client.get(self.unlinking_url)
         assert response.status_code == 200
         self.assertTemplateUsed(response, "sentry/auth-unlink-identity.html")
 
         # Unlink identity of user.
-        self.client.post(self.unlinking_url)
-        assert not Identity.objects.filter(external_id="new-slack-id", user=self.user).exists()
-        assert len(responses.calls) == 1
+        response = self.client.post(self.unlinking_url)
+        assert response.status_code == 200
+        self.assertTemplateUsed(response, "sentry/integrations/slack/unlinked.html")
 
-    @responses.activate
-    def test_user_with_multiple_organizations(self):
+        assert not Identity.objects.filter(external_id="new-slack-id", user=self.user).exists()
+        assert self.mock_webhook.call_count == 1
+
+    def test_user_with_multiple_organizations(self) -> None:
         # Create a second organization where the user is _not_ a member.
-        OrganizationIntegration.objects.create(
-            organization=self.create_organization(name="Another Org"), integration=self.integration
+        self.create_organization_integration(
+            organization_id=self.create_organization(name="Another Org").id,
+            integration=self.integration,
         )
 
         # Unlink identity of user.
         self.client.post(self.unlinking_url)
         assert not Identity.objects.filter(external_id="new-slack-id", user=self.user).exists()
-        assert len(responses.calls) == 1
+        assert self.mock_webhook.call_count == 1

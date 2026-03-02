@@ -1,7 +1,7 @@
 import jwt as pyjwt
 import pytest
 
-from sentry.utils import json  # type: ignore
+from sentry.utils import json
 from sentry.utils import jwt as jwt_utils
 
 RS256_KEY = """
@@ -94,7 +94,7 @@ RSA_PUB_JWK = {
 }
 
 
-@pytest.fixture  # type: ignore
+@pytest.fixture
 def token() -> str:
     """A JWT token, signed with symmetric key."""
     headers = {
@@ -110,7 +110,7 @@ def token() -> str:
     return token
 
 
-@pytest.fixture  # type: ignore
+@pytest.fixture
 def rsa_token() -> str:
     """A JWT token, signed with RSA key."""
     headers = {
@@ -185,6 +185,27 @@ def test_decode_audience() -> None:
     assert claims == payload
 
 
+def test_decode_invalid_signature(token: str) -> None:
+    """Verify that decode rejects tokens when the wrong key is provided."""
+    with pytest.raises(pyjwt.exceptions.InvalidSignatureError):
+        jwt_utils.decode(token, "wrong_secret")
+
+
+def test_decode_tampered_payload() -> None:
+    """Verify that decode rejects tokens with tampered payloads."""
+    claims = {"iss": "me", "data": "original"}
+    token = jwt_utils.encode(claims, "secret")
+
+    # Tamper with the payload by modifying the middle part
+    parts = token.split(".")
+    # Create a token with different payload but same signature
+    tampered_payload = pyjwt.utils.base64url_encode(b'{"iss":"attacker"}').decode("utf-8")
+    tampered_token = f"{parts[0]}.{tampered_payload}.{parts[2]}"
+
+    with pytest.raises(pyjwt.exceptions.InvalidSignatureError):
+        jwt_utils.decode(tampered_token, "secret")
+
+
 def test_encode(token: str) -> None:
     headers = {
         "alg": "HS256",
@@ -213,7 +234,7 @@ def test_encode_rs256() -> None:
     claims = {
         "iss": "me",
     }
-    encoded_hs256 = jwt_utils.encode(claims, "secret", headers=headers)
+    encoded_hs256 = jwt_utils.encode(claims, "secret", headers={**headers, "alg": "HS256"})
     encoded_rs256 = jwt_utils.encode(claims, RS256_KEY, headers=headers, algorithm="RS256")
 
     assert encoded_rs256.count(".") == 2

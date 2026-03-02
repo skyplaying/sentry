@@ -1,27 +1,18 @@
-minVersion: "0.23.1"
+minVersion: '2.20.0'
 releaseBranchPrefix: releases
-changelog: CHANGES
-changelogPolicy: auto
+changelog:
+  filePath: CHANGES
+  policy: auto
 statusProvider:
   name: github
   config:
     contexts:
-      - 'onpremise-builder (sentryio)'
+      - 'self-hosted-ubuntu-24.04-amd64'
+      - 'self-hosted-ubuntu-24.04-arm-arm64'
+      - 'assemble'
 artifactProvider:
-  name: gcs
-  config:
-    bucket: sentryio-cloudbuild-opensource
-requireNames:
-  - /^sentry-.+-py3\d?-none-any.whl$/
+  name: none
 targets:
-  - id: release
-    name: docker
-    source: us.gcr.io/sentryio/sentry
-    target: getsentry/sentry
-  - id: latest
-    name: docker
-    source: us.gcr.io/sentryio/sentry
-    target: getsentry/sentry
-    targetFormat: '{{{target}}}:latest'
-  - name: pypi
   - name: github
+versioning:
+  policy: calver

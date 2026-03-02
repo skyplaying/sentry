@@ -1,25 +1,13 @@
-import PlatformExternalIssueActions from 'app/actions/platformExternalIssueActions';
-import {Client} from 'app/api';
+import type {Client} from 'sentry/api';
 
 export async function deleteExternalIssue(
   api: Client,
+  orgSlug: string,
   groupId: string,
   externalIssueId: string
 ) {
-  PlatformExternalIssueActions.delete(groupId, externalIssueId);
-
-  try {
-    const data = await api.requestPromise(
-      `/issues/${groupId}/external-issues/${externalIssueId}/`,
-      {
-        method: 'DELETE',
-      }
-    );
-
-    PlatformExternalIssueActions.deleteSuccess(data);
-    return data;
-  } catch (error) {
-    PlatformExternalIssueActions.deleteError(error);
-    throw error;
-  }
+  return await api.requestPromise(
+    `/organizations/${orgSlug}/issues/${groupId}/external-issues/${externalIssueId}/`,
+    {method: 'DELETE'}
+  );
 }

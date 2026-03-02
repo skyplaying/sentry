@@ -11,6 +11,7 @@ stored in extra_data field, check OAuthBackend class for details on how to
 extend it.
 """
 
+from sentry.integrations.types import IntegrationProviderSlug
 from sentry.utils import json
 from social_auth.backends import BaseOAuth1, OAuthBackend
 from social_auth.utils import dsa_urlopen
@@ -27,7 +28,7 @@ BITBUCKET_USER_DATA_URL = "https://%s/users/" % BITBUCKET_SERVER
 class BitbucketBackend(OAuthBackend):
     """Bitbucket OAuth authentication backend"""
 
-    name = "bitbucket"
+    name = IntegrationProviderSlug.BITBUCKET.value
     EXTRA_DATA = [
         ("username", "username"),
         ("expires", "expires"),
@@ -85,6 +86,8 @@ class BitbucketAuth(BaseOAuth1):
         request = self.oauth_request(access_token, url)
         response = self.fetch_response(request)
         try:
+            email = None
+
             # Then retrieve the user's primary email address or the top email
             email_addresses = json.loads(response)
             for email_address in reversed(email_addresses):
@@ -92,6 +95,10 @@ class BitbucketAuth(BaseOAuth1):
                     email = email_address["email"]
                     if email_address["primary"]:
                         break
+
+            if email is None:
+                return None
+
             # Then return the user data using a normal GET with the
             # BITBUCKET_USER_DATA_URL and the user's email
             response = dsa_urlopen(BITBUCKET_USER_DATA_URL + email)
@@ -100,8 +107,7 @@ class BitbucketAuth(BaseOAuth1):
             return user_details
         except ValueError:
             return None
-        return None
 
 
 # Backend definition
-BACKENDS = {"bitbucket": BitbucketAuth}
+BACKENDS = {IntegrationProviderSlug.BITBUCKET.value: BitbucketAuth}

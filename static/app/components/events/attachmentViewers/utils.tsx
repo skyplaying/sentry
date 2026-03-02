@@ -1,17 +1,27 @@
-import {EventAttachment} from 'app/types';
-import {Event} from 'app/types/event';
+import type {Event} from 'sentry/types/event';
+import type {EventAttachment} from 'sentry/types/group';
+import getApiUrl from 'sentry/utils/api/getApiUrl';
 
 export type ViewerProps = {
-  event: Event;
-  orgId: string;
-  projectId: string;
   attachment: EventAttachment;
+  eventId: Event['id'];
+  orgSlug: string;
+  projectSlug: string;
   className?: string;
 };
 
-export function getAttachmentUrl(props: ViewerProps, withPrefix?: boolean): string {
-  const {orgId, projectId, event, attachment} = props;
-  return `${withPrefix ? '/api/0' : ''}/projects/${orgId}/${projectId}/events/${
-    event.id
-  }/attachments/${attachment.id}/?download`;
+export function getAttachmentUrl(props: ViewerProps) {
+  const {orgSlug, projectSlug, eventId, attachment} = props;
+
+  return getApiUrl(
+    '/projects/$organizationIdOrSlug/$projectIdOrSlug/events/$eventId/attachments/$attachmentId/',
+    {
+      path: {
+        organizationIdOrSlug: orgSlug,
+        projectIdOrSlug: projectSlug,
+        eventId,
+        attachmentId: attachment.id,
+      },
+    }
+  );
 }

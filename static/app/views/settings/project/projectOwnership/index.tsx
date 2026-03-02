@@ -1,465 +1,296 @@
-import {Fragment} from 'react';
-import {RouteComponentProps} from 'react-router';
-import styled from '@emotion/styled';
-import * as Sentry from '@sentry/react';
+import {useTheme} from '@emotion/react';
+import {z} from 'zod';
 
+import {Alert} from '@sentry/scraps/alert';
+import {Button} from '@sentry/scraps/button';
+import {AutoSaveField, FieldGroup, FormSearch} from '@sentry/scraps/form';
+import {Grid} from '@sentry/scraps/layout';
+import {ExternalLink} from '@sentry/scraps/link';
+
+import {closeModal, openEditOwnershipRules, openModal} from 'sentry/actionCreators/modal';
+import Access, {hasEveryAccess} from 'sentry/components/acl/access';
+import ErrorBoundary from 'sentry/components/errorBoundary';
+import LoadingIndicator from 'sentry/components/loadingIndicator';
+import SentryDocumentTitle from 'sentry/components/sentryDocumentTitle';
+import {IconEdit} from 'sentry/icons';
+import {t, tct} from 'sentry/locale';
+import type {IssueOwnership} from 'sentry/types/group';
+import type {CodeOwner} from 'sentry/types/integrations';
+import getApiUrl from 'sentry/utils/api/getApiUrl';
 import {
-  addErrorMessage,
-  addLoadingMessage,
-  addSuccessMessage,
-} from 'app/actionCreators/indicator';
-import {openEditOwnershipRules, openModal} from 'app/actionCreators/modal';
-import Access from 'app/components/acl/access';
-import Feature from 'app/components/acl/feature';
-import Alert from 'app/components/alert';
-import Button from 'app/components/button';
-import HookOrDefault from 'app/components/hookOrDefault';
-import ExternalLink from 'app/components/links/externalLink';
-import {IconWarning} from 'app/icons';
-import {t, tct} from 'app/locale';
-import space from 'app/styles/space';
-import {
-  CodeOwner,
-  Integration,
-  Organization,
-  Project,
-  RepositoryProjectPathConfig,
-} from 'app/types';
-import routeTitleGen from 'app/utils/routeTitle';
-import AsyncView from 'app/views/asyncView';
-import FeedbackAlert from 'app/views/settings/account/notifications/feedbackAlert';
-import Form from 'app/views/settings/components/forms/form';
-import JsonForm from 'app/views/settings/components/forms/jsonForm';
-import SettingsPageHeader from 'app/views/settings/components/settingsPageHeader';
-import PermissionAlert from 'app/views/settings/project/permissionAlert';
-import AddCodeOwnerModal from 'app/views/settings/project/projectOwnership/addCodeOwnerModal';
-import CodeOwnersPanel from 'app/views/settings/project/projectOwnership/codeowners';
-import RulesPanel from 'app/views/settings/project/projectOwnership/rulesPanel';
+  fetchMutation,
+  setApiQueryData,
+  useApiQuery,
+  useQueryClient,
+  type ApiQueryKey,
+} from 'sentry/utils/queryClient';
+import routeTitleGen from 'sentry/utils/routeTitle';
+import useOrganization from 'sentry/utils/useOrganization';
+import SettingsPageHeader from 'sentry/views/settings/components/settingsPageHeader';
+import TextBlock from 'sentry/views/settings/components/text/textBlock';
+import AddCodeOwnerModal from 'sentry/views/settings/project/projectOwnership/addCodeOwnerModal';
+import {CodeOwnerErrors} from 'sentry/views/settings/project/projectOwnership/codeownerErrors';
+import {CodeOwnerFileTable} from 'sentry/views/settings/project/projectOwnership/codeOwnerFileTable';
+import {OwnershipRulesTable} from 'sentry/views/settings/project/projectOwnership/ownershipRulesTable';
+import {ProjectPermissionAlert} from 'sentry/views/settings/project/projectPermissionAlert';
+import {useProjectSettingsOutlet} from 'sentry/views/settings/project/projectSettingsLayout';
 
-type Props = {
-  organization: Organization;
-  project: Project;
-} & RouteComponentProps<{orgId: string; projectId: string}, {}>;
-
-type State = {
-  ownership: null | any;
-  codeMappings: RepositoryProjectPathConfig[];
-  codeowners?: CodeOwner[];
-  integrations: Integration[];
-} & AsyncView['state'];
-
-const CodeOwnersHeader = HookOrDefault({
-  hookName: 'component:codeowners-header',
-  defaultComponent: () => <Fragment />,
+const ownershipSchema = z.object({
+  autoAssignment: z.string(),
+  codeownersAutoSync: z.boolean(),
 });
 
-class ProjectOwnership extends AsyncView<Props, State> {
-  getTitle() {
-    const {project} = this.props;
-    return routeTitleGen(t('Issue Owners'), project.slug, false);
-  }
+export default function ProjectOwnership() {
+  const theme = useTheme();
+  const organization = useOrganization();
+  const queryClient = useQueryClient();
+  const ownershipTitle = t('Ownership Rules');
+  const {project} = useProjectSettingsOutlet();
 
-  getEndpoints(): ReturnType<AsyncView['getEndpoints']> {
-    const {organization, project} = this.props;
-    const endpoints: ReturnType<AsyncView['getEndpoints']> = [
-      ['ownership', `/projects/${organization.slug}/${project.slug}/ownership/`],
-      [
-        'codeMappings',
-        `/organizations/${organization.slug}/code-mappings/`,
-        {query: {projectId: project.id}},
-      ],
-      [
-        'integrations',
-        `/organizations/${organization.slug}/integrations/`,
-        {query: {features: ['codeowners']}},
-      ],
-    ];
-    if (organization.features.includes('integrations-codeowners')) {
-      endpoints.push([
-        'codeowners',
-        `/projects/${organization.slug}/${project.slug}/codeowners/`,
-        {query: {expand: ['codeMapping', 'ownershipSyntax']}},
-      ]);
-    }
-    return endpoints;
-  }
+  const ownershipQueryKey: ApiQueryKey = [
+    getApiUrl(`/projects/$organizationIdOrSlug/$projectIdOrSlug/ownership/`, {
+      path: {organizationIdOrSlug: organization.slug, projectIdOrSlug: project.slug},
+    }),
+  ];
+  const {
+    data: ownership,
+    isPending: isOwnershipPending,
+    isError: isOwnershipError,
+  } = useApiQuery<IssueOwnership>(ownershipQueryKey, {staleTime: Infinity});
 
-  handleAddCodeOwner = () => {
-    const {codeMappings, integrations} = this.state;
+  const codeownersQueryKey: ApiQueryKey = [
+    getApiUrl(`/projects/$organizationIdOrSlug/$projectIdOrSlug/codeowners/`, {
+      path: {organizationIdOrSlug: organization.slug, projectIdOrSlug: project.slug},
+    }),
+    {query: {expand: ['codeMapping', 'ownershipSyntax']}},
+  ];
+  const {
+    data: codeowners = [],
+    isLoading: isCodeownersLoading,
+    isError: isCodeownersError,
+  } = useApiQuery<CodeOwner[]>(codeownersQueryKey, {
+    staleTime: Infinity,
+    enabled: organization.features.includes('integrations-codeowners'),
+  });
+
+  const handleOwnershipSave = (newOwnership: IssueOwnership) => {
+    setApiQueryData<IssueOwnership>(queryClient, ownershipQueryKey, data =>
+      newOwnership ? newOwnership : data
+    );
+    closeModal();
+  };
+
+  const handleCodeOwnerAdded = (data: CodeOwner) => {
+    setApiQueryData<CodeOwner[]>(queryClient, codeownersQueryKey, existingCodeowners => [
+      data,
+      ...(existingCodeowners || []),
+    ]);
+  };
+
+  const handleCodeOwnerDeleted = (data: CodeOwner) => {
+    setApiQueryData<CodeOwner[]>(queryClient, codeownersQueryKey, existingCodeowners =>
+      (existingCodeowners || []).filter(codeowner => codeowner.id !== data.id)
+    );
+  };
+
+  const handleCodeOwnerUpdated = (data: CodeOwner) => {
+    setApiQueryData<CodeOwner[]>(queryClient, codeownersQueryKey, stateCodeOwners => {
+      const existingCodeowners = stateCodeOwners || [];
+      const index = existingCodeowners.findIndex(item => item.id === data.id);
+      return [
+        ...existingCodeowners.slice(0, index),
+        data,
+        ...existingCodeowners.slice(index + 1),
+      ];
+    });
+  };
+
+  const handleAddCodeOwner = () => {
     openModal(modalProps => (
       <AddCodeOwnerModal
         {...modalProps}
-        organization={this.props.organization}
-        project={this.props.project}
-        codeMappings={codeMappings}
-        integrations={integrations}
-        onSave={this.handleCodeOwnerAdded}
+        organization={organization}
+        project={project}
+        onSave={handleCodeOwnerAdded}
       />
     ));
   };
 
-  getPlaceholder() {
-    return `#example usage
-path:src/example/pipeline/* person@sentry.io #infra
-url:http://example.com/settings/* #product
-tags.sku_class:enterprise #enterprise`;
+  const disabled = !hasEveryAccess(['project:write'], {organization, project});
+  const editOwnershipRulesDisabled = !hasEveryAccess(['project:read'], {
+    organization,
+    project,
+  });
+  const hasCodeowners = organization.features?.includes('integrations-codeowners');
+
+  const ownershipMutationOptions = {
+    mutationFn: (data: Partial<z.infer<typeof ownershipSchema>>) =>
+      fetchMutation({
+        url: `/projects/${organization.slug}/${project.slug}/ownership/`,
+        method: 'PUT',
+        data,
+      }),
+  };
+
+  if (isOwnershipPending || isCodeownersLoading) {
+    return <LoadingIndicator />;
   }
 
-  getDetail() {
-    return tct(
-      `Automatically assign issues and send alerts to the right people based on issue properties. [link:Learn more].`,
-      {
-        link: (
-          <ExternalLink href="https://docs.sentry.io/product/error-monitoring/issue-owners/" />
-        ),
-      }
-    );
-  }
-
-  handleOwnershipSave = (text: string | null) => {
-    this.setState(prevState => ({
-      ownership: {
-        ...prevState.ownership,
-        raw: text,
-      },
-    }));
-  };
-
-  handleCodeOwnerAdded = (data: CodeOwner) => {
-    const {codeowners} = this.state;
-    const newCodeowners = [data, ...(codeowners || [])];
-    this.setState({codeowners: newCodeowners});
-  };
-
-  handleCodeOwnerDeleted = (data: CodeOwner) => {
-    const {codeowners} = this.state;
-    const newCodeowners = (codeowners || []).filter(
-      codeowner => codeowner.id !== data.id
-    );
-    this.setState({codeowners: newCodeowners});
-  };
-
-  handleCodeOwnerUpdated = (data: CodeOwner) => {
-    const codeowners = this.state.codeowners || [];
-    const index = codeowners.findIndex(item => item.id === data.id);
-    this.setState({
-      codeowners: [...codeowners.slice(0, index), data, ...codeowners.slice(index + 1)],
-    });
-  };
-
-  handleAddCodeOwnerRequest = async () => {
-    const {organization, project} = this.props;
-    try {
-      addLoadingMessage(t('Requesting\u2026'));
-      await this.api.requestPromise(
-        `/projects/${organization.slug}/${project.slug}/codeowners-request/`,
-        {
-          method: 'POST',
-          data: {},
-        }
-      );
-
-      addSuccessMessage(t('Request Sent'));
-    } catch (err) {
-      addErrorMessage(t('Unable to send request'));
-      Sentry.captureException(err);
-    }
-  };
-
-  renderCodeOwnerErrors = () => {
-    const {project, organization} = this.props;
-    const {codeowners} = this.state;
-
-    const errMessageComponent = (message, values, link, linkValue) => (
-      <Fragment>
-        <ErrorMessageContainer>
-          <span>{message}</span>
-          <b>{values.join(', ')}</b>
-        </ErrorMessageContainer>
-        <ErrorCtaContainer>
-          <ExternalLink href={link}>{linkValue}</ExternalLink>
-        </ErrorCtaContainer>
-      </Fragment>
-    );
-
-    const errMessageListComponent = (
-      message: string,
-      values: string[],
-      linkFunction: (s: string) => string,
-      linkValueFunction: (s: string) => string
-    ) => {
-      return (
-        <Fragment>
-          <ErrorMessageContainer>
-            <span>{message}</span>
-          </ErrorMessageContainer>
-          <ErrorMessageListContainer>
-            {values.map((value, index) => (
-              <ErrorInlineContainer key={index}>
-                <b>{value}</b>
-                <ErrorCtaContainer>
-                  <ExternalLink href={linkFunction(value)} key={index}>
-                    {linkValueFunction(value)}
-                  </ExternalLink>
-                </ErrorCtaContainer>
-              </ErrorInlineContainer>
-            ))}
-          </ErrorMessageListContainer>
-        </Fragment>
-      );
-    };
-
-    return (codeowners || [])
-      .filter(({errors}) => Object.values(errors).flat().length)
-      .map(({id, codeMapping, errors}) => {
-        const errMessage = (type, values) => {
-          switch (type) {
-            case 'missing_external_teams':
-              return errMessageComponent(
-                `The following teams do not have an association in the organization: ${organization.slug}`,
-                values,
-                `/settings/${organization.slug}/integrations/${codeMapping?.provider?.slug}/${codeMapping?.integrationId}/?tab=teamMappings`,
-                'Configure Team Mappings'
-              );
-
-            case 'missing_external_users':
-              return errMessageComponent(
-                `The following usernames do not have an association in the organization: ${organization.slug}`,
-                values,
-                `/settings/${organization.slug}/integrations/${codeMapping?.provider?.slug}/${codeMapping?.integrationId}/?tab=userMappings`,
-                'Configure User Mappings'
-              );
-
-            case 'missing_user_emails':
-              return errMessageComponent(
-                `The following emails do not have an Sentry user in the organization: ${organization.slug}`,
-                values,
-                `/settings/${organization.slug}/members/`,
-                'Invite Users'
-              );
-
-            case 'teams_without_access':
-              return errMessageListComponent(
-                `The following team do not have access to the project: ${project.slug}`,
-                values,
-                value =>
-                  `/settings/${organization.slug}/teams/${value.slice(1)}/projects/`,
-                value => `Configure ${value} Permissions`
-              );
-
-            case 'users_without_access':
-              return errMessageListComponent(
-                `The following users are not on a team that has access to the project: ${project.slug}`,
-                values,
-                email => `/settings/${organization.slug}/members/?query=${email}`,
-                _ => `Configure Member Settings`
-              );
-            default:
-              return null;
-          }
-        };
-        return (
-          <Alert
-            key={id}
-            type="error"
-            icon={<IconWarning size="md" />}
-            expand={[
-              <AlertContentContainer key="container">
-                {Object.entries(errors)
-                  .filter(([_, values]) => values.length)
-                  .map(([type, values]) => (
-                    <ErrorContainer key={`${id}-${type}`}>
-                      {errMessage(type, values)}
-                    </ErrorContainer>
-                  ))}
-              </AlertContentContainer>,
-            ]}
-          >
-            {`There were ${
-              Object.values(errors).flat().length
-            } ownership issues within Sentry on the latest sync with the CODEOWNERS file`}
-          </Alert>
-        );
-      });
-  };
-  renderBody() {
-    const {project, organization} = this.props;
-    const {ownership, codeowners} = this.state;
-
-    const disabled = !organization.access.includes('project:write');
-
-    return (
-      <Fragment>
+  return (
+    <FormSearch route="/settings/:orgId/projects/:projectId/ownership/">
+      <SentryDocumentTitle title={routeTitleGen(ownershipTitle, project.slug, false)}>
         <SettingsPageHeader
-          title={t('Issue Owners')}
+          title={t('Ownership Rules')}
           action={
-            <Fragment>
-              <Button
-                to={{
-                  pathname: `/organizations/${organization.slug}/issues/`,
-                  query: {project: project.id},
-                }}
-                size="small"
-              >
-                {t('View Issues')}
-              </Button>
-              <Feature features={['integrations-codeowners']}>
-                <Access access={['org:integrations']}>
-                  {({hasAccess}) =>
-                    hasAccess ? (
-                      <CodeOwnerButton
-                        onClick={this.handleAddCodeOwner}
-                        size="small"
-                        priority="primary"
-                        data-test-id="add-codeowner-button"
-                      >
-                        {t('Add CODEOWNERS File')}
-                      </CodeOwnerButton>
-                    ) : (
-                      <CodeOwnerButton
-                        onClick={this.handleAddCodeOwnerRequest}
-                        size="small"
-                        priority="primary"
-                        data-test-id="add-codeowner-request-button"
-                      >
-                        {t('Request to Add CODEOWNERS File')}
-                      </CodeOwnerButton>
-                    )
-                  }
+            <Grid flow="column" align="center" gap="md">
+              {hasCodeowners && (
+                <Access access={['org:integrations']} project={project}>
+                  {({hasAccess}) => (
+                    <Button
+                      onClick={handleAddCodeOwner}
+                      size="sm"
+                      data-test-id="add-codeowner-button"
+                      disabled={!hasAccess}
+                    >
+                      {t('Import CODEOWNERS')}
+                    </Button>
+                  )}
                 </Access>
-              </Feature>
-            </Fragment>
+              )}
+              <Button
+                type="button"
+                size="sm"
+                icon={<IconEdit />}
+                priority="primary"
+                onClick={() =>
+                  openEditOwnershipRules({
+                    organization,
+                    project,
+                    ownership: ownership!,
+                    onSave: handleOwnershipSave,
+                    theme,
+                  })
+                }
+                disabled={!!ownership && editOwnershipRulesDisabled}
+              >
+                {t('Edit Rules')}
+              </Button>
+            </Grid>
           }
         />
-        <IssueOwnerDetails>{this.getDetail()}</IssueOwnerDetails>
-        <CodeOwnersHeader
-          addCodeOwner={this.handleAddCodeOwner}
-          handleRequest={this.handleAddCodeOwnerRequest}
+        <TextBlock>
+          {tct(
+            `Auto-assign issues to users and teams. To learn more, [link:read the docs].`,
+            {
+              link: (
+                <ExternalLink href="https://docs.sentry.io/product/error-monitoring/issue-owners/" />
+              ),
+            }
+          )}
+        </TextBlock>
+        <ProjectPermissionAlert
+          access={editOwnershipRulesDisabled ? ['project:write'] : ['project:read']}
+          project={project}
         />
-
-        <PermissionAlert />
-        <FeedbackAlert />
-        {this.renderCodeOwnerErrors()}
-        <RulesPanel
-          data-test-id="issueowners-panel"
-          type="issueowners"
-          raw={ownership.raw || ''}
-          dateUpdated={ownership.lastUpdated}
-          placeholder={this.getPlaceholder()}
-          controls={[
-            <Button
-              key="edit"
-              size="xsmall"
-              onClick={() =>
-                openEditOwnershipRules({
-                  organization,
-                  project,
-                  ownership,
-                  onSave: this.handleOwnershipSave,
-                })
-              }
-              disabled={disabled}
-            >
-              {t('Edit')}
-            </Button>,
-          ]}
+        {isCodeownersError && (
+          <Alert.Container>
+            <Alert variant="danger" showIcon={false}>
+              {t(
+                "There was an error loading this project's codeowners. If this issue persists, consider importing it again."
+              )}
+            </Alert>
+          </Alert.Container>
+        )}
+        <CodeOwnerErrors
+          orgSlug={organization.slug}
+          projectSlug={project.slug}
+          codeowners={codeowners ?? []}
         />
-        <Feature features={['integrations-codeowners']}>
-          <CodeOwnersPanel
-            codeowners={codeowners || []}
-            onDelete={this.handleCodeOwnerDeleted}
-            onUpdate={this.handleCodeOwnerUpdated}
+        {ownership && (
+          <ErrorBoundary mini>
+            <OwnershipRulesTable
+              projectRules={ownership.schema?.rules ?? []}
+              codeowners={codeowners ?? []}
+            />
+          </ErrorBoundary>
+        )}
+        <ProjectPermissionAlert project={project} />
+        {hasCodeowners && (
+          <CodeOwnerFileTable
+            project={project}
+            codeowners={codeowners ?? []}
+            onDelete={handleCodeOwnerDeleted}
+            onUpdate={handleCodeOwnerUpdated}
             disabled={disabled}
-            {...this.props}
           />
-        </Feature>
-        <Form
-          apiEndpoint={`/projects/${organization.slug}/${project.slug}/ownership/`}
-          apiMethod="PUT"
-          saveOnBlur
-          initialData={{
-            fallthrough: ownership.fallthrough,
-            autoAssignment: ownership.autoAssignment,
-          }}
-          hideFooter
-        >
-          <JsonForm
-            forms={[
-              {
-                title: t('Issue Owners'),
-                fields: [
-                  {
-                    name: 'autoAssignment',
-                    type: 'boolean',
-                    label: t('Automatically assign issues'),
-                    help: t('Assign issues when a new event matches the rules above.'),
-                    disabled,
-                  },
-                  {
-                    name: 'fallthrough',
-                    type: 'boolean',
-                    label: t(
-                      'Send alert to project members if there’s no assigned owner'
-                    ),
-                    help: t(
-                      'Alerts will be sent to all users who have access to this project.'
-                    ),
-                    disabled,
-                  },
-                ],
-              },
-            ]}
-          />
-        </Form>
-      </Fragment>
-    );
-  }
+        )}
+        {ownership && !isOwnershipError ? (
+          <FieldGroup title={t('Issue Owners')}>
+            <AutoSaveField
+              name="autoAssignment"
+              schema={ownershipSchema}
+              initialValue={ownership.autoAssignment}
+              mutationOptions={ownershipMutationOptions}
+            >
+              {field => (
+                <field.Layout.Row
+                  label={t('Prioritize Auto Assignment')}
+                  hintText={t(
+                    "When there's a conflict between suspect commit and ownership rules."
+                  )}
+                >
+                  <field.Select
+                    value={field.state.value}
+                    onChange={field.handleChange}
+                    disabled={disabled}
+                    options={[
+                      {
+                        value: 'Auto Assign to Suspect Commits',
+                        label: t('Auto-assign to suspect commits'),
+                      },
+                      {
+                        value: 'Auto Assign to Issue Owner',
+                        label: t('Auto-assign to issue owner'),
+                      },
+                      {
+                        value: 'Turn off Auto-Assignment',
+                        label: t('Turn off auto-assignment'),
+                      },
+                    ]}
+                  />
+                </field.Layout.Row>
+              )}
+            </AutoSaveField>
+            <AutoSaveField
+              name="codeownersAutoSync"
+              schema={ownershipSchema}
+              initialValue={ownership.codeownersAutoSync}
+              mutationOptions={ownershipMutationOptions}
+            >
+              {field => (
+                <field.Layout.Row
+                  label={t('Sync changes from CODEOWNERS')}
+                  hintText={t(
+                    'We\u2019ll update any changes you make to your CODEOWNERS files during a release.'
+                  )}
+                >
+                  <field.Switch
+                    checked={field.state.value}
+                    onChange={field.handleChange}
+                    disabled={disabled || !(codeowners || []).length}
+                  />
+                </field.Layout.Row>
+              )}
+            </AutoSaveField>
+          </FieldGroup>
+        ) : (
+          <Alert.Container>
+            <Alert variant="danger" showIcon={false}>
+              {t('There was an error issue owner settings.')}
+            </Alert>
+          </Alert.Container>
+        )}
+      </SentryDocumentTitle>
+    </FormSearch>
+  );
 }
-
-export default ProjectOwnership;
-
-const CodeOwnerButton = styled(Button)`
-  margin-left: ${space(1)};
-`;
-
-const AlertContentContainer = styled('div')`
-  overflow-y: auto;
-  max-height: 350px;
-`;
-
-const ErrorContainer = styled('div')`
-  display: grid;
-  grid-template-areas: 'message cta';
-  grid-template-columns: 2fr 1fr;
-  gap: ${space(2)};
-  padding: ${space(1.5)} 0;
-`;
-
-const ErrorInlineContainer = styled(ErrorContainer)`
-  gap: ${space(1.5)};
-  grid-template-columns: 1fr 2fr;
-  align-items: center;
-  padding: 0;
-`;
-
-const ErrorMessageContainer = styled('div')`
-  grid-area: message;
-  display: grid;
-  gap: ${space(1.5)};
-`;
-
-const ErrorMessageListContainer = styled('div')`
-  grid-column: message / cta-end;
-  gap: ${space(1.5)};
-`;
-
-const ErrorCtaContainer = styled('div')`
-  grid-area: cta;
-  justify-self: flex-end;
-  text-align: right;
-  line-height: 1.5;
-`;
-
-const IssueOwnerDetails = styled('div')`
-  padding-bottom: ${space(3)};
-`;

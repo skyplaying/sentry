@@ -1,36 +1,60 @@
-import {Component, Fragment} from 'react';
-import {withRouter, WithRouterProps} from 'react-router';
+import {Fragment} from 'react';
 import styled from '@emotion/styled';
 
-import IdBadge from 'app/components/idBadge';
-import {IconInput, IconLink, IconSettings} from 'app/icons';
-import PluginIcon from 'app/plugins/components/pluginIcon';
-import space from 'app/styles/space';
-import highlightFuseMatches from 'app/utils/highlightFuseMatches';
+import {DocIntegrationAvatar, SentryAppAvatar} from '@sentry/scraps/avatar';
+import {Flex, Stack} from '@sentry/scraps/layout';
 
-import {Result} from './sources/types';
+import IdBadge from 'sentry/components/idBadge';
+import {IconInput, IconLink, IconSettings} from 'sentry/icons';
+import {PluginIcon} from 'sentry/plugins/components/pluginIcon';
+import {space} from 'sentry/styles/space';
+import highlightFuseMatches from 'sentry/utils/highlightFuseMatches';
+import {useParams} from 'sentry/utils/useParams';
 
-type Props = WithRouterProps<{orgId: string}> & {
+import type {Result} from './sources/types';
+
+type Props = {
   highlighted: boolean;
   item: Result['item'];
   matches: Result['matches'];
 };
 
-class SearchResult extends Component<Props> {
-  renderContent() {
-    const {highlighted, item, matches, params} = this.props;
-    const {sourceType, model, extra} = item;
+const DEFAULT_AVATAR_SIZE = 24;
+
+function renderResultType({resultType, model}: Result['item']) {
+  switch (resultType) {
+    case 'settings':
+      return <IconSettings />;
+    case 'field':
+      return <IconInput />;
+    case 'route':
+      return <IconLink />;
+    case 'integration':
+      return <StyledPluginIcon size={DEFAULT_AVATAR_SIZE} pluginId={model.slug} />;
+    case 'sentryApp':
+      return <SentryAppAvatar size={DEFAULT_AVATAR_SIZE} sentryApp={model} />;
+    case 'docIntegration':
+      return <DocIntegrationAvatar size={DEFAULT_AVATAR_SIZE} docIntegration={model} />;
+    default:
+      return null;
+  }
+}
+
+function HighlightedMarker(p: React.ComponentProps<typeof HighlightMarker>) {
+  return <HighlightMarker data-test-id="highlight" {...p} />;
+}
+
+function SearchResult({item, matches, highlighted}: Props) {
+  const params = useParams<{orgId: string}>();
+
+  const {sourceType, model, extra} = item;
+
+  function renderContent() {
     let {title, description} = item;
 
     if (matches) {
-      // TODO(ts) Type this better.
-      const HighlightedMarker = (p: any) => (
-        <HighlightMarker highlighted={highlighted} {...p} />
-      );
-
-      const matchedTitle = matches && matches.find(({key}) => key === 'title');
-      const matchedDescription =
-        matches && matches.find(({key}) => key === 'description');
+      const matchedTitle = matches?.find(({key}) => key === 'title');
+      const matchedDescription = matches?.find(({key}) => key === 'description');
 
       title = matchedTitle
         ? highlightFuseMatches(matchedTitle, HighlightedMarker)
@@ -47,8 +71,8 @@ class SearchResult extends Component<Props> {
 
       const badgeProps = {
         displayName: title,
-        displayEmail: DescriptionNode,
         description: DescriptionNode,
+        hideEmail: true,
         useLink: false,
         orgId: params.orgId,
         avatarSize: 32,
@@ -60,57 +84,22 @@ class SearchResult extends Component<Props> {
 
     return (
       <Fragment>
-        <div>
-          <SearchTitle>{title}</SearchTitle>
-        </div>
+        <div>{title}</div>
         {description && <SearchDetail>{description}</SearchDetail>}
         {extra && <ExtraDetail>{extra}</ExtraDetail>}
       </Fragment>
     );
   }
 
-  renderResultType() {
-    const {item} = this.props;
-    const {resultType, model} = item;
-
-    const isSettings = resultType === 'settings';
-    const isField = resultType === 'field';
-    const isRoute = resultType === 'route';
-    const isIntegration = resultType === 'integration';
-
-    if (isSettings) {
-      return <IconSettings />;
-    }
-
-    if (isField) {
-      return <IconInput />;
-    }
-
-    if (isRoute) {
-      return <IconLink />;
-    }
-
-    if (isIntegration) {
-      return <StyledPluginIcon pluginId={model.slug} />;
-    }
-
-    return null;
-  }
-
-  render() {
-    return (
-      <Wrapper>
-        <Content>{this.renderContent()}</Content>
-        <div>{this.renderResultType()}</div>
-      </Wrapper>
-    );
-  }
+  return (
+    <Flex justify="between" align="center" gap="md">
+      <Stack>{renderContent()}</Stack>
+      <div>{renderResultType(item)}</div>
+    </Flex>
+  );
 }
 
-export default withRouter(SearchResult);
-
-// This is for tests
-const SearchTitle = styled('span')``;
+export default SearchResult;
 
 const SearchDetail = styled('div')`
   font-size: 0.8em;
@@ -120,25 +109,14 @@ const SearchDetail = styled('div')`
 `;
 
 const ExtraDetail = styled('div')`
-  font-size: ${p => p.theme.fontSizeSmall};
-  color: ${p => p.theme.gray300};
+  font-size: ${p => p.theme.font.size.sm};
+  color: ${p => p.theme.tokens.content.secondary};
   margin-top: ${space(0.5)};
 `;
 
 const BadgeDetail = styled('div')<{highlighted: boolean}>`
   line-height: 1.3;
-  color: ${p => (p.highlighted ? p.theme.purple300 : null)};
-`;
-
-const Wrapper = styled('div')`
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-`;
-
-const Content = styled('div')`
-  display: flex;
-  flex-direction: column;
+  color: ${p => (p.highlighted ? p.theme.tokens.interactive.link.accent.rest : null)};
 `;
 
 const StyledPluginIcon = styled(PluginIcon)`
@@ -148,6 +126,6 @@ const StyledPluginIcon = styled(PluginIcon)`
 const HighlightMarker = styled('mark')`
   padding: 0;
   background: transparent;
-  font-weight: bold;
-  color: ${p => p.theme.active};
+  font-weight: ${p => p.theme.font.weight.sans.medium};
+  color: ${p => p.theme.tokens.interactive.link.accent.active};
 `;

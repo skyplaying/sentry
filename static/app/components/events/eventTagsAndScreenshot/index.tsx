@@ -1,100 +1,85 @@
 import styled from '@emotion/styled';
 
-import {DataSection} from 'app/components/events/styles';
-import space from 'app/styles/space';
+import {useFetchEventAttachments} from 'sentry/actionCreators/events';
+import {ScreenshotDataSection} from 'sentry/components/events/eventTagsAndScreenshot/screenshot/screenshotDataSection';
+import {DataSection} from 'sentry/components/events/styles';
+import useOrganization from 'sentry/utils/useOrganization';
 
-import Screenshot from './screenshot';
-import Tags from './tags';
+import {EventTagsDataSection} from './tags';
 
-type ScreenshotProps = React.ComponentProps<typeof Screenshot>;
-
-type Props = Omit<React.ComponentProps<typeof Tags>, 'projectSlug' | 'hasContext'> & {
-  projectId: string;
-  onDeleteScreenshot: ScreenshotProps['onDelete'];
-  attachments: ScreenshotProps['screenshot'][];
+type Props = React.ComponentProps<typeof EventTagsDataSection> & {
   isShare?: boolean;
-  isBorderless?: boolean;
-  hasContext?: boolean;
 };
 
-function EventTagsAndScreenshots({
-  projectId: projectSlug,
-  location,
-  event,
-  attachments,
-  onDeleteScreenshot,
-  organization,
-  isShare = false,
-  isBorderless = false,
-  hasContext = false,
-}: Props) {
+export function EventTagsAndScreenshot({projectSlug, event, isShare = false}: Props) {
+  const organization = useOrganization();
   const {tags = []} = event;
-
-  const screenshot = attachments.find(
-    ({name}) => name === 'screenshot.jpg' || name === 'screenshot.png'
+  const {data: attachments} = useFetchEventAttachments(
+    {
+      orgSlug: organization.slug,
+      projectSlug,
+      eventId: event.id,
+    },
+    {enabled: !isShare}
   );
 
-  if (!tags.length && !hasContext && (isShare || !screenshot)) {
+  const screenshots = attachments?.filter(({name}) => name.includes('screenshot')) ?? [];
+
+  if (!tags.length && (isShare || !screenshots.length)) {
     return null;
   }
 
+  const showScreenshot = !isShare && !!screenshots.length;
+  const showTags = !!tags.length;
+
   return (
-    <Wrapper isBorderless={isBorderless}>
-      {!isShare && !!screenshot && (
-        <Screenshot
-          organization={organization}
-          event={event}
-          projectSlug={projectSlug}
-          screenshot={screenshot}
-          onDelete={onDeleteScreenshot}
-        />
-      )}
-      {(!!tags.length || hasContext) && (
-        <Tags
-          organization={organization}
-          event={event}
-          projectSlug={projectSlug}
-          hasContext={hasContext}
-          location={location}
-        />
+    <Wrapper showScreenshot={showScreenshot} showTags={showTags}>
+      <div>
+        {showTags && <EventTagsDataSection event={event} projectSlug={projectSlug} />}
+      </div>
+      {showScreenshot && (
+        <div>
+          <ScreenshotWrapper>
+            <StyledScreenshotDataSection
+              event={event}
+              isShare={isShare}
+              projectSlug={projectSlug}
+            />
+          </ScreenshotWrapper>
+        </div>
       )}
     </Wrapper>
   );
 }
 
-export default EventTagsAndScreenshots;
+/**
+ * Used to adjust padding based on which elements are shown
+ * - screenshot
+ * - tags
+ */
+const Wrapper = styled(DataSection)<{
+  showScreenshot: boolean;
+  showTags: boolean;
+}>`
+  padding: 0;
 
-const Wrapper = styled(DataSection)<{isBorderless: boolean}>`
-  display: grid;
-  grid-gap: ${space(3)};
-
-  @media (max-width: ${p => p.theme.breakpoints[0]}) {
-    && {
-      padding: 0;
-      border: 0;
-    }
+  @media (min-width: ${p => p.theme.breakpoints.sm}) {
+    padding: 0;
+    display: grid;
+    grid-template-columns: ${p =>
+      p.showScreenshot && p.showTags ? 'auto max-content' : '1fr'};
   }
+`;
 
-  @media (min-width: ${p => p.theme.breakpoints[0]}) {
-    padding-bottom: ${space(2)};
-    grid-template-columns: 1fr auto;
-    grid-gap: ${space(4)};
-
-    > *:first-child {
-      border-bottom: 0;
-      padding-bottom: 0;
-    }
+const StyledScreenshotDataSection = styled(ScreenshotDataSection)`
+  h3 a {
+    color: ${p => p.theme.tokens.interactive.link.accent.rest};
   }
+`;
 
-  ${p =>
-    p.isBorderless &&
-    `
-    && {
-        padding: ${space(3)} 0 0 0;
-        :first-child {
-          padding-top: 0;
-          border-top: 0;
-        }
-      }
-    `}
+const ScreenshotWrapper = styled('div')`
+  & > div {
+    border: 0;
+    height: 100%;
+  }
 `;

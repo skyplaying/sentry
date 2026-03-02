@@ -1,7 +1,8 @@
-import ExternalLink from 'app/components/links/externalLink';
-import {tct} from 'app/locale';
-import {extractMultilineFields} from 'app/utils';
-import {Field} from 'app/views/settings/components/forms/type';
+import {ExternalLink} from '@sentry/scraps/link';
+
+import type {Field} from 'sentry/components/forms/types';
+import {tct} from 'sentry/locale';
+import {convertMultilineFieldValue, extractMultilineFields} from 'sentry/utils';
 
 const getPublicFormFields = (): Field[] => [
   {
@@ -113,9 +114,8 @@ const getPublicFormFields = (): Field[] => [
     placeholder: 'e.g. example.com',
     label: 'Authorized JavaScript Origins',
     help: 'Separate multiple entries with a newline.',
-    getValue: (val: string) => extractMultilineFields(val),
-    setValue: (val: string[] | undefined | null) =>
-      (val && typeof val.join === 'function' && val.join('\n')) || '',
+    getValue: extractMultilineFields,
+    setValue: convertMultilineFieldValue,
   },
 ];
 

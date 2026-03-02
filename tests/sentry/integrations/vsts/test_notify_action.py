@@ -1,44 +1,51 @@
-from collections import namedtuple
 from time import time
 
+import orjson
 import responses
 
+from fixtures.vsts import GET_PROJECTS_RESPONSE, WORK_ITEM_RESPONSE
+from sentry.integrations.models.external_issue import ExternalIssue
+from sentry.integrations.vsts import AzureDevopsCreateTicketAction
 from sentry.integrations.vsts.integration import VstsIntegration
-from sentry.integrations.vsts.notify_action import AzureDevopsCreateTicketAction
-from sentry.models import ExternalIssue, GroupLink, Identity, IdentityProvider, Integration, Rule
+from sentry.models.grouplink import GroupLink
+from sentry.silo.base import SiloMode
 from sentry.testutils.cases import RuleTestCase
-from sentry.utils import json
+from sentry.testutils.helpers.datetime import freeze_time
+from sentry.testutils.silo import assume_test_silo_mode
+from sentry.testutils.skips import requires_snuba
+from sentry.types.rules import RuleFuture
 
 from .test_issues import VstsIssueBase
-from .testutils import GET_PROJECTS_RESPONSE, WORK_ITEM_RESPONSE
 
-RuleFuture = namedtuple("RuleFuture", ["rule", "kwargs"])
+pytestmark = [requires_snuba]
 
 
+@freeze_time()
 class AzureDevopsCreateTicketActionTest(RuleTestCase, VstsIssueBase):
     rule_cls = AzureDevopsCreateTicketAction
 
-    def setUp(self):
-        model = Integration.objects.create(
-            provider="vsts",
-            external_id="vsts_external_id",
-            name="fabrikam-fiber-inc",
-            metadata={
-                "domain_name": "https://fabrikam-fiber-inc.visualstudio.com/",
-                "default_project": "0987654321",
+    def setUp(self) -> None:
+        integration, _, _, _ = self.create_identity_integration(
+            user=self.user,
+            organization=self.organization,
+            integration_params={
+                "provider": "vsts",
+                "external_id": "vsts_external_id",
+                "name": "fabrikam-fiber-inc",
+                "metadata": {
+                    "domain_name": "https://fabrikam-fiber-inc.visualstudio.com/",
+                    "default_project": "0987654321",
+                },
+            },
+            identity_params={
+                "external_id": "vsts",
+                "data": {"access_token": "123456789", "expires": time() + 1234567},
             },
         )
-        identity = Identity.objects.create(
-            idp=IdentityProvider.objects.create(type="vsts", config={}),
-            user=self.user,
-            external_id="vsts",
-            data={"access_token": "123456789", "expires": time() + 1234567},
-        )
-        model.add_organization(self.organization, self.user, identity.id)
-        self.integration = VstsIntegration(model, self.organization.id)
+        self.integration = VstsIntegration(integration, self.organization.id)
 
     @responses.activate
-    def test_create_issue(self):
+    def test_create_issue(self) -> None:
         self.mock_categories("ac7c05bb-7f8e-4880-85a6-e08f37fd4a10")
         event = self.get_event()
         azuredevops_rule = self.get_rule(
@@ -50,7 +57,8 @@ class AzureDevopsCreateTicketActionTest(RuleTestCase, VstsIssueBase):
                 "integration": self.integration.model.id,
             }
         )
-        azuredevops_rule.rule = Rule.objects.create(project=self.project, label="test rule")
+        azuredevops_rule.rule = self.create_project_rule(project=self.project)
+        responses.reset()
         responses.add(
             responses.PATCH,
             "https://fabrikam-fiber-inc.visualstudio.com/0987654321/_apis/wit/workitems/$Microsoft.VSTS.WorkItemTypes.Task",
@@ -58,13 +66,14 @@ class AzureDevopsCreateTicketActionTest(RuleTestCase, VstsIssueBase):
             content_type="application/json",
         )
 
-        results = list(azuredevops_rule.after(event=event, state=self.get_state()))
+        after_res = azuredevops_rule.after(event=event)
+        results = list(after_res)
         assert len(results) == 1
 
         # Trigger rule callback
         rule_future = RuleFuture(rule=azuredevops_rule, kwargs=results[0].kwargs)
         results[0].callback(event, futures=[rule_future])
-        data = json.loads(responses.calls[0].response.text)
+        data = orjson.loads(responses.calls[0].response.text)
 
         assert data["fields"]["System.Title"] == "Hello"
         assert data["fields"]["System.Description"] == "Fix this."
@@ -73,7 +82,7 @@ class AzureDevopsCreateTicketActionTest(RuleTestCase, VstsIssueBase):
         assert external_issue
 
     @responses.activate
-    def test_doesnt_create_issue(self):
+    def test_doesnt_create_issue(self) -> None:
         """Don't create an issue if one already exists on the event"""
 
         self.mock_categories("ac7c05bb-7f8e-4880-85a6-e08f37fd4a10")
@@ -108,14 +117,14 @@ class AzureDevopsCreateTicketActionTest(RuleTestCase, VstsIssueBase):
                 "integration": self.integration.model.id,
             }
         )
-        azuredevops_rule.rule = Rule.objects.create(project=self.project, label="test rule")
+        azuredevops_rule.rule = self.create_project_rule(name="test rule")
 
-        results = list(azuredevops_rule.after(event=event, state=self.get_state()))
+        results = list(azuredevops_rule.after(event=event))
         assert len(results) == 1
         results[0].callback(event, futures=[])
         assert len(responses.calls) == 0
 
-    def test_render_label(self):
+    def test_render_label(self) -> None:
         azuredevops_rule = self.get_rule(
             data={
                 "integration": self.integration.model.id,
@@ -169,9 +178,15 @@ class AzureDevopsCreateTicketActionTest(RuleTestCase, VstsIssueBase):
             == """Create an Azure DevOps work item in fabrikam-fiber-inc with these """
         )
 
-    def test_render_label_without_integration(self):
-        deleted_id = self.integration.model.id
-        self.integration.model.delete()
+    def test_render_label_without_integration(self) -> None:
+        integration = self.create_integration(
+            organization=self.organization,
+            provider="vsts",
+            external_id="vsts:2",
+        )
+        deleted_id = integration.id
+        with assume_test_silo_mode(SiloMode.CONTROL):
+            integration.delete()
 
         rule = self.get_rule(data={"integration": deleted_id})
 

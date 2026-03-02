@@ -1,3 +1,9 @@
+from __future__ import annotations
+
+import typing
+from typing import Any as TAny
+from typing import TypeGuard
+
 from yaml.parser import ParserError
 from yaml.scanner import ScannerError
 
@@ -5,23 +11,25 @@ from sentry.utils.yaml import safe_load
 
 __all__ = ("InvalidTypeError", "Any", "Bool", "Int", "Float", "String", "Dict", "Sequence")
 
+T = typing.TypeVar("T")
+
 
 class InvalidTypeError(TypeError):
     pass
 
 
-class Type:
+class Type(typing.Generic[T]):
     """Base Type that provides type coercion"""
 
     name = ""
     # Default value to be returned when initializing
-    default = None
+    default: T
     # Types that do not need to be coerced
-    expected_types = ()
+    expected_types: tuple[type[object], ...] = ()
     # Types that are acceptable for coercion
-    compatible_types = (str,)
+    compatible_types: tuple[type[object], ...] = (str,)
 
-    def __call__(self, value=None):
+    def __call__(self, value: object | None = None) -> T:
         if value is None:
             return self._default()
         if self.test(value):
@@ -34,60 +42,64 @@ class Type:
                 return rv
         raise InvalidTypeError(f"{value!r} is not a valid {self!r}")
 
-    def convert(self, value):
+    def convert(self, value: TAny) -> T | None:
         return value
 
-    def _default(self):
+    def _default(self) -> T:
         return self.default
 
-    def test(self, value):
+    def test(self, value: object) -> TypeGuard[T]:
         """Check if the value is the correct type or not"""
         return isinstance(value, self.expected_types)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return self.name
 
 
-class AnyType(Type):
+class AnyType(Type[typing.Any]):
     """A type that accepts any value and does no coercion"""
 
     name = "any"
+    default = None
     expected_types = (object,)
     compatible_types = (object,)
 
 
-class BoolType(Type):
+class BoolType(Type[bool]):
     "Coerce a boolean from a string"
+
     name = "boolean"
     default = False
     expected_types = (bool,)
     compatible_types = (str, int)
 
-    def convert(self, value):
+    def convert(self, value: TAny) -> bool | None:
         if isinstance(value, int):
             return bool(value)
         value = value.lower()
-        if value in ("y", "yes", "t", "true", "1", "on"):
+        if value in ("y", "yes", "t", "true", "True", "1", "on"):
             return True
-        if value in ("n", "no", "f", "false", "0", "off"):
+        elif value in ("n", "no", "f", "false", "False", "0", "off"):
             return False
+        else:
+            return None
 
 
-class IntType(Type):
+class IntType(Type[int]):
     """Coerce an integer from a string"""
 
     name = "integer"
     default = 0
     expected_types = (int,)
 
-    def convert(self, value):
+    def convert(self, value: TAny) -> int | None:
         try:
             return int(value)
         except ValueError:
-            return
+            return None
 
 
-class FloatType(Type):
+class FloatType(Type[float]):
     """Coerce a float from a string or integer"""
 
     name = "float"
@@ -95,14 +107,14 @@ class FloatType(Type):
     expected_types = (float,)
     compatible_types = (str, int, float)
 
-    def convert(self, value):
+    def convert(self, value: TAny) -> float | None:
         try:
             return float(value)
         except ValueError:
-            return
+            return None
 
 
-class StringType(Type):
+class StringType(Type[str]):
     """String type without any coercion, must be a string"""
 
     name = "string"
@@ -111,39 +123,42 @@ class StringType(Type):
     compatible_types = (str,)
 
 
-class DictType(Type):
+class DictType(Type[dict]):
     """Coerce a dict out of a json/yaml string"""
 
     name = "dictionary"
     expected_types = (dict,)
 
-    def _default(self):
+    def _default(self) -> dict[str, TAny]:
         # make sure we create a fresh dict each time
         return {}
 
-    def convert(self, value):
+    def convert(self, value: TAny) -> dict[str, TAny] | None:
         try:
             return safe_load(value)
         except (AttributeError, ParserError, ScannerError):
-            return
+            return None
 
 
-class SequenceType(Type):
-    """Coerce a tuple out of a json/yaml string or a list"""
+class SequenceType(Type[list]):
+    """Coerce a list out of a json/yaml string or a list"""
 
     name = "sequence"
-    default = ()
-    expected_types = (tuple, list)
+    expected_types = (list,)
     compatible_types = (str, tuple, list)
 
-    def convert(self, value):
+    def _default(self) -> list[TAny]:
+        # make sure we create a fresh list each time
+        return []
+
+    def convert(self, value: TAny) -> list[TAny] | None:
         if isinstance(value, str):
             try:
                 value = safe_load(value)
             except (AttributeError, ParserError, ScannerError):
-                return
-        if isinstance(value, list):
-            value = tuple(value)
+                return None
+        if isinstance(value, tuple):
+            value = list(value)
         return value
 
 
@@ -157,22 +172,48 @@ Dict = DictType()
 Sequence = SequenceType()
 
 # Mapping for basic types into what their Type is
-_type_mapping = {
+_type_mapping: dict[type[object], Type] = {
     bool: Bool,
     int: Int,
     float: Float,
     bytes: String,
     str: String,
     dict: Dict,
-    tuple: Sequence,
     list: Sequence,
 }
-try:
-    _type_mapping[long] = Int  # noqa: B311
-except NameError:  # long was removed in Python 3
-    pass
+
+
+# @typing.overload
+# def type_from_value(value: bool) -> BoolType:
+
+
+@typing.overload
+def type_from_value(value: int) -> IntType: ...
+
+
+@typing.overload
+def type_from_value(value: float) -> FloatType: ...
+
+
+@typing.overload
+def type_from_value(value: bytes) -> StringType: ...
+
+
+@typing.overload
+def type_from_value(value: str) -> StringType: ...
+
+
+@typing.overload
+def type_from_value(value: dict) -> DictType: ...
+
+
+@typing.overload
+def type_from_value(value: list) -> SequenceType: ...
 
 
 def type_from_value(value):
     """Fetch Type based on a primitive value"""
     return _type_mapping[type(value)]
+
+
+AnyCallable = typing.Callable[..., AnyType]

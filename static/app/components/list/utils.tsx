@@ -1,20 +1,20 @@
+import type {Theme} from '@emotion/react';
 import {css} from '@emotion/react';
 
-import space from 'app/styles/space';
-import {Theme} from 'app/utils/theme';
+import {space} from 'sentry/styles/space';
 
 const bulletStyle = (theme: Theme) => css`
   padding-left: ${space(3)};
   list-style-type: circle;
   & > li::marker {
-    color: ${theme.subText};
+    color: ${theme.tokens.content.secondary};
   }
 `;
 
 type Options = {
-  isSolid?: boolean;
   // setting initialCounterValue to 0 means the first visible step is 1
   initialCounterValue?: number;
+  isSolid?: boolean;
 };
 
 const numericStyle = (
@@ -33,21 +33,23 @@ const numericStyle = (
       justify-content: center;
       text-align: center;
       left: 0;
+      line-height: 1;
       ${isSolid
         ? css`
             width: 24px;
             height: 24px;
-            font-weight: 500;
-            font-size: ${theme.fontSizeSmall};
-            background-color: ${theme.yellow300};
+            font-weight: ${theme.font.weight.sans.regular};
+            font-size: ${theme.font.size.sm};
+            background-color: ${theme.tokens.background.warning.vibrant};
+            color: ${theme.tokens.content.onVibrant.dark};
           `
         : css`
             top: 3px;
             width: 18px;
             height: 18px;
-            font-weight: 600;
+            font-weight: ${theme.font.weight.sans.medium};
             font-size: 10px;
-            border: 1px solid ${theme.gray500};
+            border: 1px solid ${theme.tokens.border.primary};
           `}
     }
   }

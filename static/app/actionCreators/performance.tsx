@@ -2,10 +2,10 @@ import {
   addErrorMessage,
   addLoadingMessage,
   clearIndicators,
-} from 'app/actionCreators/indicator';
-import {Client} from 'app/api';
-import {t} from 'app/locale';
-import parseLinkHeader from 'app/utils/parseLinkHeader';
+} from 'sentry/actionCreators/indicator';
+import type {Client} from 'sentry/api';
+import {t} from 'sentry/locale';
+import parseLinkHeader from 'sentry/utils/parseLinkHeader';
 
 type KeyTransaction = {
   project_id: string;
@@ -13,9 +13,9 @@ type KeyTransaction = {
 };
 
 type TeamKeyTransaction = {
-  team: string;
   count: number;
   keyed: KeyTransaction[];
+  team: string;
 };
 
 export type TeamKeyTransactions = TeamKeyTransaction[];
@@ -58,7 +58,7 @@ export async function fetchTeamKeyTransactions(
       } else {
         hasMore = false;
       }
-    } catch (err) {
+    } catch (err: any) {
       addErrorMessage(
         err.responseJSON?.detail ?? t('Error fetching team key transactions')
       );

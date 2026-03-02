@@ -1,8 +1,8 @@
-import * as React from 'react';
+import {Component} from 'react';
 
-import SentryAppComponentsStore from 'app/stores/sentryAppComponentsStore';
-import {SentryAppComponent} from 'app/types';
-import getDisplayName from 'app/utils/getDisplayName';
+import SentryAppComponentsStore from 'sentry/stores/sentryAppComponentsStore';
+import type {SentryAppComponent} from 'sentry/types/integrations';
+import getDisplayName from 'sentry/utils/getDisplayName';
 
 type InjectedAppComponentsProps = {
   components: SentryAppComponent[];
@@ -13,14 +13,14 @@ type State = {
 };
 
 type Options = {
-  componentType?: 'stacktrace-link';
+  componentType?: SentryAppComponent['type'];
 };
 
 function withSentryAppComponents<P extends InjectedAppComponentsProps>(
   WrappedComponent: React.ComponentType<P>,
   {componentType}: Options = {}
 ) {
-  class WithSentryAppComponents extends React.Component<
+  class WithSentryAppComponents extends Component<
     Omit<P, keyof InjectedAppComponentsProps> & Partial<InjectedAppComponentsProps>,
     State
   > {
@@ -38,16 +38,16 @@ function withSentryAppComponents<P extends InjectedAppComponentsProps>(
     );
 
     render() {
-      const {components, ...props} = this.props as P;
-      return (
-        <WrappedComponent
-          {...({
-            components:
-              components ?? SentryAppComponentsStore.getComponentByType(componentType),
-            ...props,
-          } as P)}
-        />
-      );
+      const {components: propComponents, ...props} = this.props as P;
+
+      const storeComponents = componentType
+        ? this.state.components.filter(item => item.type === componentType)
+        : this.state.components;
+
+      const components = propComponents ?? storeComponents;
+
+      // TODO(any): HoC prop types not working w/ emotion https://github.com/emotion-js/emotion/issues/3261
+      return <WrappedComponent {...({components, ...props} as P as any)} />;
     }
   }
   return WithSentryAppComponents;

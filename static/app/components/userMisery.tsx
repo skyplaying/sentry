@@ -1,21 +1,23 @@
-import * as React from 'react';
+import {useTheme} from '@emotion/react';
 
-import ScoreBar from 'app/components/scoreBar';
-import Tooltip from 'app/components/tooltip';
-import CHART_PALETTE from 'app/constants/chartPalette';
-import {tct} from 'app/locale';
-import {defined} from 'app/utils';
+import {Tooltip} from '@sentry/scraps/tooltip';
+
+import ScoreBar from 'sentry/components/scoreBar';
+import {tct} from 'sentry/locale';
+import {defined} from 'sentry/utils';
 
 type Props = {
-  bars: number;
   barHeight: number;
-  userMisery: number;
+  bars: number;
+  miserableUsers: number | undefined;
   miseryLimit: number | undefined;
   totalUsers: number | undefined;
-  miserableUsers: number | undefined;
+  userMisery: number;
 };
 
 function UserMisery(props: Props) {
+  const theme = useTheme();
+  const colors = theme.chart.getColorPalette(0);
   const {bars, barHeight, userMisery, miseryLimit, totalUsers, miserableUsers} = props;
   // User Misery will always be > 0 because of the maximum a posteriori estimate
   // and below 5% will always be an overestimation of the actual proportion
@@ -23,7 +25,7 @@ function UserMisery(props: Props) {
   // 0 User Misery while still preserving the actual value for sorting purposes.
   const adjustedMisery = userMisery > 0.05 ? userMisery : 0;
 
-  const palette = new Array(bars).fill([CHART_PALETTE[0][0]]);
+  const palette = new Array(bars).fill(colors[0]);
   const score = Math.round(adjustedMisery * palette.length);
 
   let title: React.ReactNode;
@@ -38,9 +40,18 @@ function UserMisery(props: Props) {
     );
   } else if (defined(miseryLimit)) {
     title = tct(
-      'User Misery score is [userMisery], representing users who waited more than more than [duration]ms (4x the response time threshold)',
+      'User Misery score is [userMisery], representing users who waited more than [duration]ms (4x the response time threshold)',
       {
         duration: 4 * miseryLimit,
+        userMisery: userMisery.toFixed(3),
+      }
+    );
+  } else if (defined(miserableUsers) && defined(totalUsers)) {
+    title = tct(
+      'User Misery score is [userMisery], meaning [miserableUsers] out of [totalUsers] unique users had a miserable experience.',
+      {
+        miserableUsers,
+        totalUsers,
         userMisery: userMisery.toFixed(3),
       }
     );
@@ -49,9 +60,16 @@ function UserMisery(props: Props) {
       userMisery: userMisery.toFixed(3),
     });
   }
+
   return (
     <Tooltip title={title} containerDisplayMode="block">
-      <ScoreBar size={barHeight} score={score} palette={palette} radius={0} />
+      <ScoreBar
+        size={barHeight}
+        score={score}
+        palette={palette}
+        radius={0}
+        data-test-id={`score-bar-${score}`}
+      />
     </Tooltip>
   );
 }

@@ -1,33 +1,62 @@
-from django.conf.urls import url
+from django.urls import re_path
 
-from .descriptor import JiraDescriptorEndpoint
-from .extension_configuration import JiraExtensionConfigurationView
-from .installed import JiraInstalledEndpoint
-from .issue_hook import JiraIssueHookView
-from .search import JiraSearchEndpoint
-from .ui_hook import JiraUiHookView
-from .uninstalled import JiraUninstalledEndpoint
-from .webhooks import JiraIssueUpdatedWebhook
+from .endpoints import JiraDescriptorEndpoint, JiraSearchEndpoint
+from .views import (
+    JiraExtensionConfigurationView,
+    JiraSentryInstallationView,
+    JiraSentryIssueDetailsControlView,
+    JiraSentryIssueDetailsView,
+)
+from .webhooks import (
+    JiraIssueUpdatedWebhook,
+    JiraSentryInstalledWebhook,
+    JiraSentryUninstalledWebhook,
+)
 
 urlpatterns = [
-    url(r"^ui-hook/$", JiraUiHookView.as_view()),
-    url(r"^descriptor/$", JiraDescriptorEndpoint.as_view()),
-    url(r"^installed/$", JiraInstalledEndpoint.as_view(), name="sentry-extensions-jira-installed"),
-    url(r"^uninstalled/$", JiraUninstalledEndpoint.as_view()),
-    url(
+    re_path(
+        r"^ui-hook/$",
+        JiraSentryInstallationView.as_view(),
+        name="sentry-extensions-jira-ui-hook",
+    ),
+    re_path(
+        r"^descriptor/$",
+        JiraDescriptorEndpoint.as_view(),
+        name="sentry-extensions-descriptor",
+    ),
+    re_path(
+        r"^installed/$",
+        JiraSentryInstalledWebhook.as_view(),
+        name="sentry-extensions-jira-installed",
+    ),
+    re_path(
+        r"^uninstalled/$",
+        JiraSentryUninstalledWebhook.as_view(),
+        name="sentry-extensions-jira-uninstalled",
+    ),
+    re_path(
         r"^issue-updated/$",
         JiraIssueUpdatedWebhook.as_view(),
         name="sentry-extensions-jira-issue-updated",
     ),
-    url(
-        r"^search/(?P<organization_slug>[^\/]+)/(?P<integration_id>\d+)/$",
+    re_path(
+        r"^search/(?P<organization_id_or_slug>[^/]+)/(?P<integration_id>\d+)/$",
         JiraSearchEndpoint.as_view(),
         name="sentry-extensions-jira-search",
     ),
-    url(r"^configure/$", JiraExtensionConfigurationView.as_view()),
-    url(
-        r"^issue/(?P<issue_key>[^\/]+)/$",
-        JiraIssueHookView.as_view(),
+    re_path(
+        r"^configure/$",
+        JiraExtensionConfigurationView.as_view(),
+        name="sentry-extensions-jira-configuration",
+    ),
+    re_path(
+        r"^issue/(?P<issue_key>[^/]+)/$",
+        JiraSentryIssueDetailsView.as_view(),
         name="sentry-extensions-jira-issue-hook",
+    ),
+    re_path(
+        r"^issue-details/(?P<issue_key>[^/]+)/$",
+        JiraSentryIssueDetailsControlView.as_view(),
+        name="sentry-extensions-jira-issue-hook-control",
     ),
 ]

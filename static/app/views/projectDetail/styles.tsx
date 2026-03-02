@@ -1,8 +1,9 @@
 import styled from '@emotion/styled';
 
-import {SectionHeading} from 'app/components/charts/styles';
-import GlobalSelectionLink from 'app/components/globalSelectionLink';
-import space from 'app/styles/space';
+import {Flex, type FlexProps} from '@sentry/scraps/layout';
+
+import {SectionHeading} from 'sentry/components/charts/styles';
+import {space} from 'sentry/styles/space';
 
 export const SidebarSection = styled('section')`
   margin-bottom: ${space(2)};
@@ -12,12 +13,6 @@ export const SidebarSection = styled('section')`
   }
 `;
 
-export const SectionHeadingWrapper = styled('div')`
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-`;
-
-export const SectionHeadingLink = styled(GlobalSelectionLink)`
-  display: flex;
-`;
+export function SectionHeadingWrapper(props: FlexProps) {
+  return <Flex justify="between" align="center" {...props} />;
+}

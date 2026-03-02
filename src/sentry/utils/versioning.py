@@ -1,17 +1,13 @@
-from django.utils.encoding import force_text, python_2_unicode_compatible
-
 from sentry.exceptions import InvalidConfiguration
 from sentry.utils import warnings
-from sentry.utils.compat import map
 
 
-@python_2_unicode_compatible
-class Version(tuple):
-    def __str__(self):
-        return ".".join(map(force_text, self))
+class Version(tuple[int, ...]):
+    def __str__(self) -> str:
+        return ".".join(map(str, self))
 
 
-def summarize(sequence, max=3):
+def summarize(sequence: list[str], max: int = 3) -> list[str]:
     items = sequence[:max]
     remainder = len(sequence) - max
     if remainder == 1:
@@ -21,16 +17,23 @@ def summarize(sequence, max=3):
     return items
 
 
-def make_upgrade_message(service, modality, version, hosts):
+def make_upgrade_message(
+    service: str, modality: str, version: Version, hosts: dict[str, Version]
+) -> str:
     return "{service} {modality} be upgraded to {version} on {hosts}.".format(
-        hosts=",".join(map(force_text, summarize(list(hosts.keys()), 2))),
+        hosts=",".join(summarize(list(hosts), 2)),
         modality=modality,
         service=service,
         version=version,
     )
 
 
-def check_versions(service, versions, required, recommended=None):
+def check_versions(
+    service: str,
+    versions: dict[str, Version],
+    required: Version,
+    recommended: Version | None = None,
+) -> None:
     """
     Check that hosts fulfill version requirements.
 

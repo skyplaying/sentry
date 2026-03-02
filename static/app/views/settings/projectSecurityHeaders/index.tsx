@@ -1,111 +1,128 @@
-import {RouteComponentProps} from 'react-router';
+import {useMemo} from 'react';
 import styled from '@emotion/styled';
 
-import Button from 'app/components/button';
-import {Panel, PanelBody, PanelHeader, PanelItem} from 'app/components/panels';
-import {t, tct} from 'app/locale';
-import {ProjectKey} from 'app/types';
-import recreateRoute from 'app/utils/recreateRoute';
-import routeTitleGen from 'app/utils/routeTitle';
-import AsyncView from 'app/views/asyncView';
-import SettingsPageHeader from 'app/views/settings/components/settingsPageHeader';
-import TextBlock from 'app/views/settings/components/text/textBlock';
-import ReportUri from 'app/views/settings/projectSecurityHeaders/reportUri';
+import {LinkButton} from '@sentry/scraps/button';
 
-type Props = RouteComponentProps<{orgId: string; projectId: string}, {}>;
+import {KeyValueTable, KeyValueTableRow} from 'sentry/components/keyValueTable';
+import LoadingError from 'sentry/components/loadingError';
+import LoadingIndicator from 'sentry/components/loadingIndicator';
+import Panel from 'sentry/components/panels/panel';
+import PanelBody from 'sentry/components/panels/panelBody';
+import PanelHeader from 'sentry/components/panels/panelHeader';
+import PanelItem from 'sentry/components/panels/panelItem';
+import SentryDocumentTitle from 'sentry/components/sentryDocumentTitle';
+import {t, tct} from 'sentry/locale';
+import type {ProjectKey} from 'sentry/types/project';
+import getApiUrl from 'sentry/utils/api/getApiUrl';
+import {useApiQuery} from 'sentry/utils/queryClient';
+import recreateRoute from 'sentry/utils/recreateRoute';
+import routeTitleGen from 'sentry/utils/routeTitle';
+import useOrganization from 'sentry/utils/useOrganization';
+import {useParams} from 'sentry/utils/useParams';
+import {useRoutes} from 'sentry/utils/useRoutes';
+import SettingsPageHeader from 'sentry/views/settings/components/settingsPageHeader';
+import TextBlock from 'sentry/views/settings/components/text/textBlock';
+import ReportUri from 'sentry/views/settings/projectSecurityHeaders/reportUri';
 
-type State = {
-  keyList: null | ProjectKey[];
-} & AsyncView['state'];
+function ProjectSecurityHeaders() {
+  const organization = useOrganization();
+  const routes = useRoutes();
+  const params = useParams();
+  const {projectId} = useParams<{projectId: string}>();
 
-export default class ProjectSecurityHeaders extends AsyncView<Props, State> {
-  getEndpoints(): ReturnType<AsyncView['getEndpoints']> {
-    const {orgId, projectId} = this.props.params;
-    return [['keyList', `/projects/${orgId}/${projectId}/keys/`]];
-  }
+  const {
+    data: keyList,
+    isPending,
+    isError,
+    refetch,
+  } = useApiQuery<ProjectKey[]>(
+    [
+      getApiUrl(`/projects/$organizationIdOrSlug/$projectIdOrSlug/keys/`, {
+        path: {organizationIdOrSlug: organization.slug, projectIdOrSlug: projectId},
+      }),
+    ],
+    {
+      staleTime: 0,
+    }
+  );
 
-  getTitle() {
-    const {projectId} = this.props.params;
-    return routeTitleGen(t('Security Headers'), projectId, false);
-  }
-
-  getReports() {
-    return [
+  const reports = useMemo(
+    () => [
       {
         name: 'Content Security Policy (CSP)',
-        url: recreateRoute('csp/', this.props),
+        url: recreateRoute('csp/', {routes, params}),
       },
       {
         name: 'Certificate Transparency (Expect-CT)',
-        url: recreateRoute('expect-ct/', this.props),
+        url: recreateRoute('expect-ct/', {routes, params}),
       },
       {
         name: 'HTTP Public Key Pinning (HPKP)',
-        url: recreateRoute('hpkp/', this.props),
+        url: recreateRoute('hpkp/', {routes, params}),
       },
-    ];
+    ],
+    [routes, params]
+  );
+
+  if (isPending) {
+    return <LoadingIndicator />;
   }
 
-  renderBody() {
-    const {params} = this.props;
-    const {keyList} = this.state;
-    if (keyList === null) {
-      return null;
-    }
-
-    return (
-      <div>
-        <SettingsPageHeader title={t('Security Header Reports')} />
-
-        <ReportUri keyList={keyList} projectId={params.projectId} orgId={params.orgId} />
-
-        <Panel>
-          <PanelHeader>{t('Additional Configuration')}</PanelHeader>
-          <PanelBody withPadding>
-            <TextBlock style={{marginBottom: 20}}>
-              {tct(
-                'In addition to the [key_param] parameter, you may also pass the following within the querystring for the report URI:',
-                {
-                  key_param: <code>sentry_key</code>,
-                }
-              )}
-            </TextBlock>
-            <table className="table" style={{marginBottom: 0}}>
-              <tbody>
-                <tr>
-                  <th style={{padding: '8px 5px'}}>sentry_environment</th>
-                  <td style={{padding: '8px 5px'}}>
-                    {t('The environment name (e.g. production)')}.
-                  </td>
-                </tr>
-                <tr>
-                  <th style={{padding: '8px 5px'}}>sentry_release</th>
-                  <td style={{padding: '8px 5px'}}>
-                    {t('The version of the application.')}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </PanelBody>
-        </Panel>
-
-        <Panel>
-          <PanelHeader>{t('Supported Formats')}</PanelHeader>
-          <PanelBody>
-            {this.getReports().map(({name, url}) => (
-              <ReportItem key={url}>
-                <HeaderName>{name}</HeaderName>
-                <Button to={url} priority="primary">
-                  {t('Instructions')}
-                </Button>
-              </ReportItem>
-            ))}
-          </PanelBody>
-        </Panel>
-      </div>
-    );
+  if (isError) {
+    return <LoadingError onRetry={refetch} />;
   }
+
+  return (
+    <div>
+      <SentryDocumentTitle
+        title={routeTitleGen(t('Security Headers'), projectId, false)}
+      />
+      <SettingsPageHeader title={t('Security Header Reports')} />
+
+      <ReportUri keyList={keyList} projectId={projectId} orgId={organization.slug} />
+
+      <Panel>
+        <PanelHeader>{t('Additional Configuration')}</PanelHeader>
+        <PanelBody withPadding>
+          <TextBlock style={{marginBottom: 20}}>
+            {tct(
+              'In addition to the [key_param] parameter, you may also pass the following within the querystring for the report URI:',
+              {
+                key_param: <code>sentry_key</code>,
+              }
+            )}
+          </TextBlock>
+          <KeyValueTable>
+            <KeyValueTableRow
+              keyName="sentry_environment"
+              value={t('The environment name (e.g. production).')}
+            />
+            <KeyValueTableRow
+              keyName="sentry_release"
+              value={t('The version of the application.')}
+            />
+          </KeyValueTable>
+        </PanelBody>
+      </Panel>
+
+      <Panel>
+        <PanelHeader>{t('Supported Formats')}</PanelHeader>
+        <PanelBody>
+          {reports.map(({name, url}) => (
+            <ReportItem key={url}>
+              <HeaderName>{name}</HeaderName>
+              <LinkButton to={url} priority="primary">
+                {t('Instructions')}
+              </LinkButton>
+            </ReportItem>
+          ))}
+        </PanelBody>
+      </Panel>
+    </div>
+  );
 }
+
+export default ProjectSecurityHeaders;
 
 const ReportItem = styled(PanelItem)`
   align-items: center;

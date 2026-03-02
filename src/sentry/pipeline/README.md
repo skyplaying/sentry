@@ -6,25 +6,25 @@ through the "pipeline".
 
 Some key points to understanding pipelines:
 
- * A pipeline executes a set of views (that receive the `pipeline` instance),
-   moving through them by having the view itself call `pipeline.next_step`.
+- A pipeline executes a set of views (that receive the `pipeline` instance),
+  moving through them by having the view itself call `pipeline.next_step`.
 
- * Each executed view may maintain state within the pipeline using the
-   `pipeline.bind_state` method. This state is associated to the user's
-   session.
+- Each executed view may maintain state within the pipeline using the
+  `pipeline.bind_state` method. This state is associated to the user's
+  session.
 
- * Pipelines are always subclassed to implement the `finish_pipeline` method,
-   this method will be called when a pipeline completes.
+- Pipelines are always subclassed to implement the `finish_pipeline` method,
+  this method will be called when a pipeline completes.
 
- * Pipelines are given the set of pipeline views (instances of `PipelineView`
-   subclasses) via the `get_pipeline_views` method of the Pipeline Provider
-   object that is associated to a particular provider key.
+- Pipelines are given the set of pipeline views (instances of `PipelineView`
+  subclasses) via the `get_pipeline_views` method of the Pipeline Provider
+  object that is associated to a particular provider key.
 
- * Pipelines are usually constructed and executed by either two view endpoints.
-   One to call the pipelines `initialize` method, and the next which is
-   called to move through the pipeline
+- Pipelines are usually constructed and executed by either two view endpoints.
+  One to call the pipelines `initialize` method, and the next which is
+  called to move through the pipeline
 
- * Pipelines are bound to a specific session when they are being executed.
+- Pipelines are bound to a specific session when they are being executed.
 
 ## Pipeline Providers
 
@@ -44,16 +44,6 @@ user identities. Sentry has various identity types (GitHub, Slack, Google) each
 which may use a slightly different process to do identity lookup on the
 external service, however the end of the process (and what is done in the
 final `finish_pipeline` call) all result in an Identity object being created.
-
-### Provider Manager
-
-The pipeline is not directly given a provider, but instead it is given a key
-that is used to lookup the provider within the provided `provider_manager`
-instance.
-
-There is no explicit interface for the manager object other than that it should
-have a `get` method that takes the `provider_key` and returns an instance of
-the provider.
 
 ## Pipeline Provider Model
 
@@ -82,7 +72,7 @@ An example pipeline view might be a form that asks the user for some input.
 
 ```python
 class GetUserInput(PipelineView):
-    def dispatch(self, request, pipeline):
+    def dispatch(self, request: HttpRequest, pipeline: Pipeline) -> HttpResponseBase:
         # The pipeline supports a generic error method that will render a
         # pipeline error view
         if 'my_data' not in request.POST:
@@ -102,12 +92,11 @@ The pipeline views are declared within the executing pipeline provider's
 `get_pipeline_views` method, for example it could look like:
 
 ```python
-def get_pipeline_views(self):
+def get_pipeline_views(self) -> list[PipelineView]:
     return [GetUserInput(), RequestApiTokenStep()]
 ```
 
-Executing a pipeline
---------------------
+## Executing a pipeline
 
 Executing a pipeline is done through either one or two views.
 
@@ -164,14 +153,14 @@ of pipelines together. For example, if you want to include an entire other
 pipeline as steps within another pipeline, you can do this using the
 `NestedPipelineView`.
 
- * The `NestedPipelineView` is itself a `PipelineView` and should be used
-   directly in the list of pipeline views returned by a provider.
+- The `NestedPipelineView` is itself a `PipelineView` and should be used
+  directly in the list of pipeline views returned by a provider.
 
- * When a nested pipeline completes, it very importantly does *not* call the
-   `finish_pipeline` method on the pipeline itself, instead the state is
-   bound into the parent pipeline.
+- When a nested pipeline completes, it very importantly does _not_ call the
+  `finish_pipeline` method on the pipeline itself, instead the state is
+  bound into the parent pipeline.
 
- * Nested pipelines use the "single view"
+- Nested pipelines use the "single view"
 
 An example of a nested pipeline looks like:
 
@@ -185,7 +174,7 @@ def get_pipeline_views(self):
     identity_pipeline_view = NestedPipelineView(
         bind_key='identity',
         provider_key='slack',
-        pipeline_cls=IdentityProviderPipeline,
+        pipeline_cls=IdentityPipeline,
         config=identity_pipeline_config,
     )
 

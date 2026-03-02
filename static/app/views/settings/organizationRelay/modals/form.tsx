@@ -1,30 +1,31 @@
-import * as React from 'react';
 import styled from '@emotion/styled';
 
-import {t} from 'app/locale';
-import space from 'app/styles/space';
-import {Relay} from 'app/types';
-import Input from 'app/views/settings/components/forms/controls/input';
-import Textarea from 'app/views/settings/components/forms/controls/textarea';
-import Field from 'app/views/settings/components/forms/field';
-import FieldHelp from 'app/views/settings/components/forms/field/fieldHelp';
-import TextCopyInput from 'app/views/settings/components/forms/textCopyInput';
+import {Input} from '@sentry/scraps/input';
+import {TextArea} from '@sentry/scraps/textarea';
+
+import {addErrorMessage, addSuccessMessage} from 'sentry/actionCreators/indicator';
+import FieldGroup from 'sentry/components/forms/fieldGroup';
+import {FieldHelp} from 'sentry/components/forms/fieldGroup/fieldHelp';
+import TextCopyInput from 'sentry/components/textCopyInput';
+import {t} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {Relay} from 'sentry/types/relay';
 
 type FormField = keyof Pick<Relay, 'name' | 'publicKey' | 'description'>;
 type Values = Record<FormField, string>;
 
 type Props = {
-  isFormValid: boolean;
-  values: Values;
-  errors: Partial<Values>;
   disables: Partial<Record<FormField, boolean>>;
+  errors: Partial<Values>;
+  isFormValid: boolean;
+  onChange: (field: FormField, value: string) => void;
   onSave: () => void;
   onValidate: (field: FormField) => () => void;
   onValidateKey: () => void;
-  onChange: (field: FormField, value: string) => void;
+  values: Values;
 };
 
-const Form = ({
+function Form({
   values,
   onChange,
   errors,
@@ -33,7 +34,7 @@ const Form = ({
   disables,
   onValidateKey,
   onSave,
-}: Props) => {
+}: Props) {
   const handleChange =
     (field: FormField) =>
     (
@@ -48,15 +49,20 @@ const Form = ({
     }
   };
 
-  // code below copied from app/views/organizationIntegrations/SplitInstallationIdModal.tsx
-  // TODO: fix the common method selectText
-  const onCopy = (value: string) => async () =>
-    // This hack is needed because the normal copying methods with TextCopyInput do not work correctly
-    await navigator.clipboard.writeText(value);
+  const onCopy = (value: string) => () => {
+    navigator.clipboard
+      .writeText(value)
+      .then(() => {
+        addSuccessMessage(t('Copied to clipboard'));
+      })
+      .catch(() => {
+        addErrorMessage(t('Error copying to clipboard'));
+      });
+  };
 
   return (
     <form onSubmit={handleSubmit} id="relay-form">
-      <Field
+      <FieldGroup
         flexibleControlStateSize
         label={t('Display Name')}
         error={errors.name}
@@ -73,14 +79,19 @@ const Form = ({
           onBlur={onValidate('name')}
           disabled={disables.name}
         />
-      </Field>
+      </FieldGroup>
 
       {disables.publicKey ? (
-        <Field flexibleControlStateSize label={t('Public Key')} inline={false} stacked>
+        <FieldGroup
+          flexibleControlStateSize
+          label={t('Public Key')}
+          inline={false}
+          stacked
+        >
           <TextCopyInput onCopy={onCopy(values.publicKey)}>
             {values.publicKey}
           </TextCopyInput>
-        </Field>
+        </FieldGroup>
       ) : (
         <FieldWrapper>
           <StyledField
@@ -107,8 +118,13 @@ const Form = ({
           </FieldHelp>
         </FieldWrapper>
       )}
-      <Field flexibleControlStateSize label={t('Description')} inline={false} stacked>
-        <Textarea
+      <FieldGroup
+        flexibleControlStateSize
+        label={t('Description')}
+        inline={false}
+        stacked
+      >
+        <TextArea
           name="description"
           placeholder={t('Description')}
           onChange={handleChange('description')}
@@ -116,10 +132,10 @@ const Form = ({
           disabled={disables.description}
           autosize
         />
-      </Field>
+      </FieldGroup>
     </form>
   );
-};
+}
 
 export default Form;
 
@@ -127,6 +143,6 @@ const FieldWrapper = styled('div')`
   padding-bottom: ${space(2)};
 `;
 
-const StyledField = styled(Field)`
+const StyledField = styled(FieldGroup)`
   padding-bottom: 0;
 `;

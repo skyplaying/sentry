@@ -2,11 +2,11 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test.client import RequestFactory
 from django.urls import reverse
 
-from tests.apidocs.util import APIDocsTestCase
+from fixtures.apidocs_test_case import APIDocsTestCase
 
 
 class ProjectReleaseFilesListDocsTest(APIDocsTestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         project = self.create_project(name="foo")
         file1 = self.create_file(
             name="blah.js",
@@ -24,21 +24,21 @@ class ProjectReleaseFilesListDocsTest(APIDocsTestCase):
         self.url = reverse(
             "sentry-api-0-project-release-files",
             kwargs={
-                "project_slug": project.slug,
-                "organization_slug": project.organization.slug,
+                "project_id_or_slug": project.slug,
+                "organization_id_or_slug": project.organization.slug,
                 "version": release.version,
             },
         )
 
         self.login_as(user=self.user)
 
-    def test_get(self):
+    def test_get(self) -> None:
         response = self.client.get(self.url)
         request = RequestFactory().get(self.url)
 
         self.validate_schema(request, response)
 
-    def test_post(self):
+    def test_post(self) -> None:
         data = {
             "name": "http://example.com/application.js",
             "header": "X-SourceMap: http://example.com",
@@ -51,6 +51,12 @@ class ProjectReleaseFilesListDocsTest(APIDocsTestCase):
             data,
             format="multipart",
         )
-        request = RequestFactory().post(self.url, data=data, content_type="multipart/form-data")
+        request = RequestFactory().post(
+            self.url,
+            data=data,
+            content_type="multipart/form-data",
+            SERVER_NAME="us.sentry.io",
+            secure=True,
+        )
 
         self.validate_schema(request, response)

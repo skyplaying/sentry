@@ -1,65 +1,52 @@
-import * as React from 'react';
-import {withTheme} from '@emotion/react';
+import {useTheme} from '@emotion/react';
 import styled from '@emotion/styled';
-import Color from 'color';
-import {EChartOption} from 'echarts';
+import type {BarSeriesOption, LegendComponentOption, SeriesOption} from 'echarts';
 
-import BaseChart from 'app/components/charts/baseChart';
-import Legend from 'app/components/charts/components/legend';
-import Tooltip from 'app/components/charts/components/tooltip';
-import xAxis from 'app/components/charts/components/xAxis';
-import barSeries from 'app/components/charts/series/barSeries';
-import {ChartContainer, HeaderTitleLegend} from 'app/components/charts/styles';
-import LoadingIndicator from 'app/components/loadingIndicator';
-import Panel from 'app/components/panels/panel';
-import Placeholder from 'app/components/placeholder';
-import {IconWarning} from 'app/icons';
-import {t} from 'app/locale';
-import space from 'app/styles/space';
-import {DataCategory, DataCategoryName, IntervalPeriod, SelectValue} from 'app/types';
-import {parsePeriodToHours, statsPeriodToDays} from 'app/utils/dates';
-import {formatAbbreviatedNumber} from 'app/utils/formatters';
-import commonTheme, {Theme} from 'app/utils/theme';
+import type {BaseChartProps} from 'sentry/components/charts/baseChart';
+import BaseChart from 'sentry/components/charts/baseChart';
+import Legend from 'sentry/components/charts/components/legend';
+import xAxis from 'sentry/components/charts/components/xAxis';
+import barSeries from 'sentry/components/charts/series/barSeries';
+import {ChartContainer, HeaderTitleLegend} from 'sentry/components/charts/styles';
+import LoadingIndicator from 'sentry/components/loadingIndicator';
+import Panel from 'sentry/components/panels/panel';
+import Placeholder from 'sentry/components/placeholder';
+import {DATA_CATEGORY_INFO} from 'sentry/constants';
+import {IconWarning} from 'sentry/icons';
+import {t} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {DataCategory, IntervalPeriod, SelectValue} from 'sentry/types/core';
+import {parsePeriodToHours} from 'sentry/utils/duration/parsePeriodToHours';
+import {statsPeriodToDays} from 'sentry/utils/duration/statsPeriodToDays';
+import type {Theme} from 'sentry/utils/theme';
+import {formatUsageWithUnits} from 'sentry/views/organizationStats/utils';
 
-import {formatUsageWithUnits, GIGABYTE} from '../utils';
+import {getTooltipFormatter, getXAxisDates, getXAxisLabelVisibility} from './utils';
 
-import {getTooltipFormatter, getXAxisDates, getXAxisLabelInterval} from './utils';
+type CategoryOption = {
+  /**
+   * Scale of y-axis with no usage data.
+   */
+  yAxisMinInterval: number;
+} & SelectValue<DataCategory>;
 
-const COLOR_ERRORS = Color(commonTheme.dataCategory.errors).lighten(0.25).string();
-const COLOR_TRANSACTIONS = Color(commonTheme.dataCategory.transactions)
-  .lighten(0.35)
-  .string();
-const COLOR_ATTACHMENTS = Color(commonTheme.dataCategory.attachments)
-  .lighten(0.65)
-  .string();
-const COLOR_DROPPED = commonTheme.red300;
-const COLOR_PROJECTED = commonTheme.gray100;
-const COLOR_FILTERED = commonTheme.pink100;
-
-export const CHART_OPTIONS_DATACATEGORY: SelectValue<DataCategory>[] = [
-  {
-    label: DataCategoryName[DataCategory.ERRORS],
-    value: DataCategory.ERRORS,
-    disabled: false,
-  },
-  {
-    label: DataCategoryName[DataCategory.TRANSACTIONS],
-    value: DataCategory.TRANSACTIONS,
-    disabled: false,
-  },
-  {
-    label: DataCategoryName[DataCategory.ATTACHMENTS],
-    value: DataCategory.ATTACHMENTS,
-    disabled: false,
-  },
-];
+export const CHART_OPTIONS_DATACATEGORY = [
+  ...Object.values(DATA_CATEGORY_INFO)
+    .filter(categoryInfo => categoryInfo.statsInfo.showExternalStats)
+    .map(categoryInfo => ({
+      label: categoryInfo.titleName,
+      value: categoryInfo.plural,
+      disabled: false,
+      yAxisMinInterval: categoryInfo.statsInfo.yAxisMinInterval,
+    })),
+] satisfies CategoryOption[];
 
 export enum ChartDataTransform {
   CUMULATIVE = 'cumulative',
   PERIODIC = 'periodic',
 }
 
-export const CHART_OPTIONS_DATA_TRANSFORM: SelectValue<ChartDataTransform>[] = [
+export const CHART_OPTIONS_DATA_TRANSFORM: Array<SelectValue<ChartDataTransform>> = [
   {
     label: t('Cumulative'),
     value: ChartDataTransform.CUMULATIVE,
@@ -72,113 +59,185 @@ export const CHART_OPTIONS_DATA_TRANSFORM: SelectValue<ChartDataTransform>[] = [
   },
 ];
 
-export enum SeriesTypes {
+export const enum SeriesTypes {
   ACCEPTED = 'Accepted',
-  DROPPED = 'Dropped',
-  PROJECTED = 'Projected',
+  ACCEPTED_STORED = 'Accepted (stored)',
   FILTERED = 'Filtered',
+  RATE_LIMITED = 'Rate Limited',
+  INVALID = 'Invalid',
+  CLIENT_DISCARD = 'Client Discard',
+  PROJECTED = 'Projected',
 }
 
-type DefaultProps = {
-  /**
-   * Display datetime in UTC
-   */
-  usageDateShowUtc: boolean;
-
-  /**
-   * Intervals between the x-axis values
-   */
-  usageDateInterval: IntervalPeriod;
-
-  /**
-   * Modify the usageStats using the transformation method selected.
-   * 1. This must be a pure function!
-   * 2. If the parent component will handle the data transformation, you should
-   *    replace this prop with "(s) => {return s}"
-   */
-  handleDataTransformation: (
-    stats: ChartStats,
-    transform: ChartDataTransform
-  ) => ChartStats;
-};
-
-type Props = DefaultProps & {
-  theme: Theme;
-
-  isLoading?: boolean;
-  isError?: boolean;
-  errors?: Record<string, Error>;
-
-  title?: React.ReactNode;
-  footer?: React.ReactNode;
-
+export type UsageChartProps = {
   dataCategory: DataCategory;
   dataTransform: ChartDataTransform;
-
-  usageDateStart: string;
   usageDateEnd: string;
-
+  usageDateStart: string;
   /**
    * Usage data to draw on chart
    */
   usageStats: ChartStats;
-
+  /**
+   * Config for category dropdown options
+   */
+  categoryOptions?: CategoryOption[];
   /**
    * Additional data to draw on the chart alongside usage
    */
-  chartSeries?: EChartOption.Series[];
-
+  chartSeries?: SeriesOption[];
   /**
    * Replace default tooltip
    */
-  chartTooltip?: EChartOption.Tooltip;
+  chartTooltip?: BaseChartProps['tooltip'];
+  errors?: Record<string, Error>;
+  /**
+   * Modify the usageStats using the transformation method selected.
+   * If the parent component will handle the data transformation, you should
+   *    replace this prop with "(s) => {return s}"
+   */
+  handleDataTransformation?: (
+    stats: Readonly<ChartStats>,
+    transform: Readonly<ChartDataTransform>
+  ) => ChartStats;
+  isError?: boolean;
+  isLoading?: boolean;
+  /**
+   * Selected map of each legend item.
+   * Default to be selected if item is not in the map
+   */
+  legendSelected?: Record<string, boolean>;
+  onLegendSelectChanged?: BaseChartProps['onLegendSelectChanged'];
+  /**
+   * Intervals between the x-axis values
+   */
+  usageDateInterval?: IntervalPeriod;
+  /**
+   * Display datetime in UTC
+   */
+  usageDateShowUtc?: boolean;
+  yAxisFormatter?: (val: number) => string;
 };
 
-type State = {
-  xAxisDates: string[];
+/**
+ * When the data transformation is set to cumulative, the chart will display
+ * the total sum of the data points up to that point.
+ */
+const cumulativeTotalDataTransformation: UsageChartProps['handleDataTransformation'] = (
+  stats,
+  transform
+) => {
+  const chartData: ChartStats = {
+    accepted: [],
+    filtered: [],
+    rateLimited: [],
+    invalid: [],
+    clientDiscard: [],
+    projected: [],
+    reserved: [],
+    onDemand: [],
+  };
+  const isCumulative = transform === ChartDataTransform.CUMULATIVE;
+
+  Object.keys(stats).forEach(k => {
+    let count = 0;
+
+    (chartData as any)[k] = (stats as any)[k].map((stat: any) => {
+      const [x, y] = stat.value;
+      count = isCumulative ? count + y : y;
+
+      return {
+        ...stat,
+        value: [x, count],
+      };
+    });
+  });
+
+  return chartData;
 };
+
+const getUnitYaxisFormatter =
+  (dataCategory: UsageChartProps['dataCategory']) => (val: number) =>
+    formatUsageWithUnits(val, dataCategory, {
+      isAbbreviated: true,
+      useUnitScaling: true,
+    });
 
 export type ChartStats = {
-  accepted: NonNullable<EChartOption.SeriesBar['data']>;
-  dropped: NonNullable<EChartOption.SeriesBar['data']>;
-  projected: NonNullable<EChartOption.SeriesBar['data']>;
-  filtered?: NonNullable<EChartOption.SeriesBar['data']>;
+  accepted: NonNullable<BarSeriesOption['data']>;
+  projected: NonNullable<BarSeriesOption['data']>;
+  accepted_stored?: NonNullable<BarSeriesOption['data']>;
+  clientDiscard?: NonNullable<BarSeriesOption['data']>;
+  dropped?: NonNullable<BarSeriesOption['data']>;
+  filtered?: NonNullable<BarSeriesOption['data']>;
+  invalid?: NonNullable<BarSeriesOption['data']>;
+  onDemand?: NonNullable<BarSeriesOption['data']>;
+  rateLimited?: NonNullable<BarSeriesOption['data']>;
+  reserved?: NonNullable<BarSeriesOption['data']>;
 };
 
-export class UsageChart extends React.Component<Props, State> {
-  static defaultProps: DefaultProps = {
-    usageDateShowUtc: true,
-    usageDateInterval: '1d',
-    handleDataTransformation: (stats, transform) => {
-      const chartData: ChartStats = {
-        accepted: [],
-        dropped: [],
-        projected: [],
-        filtered: [],
+function chartMetadata({
+  categoryOptions,
+  dataCategory,
+  usageStats,
+  dataTransform,
+  usageDateStart,
+  usageDateEnd,
+  usageDateInterval,
+  usageDateShowUtc,
+  handleDataTransformation,
+}: Required<
+  Pick<
+    UsageChartProps,
+    | 'categoryOptions'
+    | 'dataCategory'
+    | 'handleDataTransformation'
+    | 'usageStats'
+    | 'dataTransform'
+    | 'usageDateStart'
+    | 'usageDateEnd'
+    | 'usageDateInterval'
+    | 'usageDateShowUtc'
+  >
+>): {
+  chartData: ChartStats;
+  chartLabel: React.ReactNode;
+  tooltipValueFormatter: (val?: number) => string;
+  xAxisData: string[];
+  xAxisLabelVisibility: Record<number, boolean>;
+  yAxisMinInterval: number;
+} {
+  const selectDataCategory = categoryOptions.find(o => o.value === dataCategory);
+  if (!selectDataCategory) {
+    throw new Error('Selected item is not supported');
+  }
+
+  // Do not assume that handleDataTransformation is a pure function
+  const chartData: ChartStats = {
+    ...handleDataTransformation(usageStats, dataTransform),
+  };
+
+  Object.keys(chartData).forEach(k => {
+    const isProjected = k === SeriesTypes.PROJECTED;
+
+    // Map the array and destructure elements to avoid side-effects
+    (chartData as any)[k] = (chartData as any)[k]?.map((stat: any) => {
+      return {
+        ...stat,
+        tooltip: {show: false},
+        itemStyle: {opacity: isProjected ? 0.6 : 1},
       };
-      const isCumulative = transform === ChartDataTransform.CUMULATIVE;
+    });
+  });
 
-      Object.keys(stats).forEach(k => {
-        let count = 0;
+  // Use hours as common units
+  const dataPeriod = statsPeriodToDays(undefined, usageDateStart, usageDateEnd) * 24;
+  const barPeriod = parsePeriodToHours(usageDateInterval);
+  if (dataPeriod < 0 || barPeriod < 0) {
+    throw new Error('UsageChart: Unable to parse data time period');
+  }
 
-        chartData[k] = stats[k].map(stat => {
-          const [x, y] = stat.value;
-          count = isCumulative ? count + y : y;
-
-          return {
-            ...stat,
-            value: [x, count],
-          };
-        });
-      });
-
-      return chartData;
-    },
-  };
-
-  state: State = {
-    xAxisDates: [],
-  };
+  const {label, yAxisMinInterval} = selectDataCategory;
 
   /**
    * UsageChart needs to generate the X-Axis dates as props.usageStats may
@@ -187,301 +246,277 @@ export class UsageChart extends React.Component<Props, State> {
    * E.g. usageStats.accepted covers day 1-15 of a month, usageStats.projected
    * either covers day 16-30 or may not be available at all.
    */
-  static getDerivedStateFromProps(nextProps: Readonly<Props>, prevState: State): State {
-    const {usageDateStart, usageDateEnd, usageDateShowUtc, usageDateInterval} = nextProps;
+  const xAxisDates = getXAxisDates(
+    usageDateStart,
+    usageDateEnd,
+    usageDateShowUtc,
+    usageDateInterval
+  );
 
-    return {
-      ...prevState,
-      xAxisDates: getXAxisDates(
-        usageDateStart,
-        usageDateEnd,
-        usageDateShowUtc,
-        usageDateInterval
-      ),
-    };
-  }
+  const {xAxisLabelVisibility} = getXAxisLabelVisibility(dataPeriod, xAxisDates);
 
-  get chartColors() {
-    const {dataCategory} = this.props;
+  return {
+    chartLabel: label,
+    chartData,
+    xAxisData: xAxisDates,
+    xAxisLabelVisibility,
+    yAxisMinInterval,
+    tooltipValueFormatter: getTooltipFormatter(dataCategory),
+  };
+}
 
-    if (dataCategory === DataCategory.ERRORS) {
-      return [COLOR_ERRORS, COLOR_FILTERED, COLOR_DROPPED, COLOR_PROJECTED];
-    }
+const outputChartColors = (theme: Theme) => {
+  return theme.chart.getColorPalette(5);
+};
 
-    if (dataCategory === DataCategory.ATTACHMENTS) {
-      return [COLOR_ATTACHMENTS, COLOR_FILTERED, COLOR_DROPPED, COLOR_PROJECTED];
-    }
+function UsageChartBody({
+  usageDateStart,
+  usageDateEnd,
+  usageStats,
+  dataCategory,
+  dataTransform,
+  chartSeries,
+  chartTooltip,
+  isLoading,
+  isError,
+  errors,
+  categoryOptions = CHART_OPTIONS_DATACATEGORY,
+  usageDateInterval = '1d',
+  usageDateShowUtc = true,
+  yAxisFormatter,
+  handleDataTransformation = cumulativeTotalDataTransformation,
+  legendSelected,
+  onLegendSelectChanged,
+}: UsageChartProps) {
+  const theme = useTheme();
 
-    return [COLOR_TRANSACTIONS, COLOR_FILTERED, COLOR_DROPPED, COLOR_PROJECTED];
-  }
-
-  get chartMetadata(): {
-    chartLabel: React.ReactNode;
-    chartData: ChartStats;
-    xAxisData: string[];
-    xAxisTickInterval: number;
-    xAxisLabelInterval: number;
-    yAxisMinInterval: number;
-    yAxisFormatter: (val: number) => string;
-    tooltipValueFormatter: (val?: number) => string;
-  } {
-    const {usageDateStart, usageDateEnd} = this.props;
-    const {
-      usageDateInterval,
-      usageStats,
-      dataCategory,
-      dataTransform,
-      handleDataTransformation,
-    } = this.props;
-    const {xAxisDates} = this.state;
-
-    const selectDataCategory = CHART_OPTIONS_DATACATEGORY.find(
-      o => o.value === dataCategory
+  if (isLoading) {
+    return (
+      <Placeholder height="200px">
+        <LoadingIndicator mini />
+      </Placeholder>
     );
-    if (!selectDataCategory) {
-      throw new Error('Selected item is not supported');
-    }
+  }
 
-    // Do not assume that handleDataTransformation is a pure function
-    const chartData: ChartStats = {
-      ...handleDataTransformation(usageStats, dataTransform),
-    };
-
-    Object.keys(chartData).forEach(k => {
-      const isProjected = k === SeriesTypes.PROJECTED;
-
-      // Map the array and destructure elements to avoid side-effects
-      chartData[k] = chartData[k].map(stat => {
-        return {
-          ...stat,
-          tooltip: {show: false},
-          itemStyle: {opacity: isProjected ? 0.6 : 1},
-        };
-      });
-    });
-
-    // Use hours as common units
-    const dataPeriod = statsPeriodToDays(undefined, usageDateStart, usageDateEnd) * 24;
-    const barPeriod = parsePeriodToHours(usageDateInterval);
-    if (dataPeriod < 0 || barPeriod < 0) {
-      throw new Error('UsageChart: Unable to parse data time period');
-    }
-
-    const {xAxisTickInterval, xAxisLabelInterval} = getXAxisLabelInterval(
-      dataPeriod,
-      dataPeriod / barPeriod
+  if (isError) {
+    return (
+      <Placeholder height="200px">
+        <IconWarning size="sm" />
+        <ErrorMessages data-test-id="error-messages">
+          {errors &&
+            Object.keys(errors).map(k => <span key={k}>{errors[k]?.message}</span>)}
+        </ErrorMessages>
+      </Placeholder>
     );
-
-    const {label, value} = selectDataCategory;
-
-    if (value === DataCategory.ERRORS || value === DataCategory.TRANSACTIONS) {
-      return {
-        chartLabel: label,
-        chartData,
-        xAxisData: xAxisDates,
-        xAxisTickInterval,
-        xAxisLabelInterval,
-        yAxisMinInterval: 100,
-        yAxisFormatter: formatAbbreviatedNumber,
-        tooltipValueFormatter: getTooltipFormatter(dataCategory),
-      };
-    }
-
-    return {
-      chartLabel: label,
-      chartData,
-      xAxisData: xAxisDates,
-      xAxisTickInterval,
-      xAxisLabelInterval,
-      yAxisMinInterval: 0.5 * GIGABYTE,
-      yAxisFormatter: (val: number) =>
-        formatUsageWithUnits(val, DataCategory.ATTACHMENTS, {
-          isAbbreviated: true,
-          useUnitScaling: true,
-        }),
-      tooltipValueFormatter: getTooltipFormatter(dataCategory),
-    };
   }
 
-  get chartSeries() {
-    const {chartSeries} = this.props;
-    const {chartData} = this.chartMetadata;
+  const yAxisLabelFormatter = yAxisFormatter ?? getUnitYaxisFormatter(dataCategory);
 
-    let series: EChartOption.Series[] = [
-      barSeries({
-        name: SeriesTypes.ACCEPTED,
-        data: chartData.accepted as any, // TODO(ts)
-        barMinHeight: 1,
-        stack: 'usage',
-        legendHoverLink: false,
-      }),
-      barSeries({
-        name: SeriesTypes.FILTERED,
-        data: chartData.filtered as any, // TODO(ts)
-        barMinHeight: 1,
-        stack: 'usage',
-        legendHoverLink: false,
-      }),
-      barSeries({
-        name: SeriesTypes.DROPPED,
-        data: chartData.dropped as any, // TODO(ts)
-        stack: 'usage',
-        legendHoverLink: false,
-      }),
-      barSeries({
-        name: SeriesTypes.PROJECTED,
-        data: chartData.projected as any, // TODO(ts)
-        barMinHeight: 1,
-        stack: 'usage',
-        legendHoverLink: false,
-      }),
-    ];
+  const {
+    chartData,
+    tooltipValueFormatter,
+    xAxisData,
+    yAxisMinInterval,
+    xAxisLabelVisibility,
+  } = chartMetadata({
+    categoryOptions,
+    dataCategory,
+    handleDataTransformation: handleDataTransformation!,
+    usageStats,
+    dataTransform,
+    usageDateStart,
+    usageDateEnd,
+    usageDateInterval,
+    usageDateShowUtc,
+  });
+  function chartLegendData(): LegendComponentOption['data'] {
+    const legend: LegendComponentOption['data'] = [];
 
-    // Additional series passed by parent component
-    if (chartSeries) {
-      series = series.concat(chartSeries as EChartOption.Series[]);
+    if (!chartData.reserved || chartData.reserved.length === 0) {
+      legend.push({name: SeriesTypes.ACCEPTED});
     }
 
-    return series;
-  }
-
-  get chartLegend() {
-    const {chartData} = this.chartMetadata;
-    const legend = [
-      {
-        name: SeriesTypes.ACCEPTED,
-      },
-    ];
-
-    if (chartData.filtered && chartData.filtered.length > 0) {
-      legend.push({
-        name: SeriesTypes.FILTERED,
-      });
+    if ((chartData.filtered ?? []).length > 0) {
+      legend.push({name: SeriesTypes.FILTERED});
     }
 
-    if (chartData.dropped.length > 0) {
-      legend.push({
-        name: SeriesTypes.DROPPED,
-      });
+    if ((chartData.rateLimited ?? []).length > 0) {
+      legend.push({name: SeriesTypes.RATE_LIMITED});
+    }
+
+    if ((chartData.invalid ?? []).length > 0) {
+      legend.push({name: SeriesTypes.INVALID});
+    }
+
+    if ((chartData.clientDiscard ?? []).length > 0) {
+      legend.push({name: SeriesTypes.CLIENT_DISCARD});
     }
 
     if (chartData.projected.length > 0) {
-      legend.push({
-        name: SeriesTypes.PROJECTED,
+      legend.push({name: SeriesTypes.PROJECTED});
+    }
+
+    if (chartSeries) {
+      chartSeries.forEach(chartOption => {
+        if (chartOption.name) {
+          legend.push({name: `${chartOption.name}`});
+        }
       });
     }
+
     return legend;
   }
 
-  get chartTooltip() {
-    const {chartTooltip} = this.props;
+  const colors = outputChartColors(theme);
 
-    if (chartTooltip) {
-      return chartTooltip;
-    }
+  const series: SeriesOption[] = [
+    barSeries({
+      name: SeriesTypes.ACCEPTED,
+      data: chartData.accepted,
+      barMinHeight: 1,
+      stack: 'usage',
+      legendHoverLink: false,
+    }),
+    ...(chartData.accepted_stored
+      ? [
+          barSeries({
+            name: SeriesTypes.ACCEPTED,
+            data: chartData.accepted_stored,
+            barMinHeight: 1,
+            barGap: '-100%',
+            z: 3,
+            silent: true,
+            tooltip: {show: false},
+            itemStyle: {
+              decal: {
+                color: theme.tokens.content.secondary,
+                dashArrayX: [1, 0],
+                dashArrayY: [3, 5],
+                rotation: -Math.PI / 4,
+              },
+            },
+            legendHoverLink: false,
+          }),
+        ]
+      : []),
+    barSeries({
+      name: SeriesTypes.FILTERED,
+      data: chartData.filtered,
+      barMinHeight: 1,
+      stack: 'usage',
+      legendHoverLink: false,
+    }),
+    barSeries({
+      name: SeriesTypes.RATE_LIMITED,
+      data: chartData.rateLimited,
+      barMinHeight: 1,
+      stack: 'usage',
+      legendHoverLink: false,
+    }),
+    barSeries({
+      name: SeriesTypes.INVALID,
+      data: chartData.invalid,
+      stack: 'usage',
+      legendHoverLink: false,
+    }),
+    barSeries({
+      name: SeriesTypes.CLIENT_DISCARD,
+      data: chartData.clientDiscard,
+      stack: 'usage',
+      legendHoverLink: false,
+    }),
+    barSeries({
+      name: SeriesTypes.PROJECTED,
+      data: chartData.projected,
+      barMinHeight: 1,
+      stack: 'usage',
+      legendHoverLink: false,
+    }),
+    // Additional series passed by parent component
+    ...(chartSeries || []),
+  ];
 
-    const {tooltipValueFormatter} = this.chartMetadata;
-
-    return Tooltip({
-      // Trigger to axis prevents tooltip from redrawing when hovering
-      // over individual bars
-      trigger: 'axis',
-      valueFormatter: tooltipValueFormatter,
-    });
-  }
-
-  renderChart() {
-    const {theme, title, isLoading, isError, errors} = this.props;
-    if (isLoading) {
-      return (
-        <Placeholder height="200px">
-          <LoadingIndicator mini />
-        </Placeholder>
-      );
-    }
-
-    if (isError) {
-      return (
-        <Placeholder height="200px">
-          <IconWarning size={theme.fontSizeExtraLarge} />
-          <ErrorMessages>
-            {errors &&
-              Object.keys(errors).map(k => <span key={k}>{errors[k]?.message}</span>)}
-          </ErrorMessages>
-        </Placeholder>
-      );
-    }
-
-    const {
-      xAxisData,
-      xAxisTickInterval,
-      xAxisLabelInterval,
-      yAxisMinInterval,
-      yAxisFormatter,
-    } = this.chartMetadata;
-
-    return (
-      <React.Fragment>
-        <HeaderTitleLegend>{title || t('Current Usage Period')}</HeaderTitleLegend>
-        <BaseChart
-          colors={this.chartColors}
-          grid={{bottom: '3px', left: '0px', right: '10px', top: '40px'}}
-          xAxis={xAxis({
+  return (
+    <BaseChart
+      colors={colors}
+      options={{
+        aria: {
+          decal: {
             show: true,
-            type: 'category',
-            name: 'Date',
-            boundaryGap: true,
-            data: xAxisData,
-            axisTick: {
-              interval: xAxisTickInterval,
-              alignWithLabel: true,
-            },
-            axisLabel: {
-              interval: xAxisLabelInterval,
-              formatter: (label: string) => label.slice(0, 6), // Limit label to 6 chars
-            },
-            theme,
-          })}
-          yAxis={{
-            min: 0,
-            minInterval: yAxisMinInterval,
-            axisLabel: {
-              formatter: yAxisFormatter,
-              color: theme.chartLabel,
-            },
-          }}
-          series={this.chartSeries}
-          tooltip={this.chartTooltip}
-          onLegendSelectChanged={() => {}}
-          legend={Legend({
-            right: 10,
-            top: 5,
-            data: this.chartLegend,
-            theme,
-          })}
-        />
-      </React.Fragment>
-    );
-  }
-
-  render() {
-    const {footer} = this.props;
-
-    return (
-      <Panel id="usage-chart">
-        <ChartContainer>{this.renderChart()}</ChartContainer>
-        {footer}
-      </Panel>
-    );
-  }
+          },
+        },
+      }}
+      grid={{bottom: '3px', left: '3px', right: '10px', top: '40px'}}
+      xAxis={xAxis({
+        show: true,
+        type: 'category',
+        name: 'Date',
+        data: xAxisData,
+        axisTick: {
+          alignWithLabel: true,
+        },
+        axisLabel: {
+          interval: function (index: number) {
+            return xAxisLabelVisibility[index]!;
+          },
+          formatter: (label: string) => label.slice(0, 6), // Limit label to 6 chars
+        },
+        theme,
+      })}
+      yAxis={{
+        min: 0,
+        minInterval: yAxisMinInterval,
+        axisLabel: {
+          formatter: yAxisLabelFormatter,
+          color: theme.tokens.content.secondary,
+        },
+      }}
+      series={series}
+      tooltip={
+        chartTooltip
+          ? chartTooltip
+          : {
+              // Trigger to axis prevents tooltip from redrawing when hovering
+              // over individual bars
+              trigger: 'axis',
+              valueFormatter: tooltipValueFormatter,
+            }
+      }
+      onLegendSelectChanged={onLegendSelectChanged}
+      legend={Legend({
+        right: 10,
+        top: 5,
+        data: chartLegendData(),
+        theme,
+        selected: legendSelected,
+      })}
+    />
+  );
 }
 
-export default withTheme(UsageChart);
+interface UsageChartPanelProps extends UsageChartProps {
+  footer?: React.ReactNode;
+  title?: React.ReactNode;
+}
+
+function UsageChart({title, footer, ...props}: UsageChartPanelProps) {
+  return (
+    <Panel id="usage-chart" data-test-id="usage-chart">
+      <ChartContainer>
+        <HeaderTitleLegend>{title || t('Current Usage Period')}</HeaderTitleLegend>
+        <UsageChartBody {...props} />
+      </ChartContainer>
+      {footer}
+    </Panel>
+  );
+}
+
+export default UsageChart;
 
 const ErrorMessages = styled('div')`
   display: flex;
   flex-direction: column;
 
   margin-top: ${space(1)};
-  font-size: ${p => p.theme.fontSizeSmall};
+  font-size: ${p => p.theme.font.size.sm};
 `;

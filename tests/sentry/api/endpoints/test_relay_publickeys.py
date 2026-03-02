@@ -1,27 +1,21 @@
-from contextlib import contextmanager
+from unittest import mock
 from uuid import uuid4
 
+import orjson
 from django.urls import reverse
-from sentry_relay import generate_key_pair
+from sentry_relay.auth import generate_key_pair
 
-from sentry.models import Relay
-from sentry.testutils import APITestCase
-from sentry.utils import json
+from sentry.auth import system
+from sentry.models.relay import Relay
+from sentry.testutils.cases import APITestCase
 
 
-@contextmanager
 def disable_internal_networks():
-    from sentry.auth import system
-
-    old_internal_networks = system.INTERNAL_NETWORKS
-    system.INTERNAL_NETWORKS = ()
-    yield
-    # restore INTERNAL NETWORKS
-    system.INTERNAL_NETWORKS = old_internal_networks
+    return mock.patch.object(system, "INTERNAL_NETWORKS", ())
 
 
 class RelayPublicKeysConfigTest(APITestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         super().setUp()
 
         self.key_pair = generate_key_pair()
@@ -56,7 +50,7 @@ class RelayPublicKeysConfigTest(APITestCase):
         self.project = self.create_project()
         self.path = reverse("sentry-api-0-relay-publickeys")
 
-    def test_get_project_config_internal(self):
+    def test_get_project_config_internal(self) -> None:
         result = self._call_endpoint(self.internal_relay)
         legacy_keys = result["public_keys"]
         keys = result["relays"]
@@ -77,8 +71,7 @@ class RelayPublicKeysConfigTest(APITestCase):
 
         assert keys[self.non_existing_key] is None
 
-    def test_get_project_config_external(self):
-
+    def test_get_project_config_external(self) -> None:
         with disable_internal_networks():
             result = self._call_endpoint(self.external_relay)
 
@@ -102,7 +95,6 @@ class RelayPublicKeysConfigTest(APITestCase):
         assert keys[self.non_existing_key] is None
 
     def _call_endpoint(self, calling_relay):
-
         raw_json, signature = self.private_key.pack(
             {
                 "relay_ids": [
@@ -121,5 +113,4 @@ class RelayPublicKeysConfigTest(APITestCase):
             HTTP_X_SENTRY_RELAY_SIGNATURE=signature,
         )
 
-        result = json.loads(resp.content)
-        return result
+        return orjson.loads(resp.content)

@@ -1,4 +1,5 @@
-from typing import Optional
+from collections.abc import Mapping, MutableMapping
+from typing import Any
 from warnings import warn
 
 from sentry.utils.safe import get_path
@@ -7,54 +8,10 @@ from sentry.utils.strings import strip, truncatechars
 # Note: Detecting eventtypes is implemented in the Relay Rust library.
 
 
-def get_tree_label_part_details(part):
-    # Note: This function also exists in JS in app/utils/events.tsx, to make
-    # porting efforts simpler it's recommended to keep both variants structurally
-    # similar.
-    if isinstance(part, str):
-        # XXX(markus): Legacy codepath, should be unnecessary 90d after
-        # 2021-06-09. Same for frontend version.
-        return part
-
-    label = part.get("function") or part.get("package") or part.get("filebase") or part.get("type")
-
-    classbase = part.get("classbase")
-
-    if classbase:
-        if label:
-            label = f"{classbase}.{label}"
-        else:
-            label = classbase
-
-    return label or "<unknown>"
-
-
-def format_title_from_tree_label(tree_label):
-    return " | ".join(get_tree_label_part_details(x) for x in tree_label)
-
-
-def compute_title_with_tree_label(title: Optional[str], metadata: dict):
-    tree_label = None
-    if metadata.get("current_tree_label"):
-        tree_label = format_title_from_tree_label(metadata["current_tree_label"])
-
-    elif metadata.get("finest_tree_label"):
-        tree_label = format_title_from_tree_label(metadata["finest_tree_label"])
-
-    if title is None:
-        # Probably a synthetic exception
-        return tree_label or metadata.get("function") or "<unknown>"
-
-    if tree_label is not None:
-        title += " | " + tree_label
-
-    return title
-
-
 class BaseEvent:
-    id = None
+    key: str  # abstract
 
-    def get_metadata(self, data):
+    def get_metadata(self, data: MutableMapping[str, Any]) -> dict[str, str]:
         metadata = self.extract_metadata(data)
         title = data.get("title")
         if title is not None:
@@ -64,36 +21,36 @@ class BaseEvent:
 
         return metadata
 
-    def get_title(self, metadata):
+    def get_title(self, metadata: Mapping[str, str | None]) -> str:
         title = metadata.get("title")
         if title is not None:
             return title
         return self.compute_title(metadata) or "<untitled>"
 
-    def compute_title(self, metadata):
+    def compute_title(self, metadata: Mapping[str, str | None]) -> str | None:
         return None
 
-    def extract_metadata(self, metadata):
+    def extract_metadata(self, metadata: MutableMapping[str, Any]) -> dict[str, str]:
         return {}
 
-    def get_location(self, metadata):
+    def get_location(self, metadata: dict[str, str]) -> str | None:
         return None
 
-    def to_string(self, metadata):
-        warn(DeprecationWarning("This method was replaced by get_title", stacklevel=2))
-        return self.get_title()
+    def to_string(self, metadata: dict[str, str | None]) -> str:
+        warn(DeprecationWarning("This method was replaced by get_title"), stacklevel=2)
+        return self.get_title(metadata)
 
 
 class DefaultEvent(BaseEvent):
     key = "default"
 
-    def extract_metadata(self, data):
+    def extract_metadata(self, data: MutableMapping[str, Any]) -> dict[str, str]:
         message = strip(
             get_path(data, "logentry", "formatted") or get_path(data, "logentry", "message")
         )
 
         if message:
-            title = truncatechars(message.splitlines()[0], 100)
+            title = truncatechars(message.splitlines()[0], 256)
         else:
             title = "<unlabeled event>"
 

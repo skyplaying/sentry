@@ -3,7 +3,7 @@ from django import forms
 
 from sentry.exceptions import PluginError
 from sentry.plugins.base.v2 import Plugin2
-from sentry.testutils import TestCase
+from sentry.testutils.cases import TestCase
 
 
 class DummyForm(forms.Form):
@@ -11,15 +11,15 @@ class DummyForm(forms.Form):
     textarea = forms.CharField(widget=forms.Textarea, required=False)
     password = forms.CharField(label="A Password", widget=forms.PasswordInput)
     choice = forms.ChoiceField(choices=((1, "one"), (2, "two")))
-    url = forms.URLField()
+    url = forms.URLField(assume_scheme="https")
 
 
 class DummyPlugin(Plugin2):
-    project_conf_form = DummyForm()
+    project_conf_form = DummyForm
 
 
 class ConfigTest(TestCase):
-    def test_get_config(self):
+    def test_get_config(self) -> None:
         project = self.create_project()
         plugin = DummyPlugin()
         config = plugin.get_config(project=project)
@@ -71,7 +71,7 @@ class ConfigTest(TestCase):
             "type": "url",
         }
 
-    def test_validate_url(self):
+    def test_validate_url(self) -> None:
         project = self.create_project()
         plugin = DummyPlugin()
         with pytest.raises(PluginError):

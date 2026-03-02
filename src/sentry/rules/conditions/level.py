@@ -1,28 +1,22 @@
-from collections import OrderedDict
+from __future__ import annotations
+
+from collections.abc import Callable, Sequence
+from typing import Any
 
 from django import forms
 
 from sentry.constants import LOG_LEVELS, LOG_LEVELS_MAP
+from sentry.rules import LEVEL_MATCH_CHOICES as MATCH_CHOICES
+from sentry.rules import EventState, MatchType
 from sentry.rules.conditions.base import EventCondition
+from sentry.rules.history.preview_strategy import get_dataset_columns
+from sentry.services.eventstore.models import GroupEvent
+from sentry.snuba.dataset import Dataset
+from sentry.snuba.events import Columns
+from sentry.types.condition_activity import ConditionActivity
 
-LEVEL_CHOICES = OrderedDict(
-    [(f"{k}", v) for k, v in sorted(LOG_LEVELS.items(), key=lambda x: x[0], reverse=True)]
-)
-
-
-class MatchType:
-    EQUAL = "eq"
-    LESS_OR_EQUAL = "lte"
-    GREATER_OR_EQUAL = "gte"
-
-
-MATCH_CHOICES = OrderedDict(
-    [
-        (MatchType.EQUAL, "equal to"),
-        (MatchType.LESS_OR_EQUAL, "less than or equal to"),
-        (MatchType.GREATER_OR_EQUAL, "greater than or equal to"),
-    ]
-)
+key: Callable[[tuple[int, str]], int] = lambda x: x[0]
+LEVEL_CHOICES = {f"{k}": v for k, v in sorted(LOG_LEVELS.items(), key=key, reverse=True)}
 
 
 class LevelEventForm(forms.Form):
@@ -31,25 +25,25 @@ class LevelEventForm(forms.Form):
 
 
 class LevelCondition(EventCondition):
-    form_cls = LevelEventForm
+    id = "sentry.rules.conditions.level.LevelCondition"
     label = "The event's level is {match} {level}"
     form_fields = {
         "level": {"type": "choice", "choices": list(LEVEL_CHOICES.items())},
         "match": {"type": "choice", "choices": list(MATCH_CHOICES.items())},
     }
 
-    def passes(self, event, state, **kwargs):
-        desired_level = self.get_option("level")
+    def _passes(self, level_name: str) -> bool:
+        desired_level_raw = self.get_option("level")
         desired_match = self.get_option("match")
 
-        if not (desired_level and desired_match):
+        if not (desired_level_raw and desired_match):
             return False
 
-        desired_level = int(desired_level)
+        desired_level = int(desired_level_raw)
         # Fetch the event level from the tags since event.level is
         # event.group.level which may have changed
         try:
-            level = LOG_LEVELS_MAP[event.get_tag("level")]
+            level: int = LOG_LEVELS_MAP[level_name]
         except KeyError:
             return False
 
@@ -61,9 +55,31 @@ class LevelCondition(EventCondition):
             return level <= desired_level
         return False
 
-    def render_label(self):
+    def passes(self, event: GroupEvent, state: EventState, **kwargs: Any) -> bool:
+        tag = event.get_tag("level")
+        return tag is not None and self._passes(tag)
+
+    def render_label(self) -> str:
         data = {
             "level": LEVEL_CHOICES[self.data["level"]],
             "match": MATCH_CHOICES[self.data["match"]],
         }
         return self.label.format(**data)
+
+    def get_event_columns(self) -> dict[Dataset, Sequence[str]]:
+        columns: dict[Dataset, Sequence[str]] = get_dataset_columns(
+            [Columns.TAGS_KEY, Columns.TAGS_VALUE]
+        )
+        return columns
+
+    def passes_activity(
+        self, condition_activity: ConditionActivity, event_map: dict[str, Any]
+    ) -> bool:
+        try:
+            level = event_map[condition_activity.data["event_id"]]["tags"]["level"]
+            return self._passes(level)
+        except (TypeError, KeyError):
+            return False
+
+    def get_form_instance(self) -> LevelEventForm:
+        return LevelEventForm(self.data)

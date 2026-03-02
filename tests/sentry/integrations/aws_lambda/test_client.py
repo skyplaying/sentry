@@ -1,22 +1,23 @@
+from unittest.mock import MagicMock, patch
+
 import boto3
+import orjson
 
 from sentry.integrations.aws_lambda.client import gen_aws_client
-from sentry.testutils import TestCase
-from sentry.testutils.helpers.faux import Mock
-from sentry.utils import json
-from sentry.utils.compat.mock import MagicMock, patch
+from sentry.testutils.cases import TestCase
+from sentry.testutils.silo import all_silo_test
 
 
+@all_silo_test
 class AwsLambdaClientTest(TestCase):
     @patch.object(boto3, "Session")
     @patch.object(boto3, "client")
-    def test_simple(self, mock_get_client, mock_get_session):
+    def test_simple(self, mock_get_client: MagicMock, mock_get_session: MagicMock) -> None:
         account_number = "599817902985"
         region = "us-west-1"
         aws_external_id = "124-343"
 
-        mock_client = Mock()
-        mock_get_client.return_value = mock_client
+        mock_client = mock_get_client.return_value
         credentials = {
             "AccessKeyId": "my_access_key_id",
             "SecretAccessKey": "my_secret_access_key",
@@ -24,10 +25,8 @@ class AwsLambdaClientTest(TestCase):
         }
         mock_client.assume_role = MagicMock(return_value={"Credentials": credentials})
 
-        mock_session = Mock()
+        mock_session = mock_get_session.return_value
         mock_session.client = MagicMock(return_value="expected_output")
-
-        mock_get_session.return_value = mock_session
 
         assert "expected_output" == gen_aws_client(account_number, region, aws_external_id)
 
@@ -44,7 +43,7 @@ class AwsLambdaClientTest(TestCase):
             RoleSessionName="Sentry",
             RoleArn=role_arn,
             ExternalId=aws_external_id,
-            Policy=json.dumps(
+            Policy=orjson.dumps(
                 {
                     "Version": "2012-10-17",
                     "Statement": [
@@ -65,7 +64,7 @@ class AwsLambdaClientTest(TestCase):
                         },
                     ],
                 }
-            ),
+            ).decode(),
         )
 
         mock_get_session.assert_called_once_with(

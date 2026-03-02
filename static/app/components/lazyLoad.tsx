@@ -1,158 +1,162 @@
-import * as React from 'react';
-import styled from '@emotion/styled';
+import {Component, Suspense, useEffect, useState, type ErrorInfo} from 'react';
 import * as Sentry from '@sentry/react';
 
-import LoadingError from 'app/components/loadingError';
-import LoadingIndicator from 'app/components/loadingIndicator';
-import {t} from 'app/locale';
-import {isWebpackChunkLoadingError} from 'app/utils';
-import retryableImport from 'app/utils/retryableImport';
+import {Container, Flex} from '@sentry/scraps/layout';
 
-type PromisedImport<C> = Promise<{default: C}>;
+import LoadingError from 'sentry/components/loadingError';
+import LoadingIndicator from 'sentry/components/loadingIndicator';
+import {t} from 'sentry/locale';
+import {isWebpackChunkLoadingError} from 'sentry/utils';
 
-type Component = React.ComponentType<any>;
-
-type Props<C extends Component> = Omit<
-  React.ComponentProps<C>,
-  'hideBusy' | 'hideError' | 'component' | 'route'
-> & {
-  hideBusy?: boolean;
-  hideError?: boolean;
+type Props<C extends React.LazyExoticComponent<C>> = React.ComponentProps<C> & {
   /**
-   * Function that returns a promise of a React.Component
+   * Wrap the component with `lazy()` before passing it to LazyLoad.
+   * This should be declared outside of the render funciton.
    */
-  component?: () => PromisedImport<C>;
+  LazyComponent: C;
+
   /**
-   * Also accepts a route object from react-router that has a `componentPromise` property
+   * Override the default fallback component.
+   *
+   * Try not to load too many unique components for the fallback!
    */
-  route?: {componentPromise: () => PromisedImport<C>};
+  loadingFallback?: React.ReactNode | undefined;
 };
 
-type State<C extends Component> = {
-  Component: C | null;
-  error: any | null;
-};
+function DeferredLoader({
+  children,
+  fallback = null,
+}: {
+  children: React.ReactNode;
+  fallback?: React.ReactNode;
+}) {
+  const [loaded, setLoaded] = useState(false);
 
-class LazyLoad<C extends Component> extends React.Component<Props<C>, State<C>> {
-  state: State<C> = {
-    Component: null,
-    error: null,
-  };
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setLoaded(true);
+    }, 300);
 
-  componentDidMount() {
-    this.fetchComponent();
+    return () => clearTimeout(timer);
+  }, []);
+
+  return loaded ? children : fallback;
+}
+
+/**
+ * LazyLoad is used to dynamically load codesplit components via a `import`
+ * call. This is primarily used in our routing tree.
+ *
+ * Outside the render path
+ * const LazyComponent = lazy(() => import('./myComponent'))
+ *
+ * <LazyLoad LazyComponent={LazyComponent} someComponentProps={...} />
+ */
+function LazyLoad<C extends React.LazyExoticComponent<any>>({
+  LazyComponent,
+  loadingFallback,
+  ...props
+}: Props<C>) {
+  return (
+    <ErrorBoundary>
+      <Suspense
+        fallback={
+          loadingFallback ?? (
+            <Flex flex="1" align="center" column="1 / -1">
+              <DeferredLoader fallback={<LoadingIndicator style={{display: 'none'}} />}>
+                <LoadingIndicator />
+              </DeferredLoader>
+            </Flex>
+          )
+        }
+      >
+        {/* Props are strongly typed when passed in, but seem to conflict with LazyExoticComponent */}
+        <LazyComponent {...(props as any)} />
+      </Suspense>
+    </ErrorBoundary>
+  );
+}
+
+interface ErrorBoundaryState {
+  error: Error | null;
+  hasError: boolean;
+}
+
+// Error boundaries currently have to be classes.
+class ErrorBoundary extends Component<{children: React.ReactNode}, ErrorBoundaryState> {
+  static getDerivedStateFromError(error: Error) {
+    return {
+      hasError: true,
+      error,
+    };
   }
 
-  UNSAFE_componentWillReceiveProps(nextProps: Props<C>) {
-    // No need to refetch when component does not change
-    if (nextProps.component && nextProps.component === this.props.component) {
-      return;
+  state = {hasError: false, error: null};
+
+  componentDidMount(): void {
+    // Reset error state on HMR (Hot Module Replacement) in development
+    // This ensures that when React Fast Refresh occurs, the error boundary
+    // doesn't persist stale error state after code fixes
+    if (process.env.NODE_ENV === 'development') {
+      if (typeof module !== 'undefined' && module.hot) {
+        module.hot.accept(this.handleRetry);
+
+        // Reset lazyload state itself on mount / hot replacement
+        this.handleRetry();
+      }
     }
-
-    // This is to handle the following case:
-    // <Route path="a/">
-    //   <Route path="b/" component={LazyLoad} componentPromise={...} />
-    //   <Route path="c/" component={LazyLoad} componentPromise={...} />
-    // </Route>
-    //
-    // `LazyLoad` will get not fully remount when we switch between `b` and `c`,
-    // instead will just re-render.  Refetch if route paths are different
-    if (nextProps.route && nextProps.route === this.props.route) {
-      return;
-    }
-
-    // If `this.fetchComponent` is not in callback,
-    // then there's no guarantee that new Component will be rendered
-    this.setState(
-      {
-        Component: null,
-      },
-      this.fetchComponent
-    );
   }
 
-  componentDidCatch(error: any) {
-    Sentry.captureException(error);
-    this.handleError(error);
-  }
-
-  get componentGetter() {
-    return this.props.component ?? this.props.route?.componentPromise;
-  }
-
-  handleFetchError = (error: any) => {
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     Sentry.withScope(scope => {
       if (isWebpackChunkLoadingError(error)) {
         scope.setFingerprint(['webpack', 'error loading chunk']);
       }
-      Sentry.captureException(error);
-    });
-    this.handleError(error);
-  };
+      try {
+        // Based on https://github.com/getsentry/sentry-javascript/blob/6f4ad562c469f546f1098136b65583309d03487b/packages/react/src/errorboundary.tsx#L75-L85
+        const errorBoundaryError = new Error(error.message);
+        errorBoundaryError.name = `React ErrorBoundary ${errorBoundaryError.name}`;
+        errorBoundaryError.stack = errorInfo.componentStack!;
 
-  handleError = (error: any) => {
+        // This will mutate `error` and get captured to Sentry in `RouteError`
+        error.cause = errorBoundaryError;
+      } catch {
+        // Some browsers won't let you write to Error instance
+        scope.setExtra('errorInfo', errorInfo);
+      } finally {
+        Sentry.captureException(error);
+      }
+    });
+
     // eslint-disable-next-line no-console
     console.error(error);
-    this.setState({error});
-  };
+  }
 
-  fetchComponent = async () => {
-    const getComponent = this.componentGetter;
-
-    if (getComponent === undefined) {
-      return;
+  componentWillUnmount(): void {
+    // Clean up HMR listeners to prevent memory leaks
+    if (process.env.NODE_ENV === 'development') {
+      if (typeof module !== 'undefined' && module.hot) {
+        module.hot.dispose(this.handleRetry);
+      }
     }
+  }
 
-    try {
-      this.setState({Component: await retryableImport(getComponent)});
-    } catch (err) {
-      this.handleFetchError(err);
-    }
-  };
-
-  fetchRetry = () => {
-    this.setState({error: null}, this.fetchComponent);
-  };
+  // Reset `hasError` so that we attempt to render `this.props.children` again
+  handleRetry = () => this.setState({hasError: false});
 
   render() {
-    const {Component, error} = this.state;
-    const {hideBusy, hideError, component: _component, ...otherProps} = this.props;
-
-    if (error && !hideError) {
+    if (this.state.hasError) {
       return (
-        <LoadingErrorContainer>
+        <Container flex="1">
           <LoadingError
-            onRetry={this.fetchRetry}
+            onRetry={this.handleRetry}
             message={t('There was an error loading a component.')}
           />
-        </LoadingErrorContainer>
+        </Container>
       );
     }
-
-    if (!Component && !hideBusy) {
-      return (
-        <LoadingContainer>
-          <LoadingIndicator />
-        </LoadingContainer>
-      );
-    }
-
-    if (Component === null) {
-      return null;
-    }
-
-    return <Component {...(otherProps as React.ComponentProps<C>)} />;
+    return this.props.children;
   }
 }
-
-const LoadingContainer = styled('div')`
-  display: flex;
-  flex: 1;
-  align-items: center;
-`;
-
-const LoadingErrorContainer = styled('div')`
-  flex: 1;
-`;
 
 export default LazyLoad;

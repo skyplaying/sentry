@@ -1,3 +1,5 @@
+from rest_framework.request import Request
+
 from sentry.plugins.bases.issue2 import IssuePlugin2
 
 
@@ -16,20 +18,23 @@ class ExampleIssueTrackingPlugin(IssuePlugin2):
     conf_title = title
     conf_key = "example-issue"
 
-    def is_configured(self, request, project, **kwargs):
+    def is_configured(self, project) -> bool:
         return bool(self.get_option("repo", project))
 
-    def get_new_issue_fields(self, request, group, event, **kwargs):
+    def get_new_issue_fields(self, request: Request, group, event, **kwargs):
         fields = super().get_new_issue_fields(request, group, event, **kwargs)
-        return [{"name": "tracker_url", "label": "Issue Tracker URL", "type": "text"}] + fields
+        return [
+            {"name": "tracker_url", "label": "Issue Tracker URL", "type": "text"},
+            *fields,
+        ]
 
-    def create_issue(self, request, group, form_data, **kwargs):
+    def create_issue(self, request: Request, group, form_data) -> str:
         return "1"
 
-    def get_issue_label(self, group, issue_id, **kwargs):
+    def get_issue_label(self, group, issue_id: str) -> str:
         return "Example-%s" % issue_id
 
-    def get_issue_url(self, group, issue_id, **kwargs):
+    def get_issue_url(self, group, issue_id: str) -> str:
         tracker_url = self.get_option("tracker_url", group.project)
 
         return f"{tracker_url}?issueID={issue_id}"

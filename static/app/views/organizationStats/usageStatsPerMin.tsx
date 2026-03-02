@@ -1,20 +1,21 @@
 import styled from '@emotion/styled';
 
-import AsyncComponent from 'app/components/asyncComponent';
-import {t} from 'app/locale';
-import {DataCategory, Organization} from 'app/types';
+import {t} from 'sentry/locale';
+import type {DataCategory} from 'sentry/types/core';
+import {DataCategoryExact, Outcome} from 'sentry/types/core';
+import type {Organization} from 'sentry/types/organization';
+import getApiUrl from 'sentry/utils/api/getApiUrl';
+import {useApiQuery} from 'sentry/utils/queryClient';
 
-import {Outcome, UsageSeries} from './types';
+import type {UsageSeries} from './types';
 import {formatUsageWithUnits, getFormatUsageOptions} from './utils';
 
 type Props = {
-  organization: Organization;
   dataCategory: DataCategory;
-} & AsyncComponent['props'];
-
-type State = {
-  orgStats: UsageSeries | undefined;
-} & AsyncComponent['state'];
+  dataCategoryApiName: DataCategoryExact;
+  organization: Organization;
+  projectIds: number[];
+};
 
 /**
  * Making 1 extra API call to display this number isn't very efficient.
@@ -26,47 +27,60 @@ type State = {
  * We're going with this approach for simplicity sake. By keeping the range
  * as small as possible, this call is quite fast.
  */
-class UsageStatsPerMin extends AsyncComponent<Props, State> {
-  getEndpoints(): ReturnType<AsyncComponent['getEndpoints']> {
-    return [['orgStats', this.endpointPath, {query: this.endpointQuery}]];
-  }
-
-  get endpointPath() {
-    const {organization} = this.props;
-    return `/organizations/${organization.slug}/stats_v2/`;
-  }
-
-  get endpointQuery() {
-    return {
-      statsPeriod: '5m', // Any value <1h will return current hour's data
-      interval: '1m',
-      groupBy: ['category', 'outcome'],
-      field: ['sum(quantity)'],
-    };
-  }
-
-  get minuteData(): string | undefined {
-    const {dataCategory} = this.props;
-    const {loading, error, orgStats} = this.state;
-
-    if (loading || error || !orgStats || orgStats.intervals.length === 0) {
-      return undefined;
+function UsageStatsPerMin({
+  organization,
+  projectIds,
+  dataCategory,
+  dataCategoryApiName,
+}: Props) {
+  const {
+    data: orgStats,
+    isPending,
+    isError,
+  } = useApiQuery<UsageSeries>(
+    [
+      getApiUrl(`/organizations/$organizationIdOrSlug/stats_v2/`, {
+        path: {organizationIdOrSlug: organization.slug},
+      }),
+      {
+        query: {
+          statsPeriod: '5m', // Any value <1h will return current hour's data
+          interval: '1m',
+          groupBy: ['category', 'outcome'],
+          project: projectIds,
+          field: ['sum(quantity)'],
+        },
+      },
+    ],
+    {
+      staleTime: 0,
     }
+  );
 
+  if (isPending || isError || !orgStats || orgStats.intervals.length === 0) {
+    return null;
+  }
+
+  const minuteData = (): string | undefined => {
     // The last minute in the series is still "in progress"
     // Read data from 2nd last element for the latest complete minute
     const {intervals, groups} = orgStats;
     const lastMin = Math.max(intervals.length - 2, 0);
 
     const eventsLastMin = groups.reduce((count, group) => {
-      const {outcome, category} = group.by;
+      const {category, outcome} = group.by;
 
-      // HACK: The backend enum are singular, but the frontend enums are plural
-      if (!dataCategory.includes(`${category}`) || outcome !== Outcome.ACCEPTED) {
-        return count;
+      if (dataCategoryApiName === DataCategoryExact.SPAN_INDEXED) {
+        if (category !== DataCategoryExact.SPAN_INDEXED || outcome !== Outcome.ACCEPTED) {
+          return count;
+        }
+      } else {
+        if (dataCategoryApiName !== category || outcome !== Outcome.ACCEPTED) {
+          return count;
+        }
       }
 
-      count += group.series['sum(quantity)'][lastMin];
+      count += group.series['sum(quantity)']![lastMin]!;
       return count;
     }, 0);
 
@@ -75,25 +89,19 @@ class UsageStatsPerMin extends AsyncComponent<Props, State> {
       dataCategory,
       getFormatUsageOptions(dataCategory)
     );
-  }
+  };
 
-  renderComponent() {
-    if (!this.minuteData) {
-      return null;
-    }
-
-    return (
-      <Wrapper>
-        {this.minuteData} {t('in last min')}
-      </Wrapper>
-    );
-  }
+  return (
+    <Wrapper>
+      {minuteData()} {t('in last min')}
+    </Wrapper>
+  );
 }
 
 export default UsageStatsPerMin;
 
 const Wrapper = styled('div')`
   display: inline-block;
-  color: ${p => p.theme.success};
-  font-size: ${p => p.theme.fontSizeMedium};
+  color: ${p => p.theme.tokens.content.success};
+  font-size: ${p => p.theme.font.size.md};
 `;

@@ -1,10 +1,9 @@
+import pytest
 from django.core.signing import BadSignature
-from django.utils.http import is_safe_url
 
+from fixtures.sudo_testutils import BaseTestCase
 from sudo.settings import COOKIE_AGE, COOKIE_NAME
 from sudo.utils import grant_sudo_privileges, has_sudo_privileges, revoke_sudo_privileges
-
-from .base import BaseTestCase
 
 
 class GrantSudoPrivilegesTestCase(BaseTestCase):
@@ -16,23 +15,23 @@ class GrantSudoPrivilegesTestCase(BaseTestCase):
         self.assertEqual(request._sudo_token, token)
         self.assertEqual(request._sudo_max_age, max_age)
 
-    def test_grant_token_not_logged_in(self):
-        with self.assertRaises(ValueError):
+    def test_grant_token_not_logged_in(self) -> None:
+        with pytest.raises(ValueError):
             grant_sudo_privileges(self.request)
 
-    def test_grant_token_default_max_age(self):
+    def test_grant_token_default_max_age(self) -> None:
         self.login()
         token = grant_sudo_privileges(self.request)
         self.assertIsNotNone(token)
         self.assertRequestHasToken(self.request, COOKIE_AGE)
 
-    def test_grant_token_explicit_max_age(self):
+    def test_grant_token_explicit_max_age(self) -> None:
         self.login()
         token = grant_sudo_privileges(self.request, 60)
         self.assertIsNotNone(token)
         self.assertRequestHasToken(self.request, 60)
 
-    def test_without_user(self):
+    def test_without_user(self) -> None:
         delattr(self.request, "user")
         token = grant_sudo_privileges(self.request)
         self.assertIsNone(token)
@@ -43,11 +42,11 @@ class RevokeSudoPrivilegesTestCase(BaseTestCase):
         self.assertFalse(self.request._sudo)
         self.assertNotIn(COOKIE_NAME, self.request.session)
 
-    def test_revoke_sudo_privileges_noop(self):
+    def test_revoke_sudo_privileges_noop(self) -> None:
         revoke_sudo_privileges(self.request)
         self.assertRequestNotSudo(self.request)
 
-    def test_revoke_sudo_privileges(self):
+    def test_revoke_sudo_privileges(self) -> None:
         self.login()
         grant_sudo_privileges(self.request)
         revoke_sudo_privileges(self.request)
@@ -55,68 +54,50 @@ class RevokeSudoPrivilegesTestCase(BaseTestCase):
 
 
 class HasSudoPrivilegesTestCase(BaseTestCase):
-    def test_untouched(self):
+    def test_untouched(self) -> None:
         self.assertFalse(has_sudo_privileges(self.request))
 
-    def test_granted(self):
+    def test_granted(self) -> None:
         self.login()
         grant_sudo_privileges(self.request)
         self.assertTrue(has_sudo_privileges(self.request))
 
-    def test_revoked(self):
+    def test_revoked(self) -> None:
         self.login()
         grant_sudo_privileges(self.request)
         revoke_sudo_privileges(self.request)
         self.assertFalse(has_sudo_privileges(self.request))
 
-    def test_cookie_and_token_match(self):
+    def test_cookie_and_token_match(self) -> None:
         self.login()
 
-        def get_signed_cookie(key, salt="", max_age=None):
+        def get_signed_cookie(key, salt="", max_age=None) -> str:
             return "abc123"
 
         self.request.session[COOKIE_NAME] = "abc123"
         self.request.get_signed_cookie = get_signed_cookie
         self.assertTrue(has_sudo_privileges(self.request))
 
-    def test_cookie_and_token_mismatch(self):
+    def test_cookie_and_token_mismatch(self) -> None:
         self.login()
 
-        def get_signed_cookie(key, salt="", max_age=None):
+        def get_signed_cookie(key, salt="", max_age=None) -> str:
             return "nope"
 
         self.request.session[COOKIE_NAME] = "abc123"
+        self.request.get_signed_cookie = get_signed_cookie
         self.assertFalse(has_sudo_privileges(self.request))
 
-    def test_cookie_bad_signature(self):
+    def test_cookie_bad_signature(self) -> None:
         self.login()
 
         def get_signed_cookie(key, salt="", max_age=None):
             raise BadSignature
 
         self.request.session[COOKIE_NAME] = "abc123"
+        self.request.get_signed_cookie = get_signed_cookie
         self.assertFalse(has_sudo_privileges(self.request))
 
-    def test_missing_keys(self):
+    def test_missing_keys(self) -> None:
         self.login()
         self.assertFalse(has_sudo_privileges(self.request))
-
-
-class IsSafeUrlTestCase(BaseTestCase):
-    def test_success(self):
-        self.assertTrue(is_safe_url("/", allowed_hosts=None))
-        self.assertTrue(is_safe_url("/foo/", allowed_hosts=None))
-        self.assertTrue(is_safe_url("/", allowed_hosts={"example.com"}))
-        self.assertTrue(is_safe_url("http://example.com/foo", allowed_hosts={"example.com"}))
-
-    def test_failure(self):
-        self.assertFalse(is_safe_url(None, allowed_hosts=None))
-        self.assertFalse(is_safe_url("", allowed_hosts={""}))
-        self.assertFalse(is_safe_url("http://mattrobenolt.com/", allowed_hosts={"example.com"}))
-        self.assertFalse(is_safe_url("///example.com/", allowed_hosts=None))
-        self.assertFalse(is_safe_url("ftp://example.com", allowed_hosts={"example.com"}))
-        self.assertFalse(
-            is_safe_url("http://example.com\\@mattrobenolt.com", allowed_hosts={"example.com"})
-        )
-        self.assertFalse(is_safe_url("http:///example.com", allowed_hosts={"example.com"}))
-        self.assertFalse(is_safe_url("\x08//example.com", allowed_hosts={"example.com"}))

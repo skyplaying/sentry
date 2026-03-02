@@ -1,17 +1,18 @@
 import styled from '@emotion/styled';
 
-import Tooltip from 'app/components/tooltip';
-import {IconFire} from 'app/icons';
-import {t} from 'app/locale';
+import {IconFatal} from 'sentry/icons';
+import {t} from 'sentry/locale';
+import {useHasStreamlinedUI} from 'sentry/views/issueDetails/utils';
 
-const UnhandledTag = () => (
-  <Tooltip title={t('An unhandled error was detected in this Issue.')}>
+function UnhandledTag() {
+  const hasStreamlinedUI = useHasStreamlinedUI();
+  return (
     <UnhandledTagWrapper>
-      <StyledIconFire size="xs" color="red300" />
+      {!hasStreamlinedUI && <StyledIconFatal size="xs" variant="danger" />}
       {t('Unhandled')}
     </UnhandledTagWrapper>
-  </Tooltip>
-);
+  );
+}
 
 export default UnhandledTag;
 
@@ -19,9 +20,10 @@ const UnhandledTagWrapper = styled('div')`
   display: flex;
   align-items: center;
   white-space: nowrap;
-  color: ${p => p.theme.red300};
+  color: ${p => p.theme.tokens.content.danger};
 `;
 
-const StyledIconFire = styled(IconFire)`
+const StyledIconFatal = styled(IconFatal)`
+  margin-top: -2px;
   margin-right: 3px;
 `;

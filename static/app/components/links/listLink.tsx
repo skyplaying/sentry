@@ -1,106 +1,74 @@
-import * as React from 'react';
-import {Link as RouterLink, withRouter, WithRouterProps} from 'react-router';
+import {NavLink} from 'react-router-dom';
+import {css} from '@emotion/react';
 import styled from '@emotion/styled';
 import classNames from 'classnames';
-import {LocationDescriptor} from 'history';
-import omit from 'lodash/omit';
-import * as qs from 'query-string';
+import type {LocationDescriptor} from 'history';
 
-type DefaultProps = {
-  index: boolean;
-  activeClassName: string;
-  disabled: boolean;
-};
+import {locationDescriptorToTo} from 'sentry/utils/reactRouter6Compat/location';
+import normalizeUrl from 'sentry/utils/url/normalizeUrl';
+import {useLocation} from 'sentry/utils/useLocation';
 
-type LinkProps = Omit<React.ComponentProps<typeof RouterLink>, 'to'>;
-
-type Props = WithRouterProps &
-  Partial<DefaultProps> &
-  LinkProps & {
-    /**
-     * Link target. We don't want to expose the ToLocationFunction on this component.
-     */
-    to: LocationDescriptor;
-    query?: string;
-    // If supplied by parent component, decides whether link element
-    // is "active" or not ... overriding default behavior of strict
-    // route matching
-    isActive?: (location: LocationDescriptor, indexOnly?: boolean) => boolean;
-  };
-
-class ListLink extends React.Component<Props> {
-  static displayName = 'ListLink';
-
-  static defaultProps: DefaultProps = {
-    activeClassName: 'active',
-    index: false,
-    disabled: false,
-  };
-
-  isActive() {
-    const {isActive, to, query, index, router} = this.props;
-    const queryData = query ? qs.parse(query) : undefined;
-    const target: LocationDescriptor =
-      typeof to === 'string' ? {pathname: to, query: queryData} : to;
-
-    if (typeof isActive === 'function') {
-      return isActive(target, index);
-    }
-
-    return router.isActive(target, index);
-  }
-
-  getClassName = () => {
-    const _classNames = {};
-    const {className, activeClassName} = this.props;
-
-    if (className) {
-      _classNames[className] = true;
-    }
-
-    if (this.isActive() && activeClassName) {
-      _classNames[activeClassName] = true;
-    }
-
-    return classNames(_classNames);
-  };
-
-  render() {
-    const {index, children, to, disabled, ...props} = this.props;
-    const carriedProps = omit(
-      props,
-      'activeClassName',
-      'css',
-      'isActive',
-      'index',
-      'router',
-      'location'
-    );
-
-    return (
-      <StyledLi className={this.getClassName()} disabled={disabled}>
-        <RouterLink {...carriedProps} onlyActiveOnIndex={index} to={disabled ? '' : to}>
-          {children}
-        </RouterLink>
-      </StyledLi>
-    );
-  }
+interface ListLinkProps extends Omit<
+  React.DetailedHTMLProps<React.HTMLAttributes<HTMLAnchorElement>, HTMLAnchorElement>,
+  'href' | 'target' | 'as' | 'css' | 'ref'
+> {
+  /**
+   * Link target. We don't want to expose the ToLocationFunction on this component.
+   */
+  to: LocationDescriptor;
+  disabled?: boolean;
+  index?: boolean;
+  /**
+   * Should be supplied by the parent component
+   */
+  isActive?: (location: LocationDescriptor, indexOnly?: boolean) => boolean;
 }
 
-export default withRouter(ListLink);
+function ListLink({
+  children,
+  className,
+  isActive,
+  to,
+  index = false,
+  disabled = false,
+  ...props
+}: ListLinkProps) {
+  const location = useLocation();
+  const target = normalizeUrl(to);
+
+  const active =
+    isActive?.(target, index) ??
+    // XXX(epurkhiser): This is carry over from the react-router 3 days.
+    // There's probably a better way to detect active
+    location.pathname === (typeof target === 'string' ? target : target.pathname);
+
+  return (
+    <StyledLi className={classNames({active}, className)} disabled={disabled}>
+      <NavLink {...props} to={disabled ? '' : locationDescriptorToTo(target)}>
+        {children}
+      </NavLink>
+    </StyledLi>
+  );
+}
+
+export default ListLink;
 
 const StyledLi = styled('li', {
   shouldForwardProp: prop => prop !== 'disabled',
 })<{disabled?: boolean}>`
   ${p =>
     p.disabled &&
-    `
-   a {
-    color:${p.theme.disabled} !important;
-    pointer-events: none;
-    :hover {
-      color: ${p.theme.disabled}  !important;
-    }
-   }
-`}
+    css`
+      a {
+        color: ${p.theme.tokens.content.disabled} !important;
+        :hover {
+          color: ${p.theme.tokens.content.disabled} !important;
+        }
+        cursor: default !important;
+      }
+
+      a:active {
+        pointer-events: none;
+      }
+    `}
 `;

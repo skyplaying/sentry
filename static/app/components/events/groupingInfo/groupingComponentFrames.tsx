@@ -1,92 +1,88 @@
-import * as React from 'react';
+import {Fragment, useEffect, useState} from 'react';
 import styled from '@emotion/styled';
 
-import Button from 'app/components/button';
-import {IconAdd, IconSubtract} from 'app/icons';
-import {tct} from 'app/locale';
-import space from 'app/styles/space';
+import {Button} from '@sentry/scraps/button';
 
-import {GroupingComponentListItem} from './groupingComponent';
+import {IconAdd, IconSubtract} from 'sentry/icons';
+import {tct} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
 
-type DefaultProps = {
-  maxVisibleItems: number;
-};
-
-type Props = DefaultProps & {
+interface GroupingComponentFramesProps {
+  initialCollapsed: boolean;
   items: React.ReactNode[];
-};
+  maxVisibleItems?: number;
+}
 
-type State = {
-  collapsed: boolean;
-};
+function GroupingComponentFrames({
+  items,
+  maxVisibleItems = 2,
+  initialCollapsed,
+}: GroupingComponentFramesProps) {
+  const [collapsed, setCollapsed] = useState(initialCollapsed);
+  const isCollapsible = items.length > maxVisibleItems;
 
-class GroupingComponentFrames extends React.Component<Props, State> {
-  static defaultProps: DefaultProps = {
-    maxVisibleItems: 2,
-  };
+  useEffect(() => {
+    // eslint-disable-next-line react-you-might-not-need-an-effect/no-derived-state
+    setCollapsed(initialCollapsed);
+  }, [initialCollapsed]);
 
-  state: State = {
-    collapsed: true,
-  };
+  return (
+    <Fragment>
+      {items.map((item, index) => {
+        if (!collapsed || index < maxVisibleItems) {
+          return (
+            <GroupingComponentListItem isCollapsible={isCollapsible} key={index}>
+              {item}
+            </GroupingComponentListItem>
+          );
+        }
 
-  render() {
-    const {items, maxVisibleItems} = this.props;
-    const {collapsed} = this.state;
-    const isCollapsible = items.length > maxVisibleItems;
+        if (index === maxVisibleItems) {
+          return (
+            <GroupingComponentListItem key={index}>
+              <ToggleCollapse
+                size="sm"
+                priority="link"
+                icon={<IconAdd legacySize="8px" />}
+                onClick={() => setCollapsed(false)}
+              >
+                {tct('show [numberOfFrames] similar', {
+                  numberOfFrames: items.length - maxVisibleItems,
+                })}
+              </ToggleCollapse>
+            </GroupingComponentListItem>
+          );
+        }
 
-    return (
-      <React.Fragment>
-        {items.map((item, index) => {
-          if (!collapsed || index < maxVisibleItems) {
-            return (
-              <GroupingComponentListItem isCollapsible={isCollapsible} key={index}>
-                {item}
-              </GroupingComponentListItem>
-            );
-          }
+        return null;
+      })}
 
-          if (index === maxVisibleItems) {
-            return (
-              <GroupingComponentListItem key={index}>
-                <ToggleCollapse
-                  size="small"
-                  priority="link"
-                  icon={<IconAdd size="8px" />}
-                  onClick={() => this.setState({collapsed: false})}
-                >
-                  {tct('show [numberOfFrames] similiar', {
-                    numberOfFrames: items.length - maxVisibleItems,
-                  })}
-                </ToggleCollapse>
-              </GroupingComponentListItem>
-            );
-          }
-
-          return null;
-        })}
-
-        {!collapsed && items.length > maxVisibleItems && (
-          <GroupingComponentListItem>
-            <ToggleCollapse
-              size="small"
-              priority="link"
-              icon={<IconSubtract size="8px" />}
-              onClick={() => this.setState({collapsed: true})}
-            >
-              {tct('collapse [numberOfFrames] similiar', {
-                numberOfFrames: items.length - maxVisibleItems,
-              })}
-            </ToggleCollapse>
-          </GroupingComponentListItem>
-        )}
-      </React.Fragment>
-    );
-  }
+      {!collapsed && items.length > maxVisibleItems && (
+        <GroupingComponentListItem>
+          <ToggleCollapse
+            size="sm"
+            priority="link"
+            icon={<IconSubtract legacySize="8px" />}
+            onClick={() => setCollapsed(true)}
+          >
+            {tct('collapse [numberOfFrames] similar', {
+              numberOfFrames: items.length - maxVisibleItems,
+            })}
+          </ToggleCollapse>
+        </GroupingComponentListItem>
+      )}
+    </Fragment>
+  );
 }
 
 const ToggleCollapse = styled(Button)`
   margin: ${space(0.5)} 0;
-  color: ${p => p.theme.linkColor};
+  color: ${p => p.theme.tokens.interactive.link.accent.rest};
+`;
+
+export const GroupingComponentListItem = styled('li')<{isCollapsible?: boolean}>`
+  padding: 0;
+  margin: ${space(0.25)} 0 ${space(0.25)} ${space(1.5)};
 `;
 
 export default GroupingComponentFrames;

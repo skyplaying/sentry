@@ -1,127 +1,154 @@
 import {Fragment} from 'react';
 import styled from '@emotion/styled';
 
-import UserAvatar from 'app/components/avatar/userAvatar';
-import CommitLink from 'app/components/commitLink';
-import {BannerContainer, BannerSummary} from 'app/components/events/styles';
-import TimeSince from 'app/components/timeSince';
-import Version from 'app/components/version';
-import {IconCheckmark} from 'app/icons';
-import {t, tct} from 'app/locale';
-import space from 'app/styles/space';
-import {
-  GroupActivity,
-  GroupActivitySetByResolvedInRelease,
-  GroupActivityType,
-  ResolutionStatusDetails,
-} from 'app/types';
+import {UserAvatar} from '@sentry/scraps/avatar';
+
+import CommitLink from 'sentry/components/commitLink';
+import {BannerContainer, BannerSummary} from 'sentry/components/events/styles';
+import TimeSince from 'sentry/components/timeSince';
+import Version from 'sentry/components/version';
+import VersionHoverCard from 'sentry/components/versionHoverCard';
+import {IconCheckmark} from 'sentry/icons';
+import {t, tct} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {GroupActivity, ResolvedStatusDetails} from 'sentry/types/group';
+import {GroupActivityType} from 'sentry/types/group';
+import type {Repository} from 'sentry/types/integrations';
+import type {Organization} from 'sentry/types/organization';
+import type {Project} from 'sentry/types/project';
 
 type Props = {
-  statusDetails: ResolutionStatusDetails;
-  projectId: string;
+  organization: Organization;
+  project: Project;
+  // TODO(ts): This should be a union type `IgnoredStatusDetails | ResolvedStatusDetails`
+  statusDetails: ResolvedStatusDetails;
   activities?: GroupActivity[];
 };
 
-function renderReason(
-  statusDetails: ResolutionStatusDetails,
-  projectId: string,
-  activities: GroupActivity[]
-) {
+export function renderResolutionReason({
+  statusDetails,
+  project,
+  organization,
+  activities = [],
+  hasStreamlinedUI = false,
+}: Props & {hasStreamlinedUI?: boolean}) {
+  const VersionComponent = hasStreamlinedUI ? StreamlinedVersion : Version;
+  const CommitLinkComponent = hasStreamlinedUI ? StreamlinedCommitLink : CommitLink;
+
   const actor = statusDetails.actor ? (
     <strong>
-      <UserAvatar user={statusDetails.actor} size={20} className="avatar" />
-      <span style={{marginLeft: 5}}>{statusDetails.actor.name}</span>
+      {!hasStreamlinedUI && (
+        <UserAvatar user={statusDetails.actor} size={20} className="avatar" />
+      )}
+      <span style={{marginLeft: hasStreamlinedUI ? 0 : 5}}>
+        {statusDetails.actor.name}
+      </span>
     </strong>
   ) : null;
 
   const relevantActivity = activities.find(
     activity => activity.type === GroupActivityType.SET_RESOLVED_IN_RELEASE
-  ) as GroupActivitySetByResolvedInRelease | undefined;
+  );
 
-  const currentReleaseVersion = relevantActivity?.data.current_release_version!;
-
-  if (statusDetails.inNextRelease && statusDetails.actor) {
-    return tct('[actor] marked this issue as resolved in the upcoming release.', {
-      actor,
-    });
-  } else if (statusDetails.inNextRelease) {
-    return t('This issue has been marked as resolved in the upcoming release.');
-  } else if (statusDetails.inRelease && statusDetails.actor) {
-    return currentReleaseVersion
+  // Resolved in next release has current_release_version (semver only)
+  if (relevantActivity && 'current_release_version' in relevantActivity.data) {
+    const releaseVersion =
+      statusDetails.inRelease ?? relevantActivity.data.current_release_version;
+    const version = (
+      <VersionHoverCard
+        organization={organization}
+        projectSlug={project.slug}
+        releaseVersion={releaseVersion}
+      >
+        <VersionComponent version={releaseVersion} projectId={project.id} />
+      </VersionHoverCard>
+    );
+    return statusDetails.actor
       ? tct('[actor] marked this issue as resolved in versions greater than [version].', {
           actor,
-          version: (
-            <Version
-              version={currentReleaseVersion}
-              projectId={projectId}
-              tooltipRawVersion
-            />
-          ),
+          version,
         })
-      : tct('[actor] marked this issue as resolved in version [version].', {
-          actor,
-          version: (
-            <Version
-              version={statusDetails.inRelease}
-              projectId={projectId}
-              tooltipRawVersion
-            />
-          ),
-        });
-  } else if (statusDetails.inRelease) {
-    return currentReleaseVersion
-      ? tct(
+      : tct(
           'This issue has been marked as resolved in versions greater than [version].',
           {
-            version: (
-              <Version
-                version={currentReleaseVersion}
-                projectId={projectId}
-                tooltipRawVersion
-              />
-            ),
+            version,
           }
-        )
-      : tct('This issue has been marked as resolved in version [version].', {
-          version: (
-            <Version
-              version={statusDetails.inRelease}
-              projectId={projectId}
-              tooltipRawVersion
-            />
-          ),
-        });
-  } else if (!!statusDetails.inCommit) {
+        );
+  }
+
+  if (statusDetails.inNextRelease) {
+    return actor
+      ? tct('[actor] marked this issue as resolved in the upcoming release.', {
+          actor,
+        })
+      : t('This issue has been marked as resolved in the upcoming release.');
+  }
+  if (statusDetails.inRelease) {
+    const version = (
+      <VersionHoverCard
+        organization={organization}
+        projectSlug={project.slug}
+        releaseVersion={statusDetails.inRelease}
+      >
+        <VersionComponent version={statusDetails.inRelease} projectId={project.id} />
+      </VersionHoverCard>
+    );
+    return actor
+      ? tct('[actor] marked this issue as resolved in version [version].', {
+          actor,
+          version,
+        })
+      : tct('This issue has been marked as resolved in version [version].', {version});
+  }
+  if (statusDetails.inCommit) {
     return tct('This issue has been marked as resolved by [commit]', {
       commit: (
         <Fragment>
-          <CommitLink
+          <CommitLinkComponent
+            inline
+            showIcon={false}
             commitId={statusDetails.inCommit.id}
-            repository={statusDetails.inCommit.repository}
+            repository={statusDetails.inCommit.repository as Repository}
           />
-          <StyledTimeSince date={statusDetails.inCommit.dateCreated} />
+          {statusDetails.inCommit.dateCreated &&
+            (hasStreamlinedUI ? (
+              <Fragment>
+                {'('}
+                <StreamlinedTimeSince date={statusDetails.inCommit.dateCreated} />
+                {')'}
+              </Fragment>
+            ) : (
+              <StyledTimeSince date={statusDetails.inCommit.dateCreated} />
+            ))}
         </Fragment>
       ),
     });
   }
-  return t('This issue has been marked as resolved.');
+  return hasStreamlinedUI ? null : t('This issue has been marked as resolved.');
 }
 
-function ResolutionBox({statusDetails, projectId, activities = []}: Props) {
+function ResolutionBox(props: Props) {
   return (
     <BannerContainer priority="default">
       <BannerSummary>
-        <StyledIconCheckmark color="green300" />
-        <span>{renderReason(statusDetails, projectId, activities)}</span>
+        <StyledIconCheckmark variant="success" />
+        <span>{renderResolutionReason(props)}</span>
       </BannerSummary>
     </BannerContainer>
   );
 }
 
 const StyledTimeSince = styled(TimeSince)`
-  color: ${p => p.theme.gray300};
+  color: ${p => p.theme.tokens.content.secondary};
   margin-left: ${space(0.5)};
-  font-size: ${p => p.theme.fontSizeSmall};
+  font-size: ${p => p.theme.font.size.sm};
+`;
+
+const StreamlinedTimeSince = styled(TimeSince)`
+  color: ${p => p.theme.colors.green500};
+  font-size: inherit;
+  text-decoration-style: dotted;
+  text-decoration-color: ${p => p.theme.colors.green500};
 `;
 
 const StyledIconCheckmark = styled(IconCheckmark)`
@@ -129,9 +156,32 @@ const StyledIconCheckmark = styled(IconCheckmark)`
   margin-top: 0 !important;
   align-self: center;
 
-  @media (max-width: ${p => p.theme.breakpoints[0]}) {
+  @media (max-width: ${p => p.theme.breakpoints.sm}) {
     margin-top: ${space(0.5)} !important;
     align-self: flex-start;
+  }
+`;
+
+const StreamlinedVersion = styled(Version)`
+  color: ${p => p.theme.colors.green500};
+  font-weight: ${p => p.theme.font.weight.sans.medium};
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  &:hover {
+    color: ${p => p.theme.colors.green500};
+    text-decoration: none;
+  }
+`;
+
+const StreamlinedCommitLink = styled(CommitLink)`
+  color: ${p => p.theme.colors.green500};
+  font-weight: ${p => p.theme.font.weight.sans.medium};
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  margin-right: ${space(0.5)};
+  &:hover {
+    color: ${p => p.theme.colors.green500};
+    text-decoration: none;
   }
 `;
 

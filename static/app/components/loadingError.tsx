@@ -1,63 +1,40 @@
-import * as React from 'react';
-import styled from '@emotion/styled';
+import {Alert} from '@sentry/scraps/alert';
 
-import Alert from 'app/components/alert';
-import Button from 'app/components/button';
-import {Panel} from 'app/components/panels';
-import {IconInfo} from 'app/icons';
-import {t} from 'app/locale';
-import space from 'app/styles/space';
+import {t} from 'sentry/locale';
 
-type DefaultProps = {
-  message: React.ReactNode;
-};
-
-type Props = DefaultProps & {
+type Props = {
+  className?: string;
+  message?: React.ReactNode;
   onRetry?: () => void;
 };
 
 /**
- * Renders an Alert box of type "error". Renders a "Retry" button only if a `onRetry` callback is defined.
+ * Renders an Alert box of type "error". Renders a "Retry" button only if a
+ * `onRetry` callback is defined.
  */
-class LoadingError extends React.Component<Props> {
-  static defaultProps: DefaultProps = {
-    message: t('There was an error loading data.'),
-  };
-
-  shouldComponentUpdate() {
-    return false;
-  }
-
-  render() {
-    const {message, onRetry} = this.props;
-    return (
-      <StyledAlert type="error">
-        <Content>
-          <IconInfo size="lg" />
-          <div data-test-id="loading-error-message">{message}</div>
-          {onRetry && (
-            <Button onClick={onRetry} type="button" priority="default" size="small">
+function LoadingError({
+  className,
+  onRetry,
+  message = t('There was an error loading data.'),
+}: Props) {
+  return (
+    <Alert.Container>
+      <Alert
+        variant="danger"
+        data-test-id="loading-error"
+        className={className}
+        trailingItems={
+          onRetry && (
+            <Alert.Button onClick={onRetry} priority="default">
               {t('Retry')}
-            </Button>
-          )}
-        </Content>
-      </StyledAlert>
-    );
-  }
+            </Alert.Button>
+          )
+        }
+      >
+        {message}
+      </Alert>
+    </Alert.Container>
+  );
 }
 
 export default LoadingError;
-
-const StyledAlert = styled(Alert)`
-  ${/* sc-selector */ Panel} & {
-    border-radius: 0;
-    border-width: 1px 0;
-  }
-`;
-
-const Content = styled('div')`
-  display: grid;
-  grid-gap: ${space(1)};
-  grid-template-columns: min-content auto max-content;
-  align-items: center;
-`;

@@ -1,32 +1,23 @@
 __all__ = ["ReleaseHook"]
 
-from django.db import IntegrityError, transaction
+import logging
+
+from django.db import IntegrityError, router, transaction
+from django.http.response import HttpResponseBase
 from django.utils import timezone
+from rest_framework.request import Request
 
 from sentry.exceptions import HookValidationError
-from sentry.models import Activity, Release
+from sentry.models.activity import Activity
+from sentry.models.release import Release
+from sentry.types.activity import ActivityType
+
+logger = logging.getLogger(__name__)
 
 
 class ReleaseHook:
     def __init__(self, project):
         self.project = project
-
-    def start_release(self, version, **values):
-        if not Release.is_valid_version(version):
-            raise HookValidationError("Invalid release version: %s" % version)
-
-        try:
-            with transaction.atomic():
-                release = Release.objects.create(
-                    version=version, organization_id=self.project.organization_id, **values
-                )
-        except IntegrityError:
-            release = Release.objects.get(
-                version=version, organization_id=self.project.organization_id
-            )
-            release.update(**values)
-
-        release.add_project(self.project)
 
     # TODO(dcramer): this is being used by the release details endpoint, but
     # it'd be ideal if most if not all of this logic lived there, and this
@@ -42,7 +33,7 @@ class ReleaseHook:
 
         project = self.project
         try:
-            with transaction.atomic():
+            with transaction.atomic(router.db_for_write(Release)):
                 release = Release.objects.create(
                     organization_id=project.organization_id, version=version
                 )
@@ -61,7 +52,7 @@ class ReleaseHook:
 
         values.setdefault("date_released", timezone.now())
         try:
-            with transaction.atomic():
+            with transaction.atomic(router.db_for_write(Release)):
                 release = Release.objects.create(
                     version=version, organization_id=self.project.organization_id, **values
                 )
@@ -74,13 +65,19 @@ class ReleaseHook:
         release.add_project(self.project)
 
         Activity.objects.create(
-            type=Activity.RELEASE,
+            type=ActivityType.RELEASE.value,
             project=self.project,
             ident=Activity.get_version_ident(version),
             data={"version": version},
             datetime=values["date_released"],
         )
+        logger.info(
+            "heroku.plugin_release_update",
+            extra={
+                "project_id": self.project.id,
+            },
+        )
         self.set_refs(release=release, **values)
 
-    def handle(self, request):
+    def handle(self, request: Request) -> HttpResponseBase | None:
         raise NotImplementedError

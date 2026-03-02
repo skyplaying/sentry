@@ -1,7 +1,4 @@
-import SvgIcon from 'app/icons/svgIcon';
-import {Color} from 'app/utils/theme';
-
-export type IconProps = React.ComponentProps<typeof SvgIcon>;
+import type {SVGIconProps} from 'sentry/icons/svgIcon';
 
 export enum BreadcrumbLevelType {
   FATAL = 'fatal',
@@ -10,6 +7,7 @@ export enum BreadcrumbLevelType {
   INFO = 'info',
   DEBUG = 'debug',
   UNDEFINED = 'undefined',
+  LOG = 'log',
 }
 
 export enum BreadcrumbType {
@@ -28,56 +26,59 @@ export enum BreadcrumbType {
   SYSTEM = 'system',
   SESSION = 'session',
   TRANSACTION = 'transaction',
+  INIT = 'init',
+  NETWORK = 'network',
+  DEVICE = 'device',
+  CONNECTIVITY = 'connectivity',
 }
 
-type BreadcrumbTypeBase = {
+export enum BreadcrumbMessageFormat {
+  SQL = 'sql',
+}
+
+interface BreadcrumbTypeBase {
   level: BreadcrumbLevelType;
-  timestamp?: string; // it's recommended
+  // it's recommended
   category?: string | null;
+  event_id?: string | null;
   message?: string;
-  event_id?: string;
-};
+  messageFormat?: BreadcrumbMessageFormat.SQL;
+  messageRaw?: string;
+  timestamp?: string;
+}
 
-export type BreadcrumbTypeSystem = {
-  type: BreadcrumbType.SYSTEM;
-  action: string;
-  extras: Record<string, any>;
-} & BreadcrumbTypeBase;
-
-export type BreadcrumbTypeSession = {
-  type: BreadcrumbType.SESSION;
-  action: string;
-  extras: Record<string, any>;
-} & BreadcrumbTypeBase;
-
-export type BreadcrumbTypeNavigation = {
+export interface BreadcrumbTypeNavigation extends BreadcrumbTypeBase {
   type: BreadcrumbType.NAVIGATION;
-  data?: {
-    to?: string;
+  data?: null | {
     from?: string;
+    to?: string;
   };
-} & BreadcrumbTypeBase;
+}
 
-export type BreadcrumbTypeHTTP = {
+export interface BreadcrumbTypeHTTP extends BreadcrumbTypeBase {
   type: BreadcrumbType.HTTP;
-  data?: {
-    url?: string;
-    method?:
-      | 'POST'
-      | 'PUT'
-      | 'GET'
-      | 'HEAD'
-      | 'DELETE'
-      | 'CONNECT'
-      | 'OPTIONS'
-      | 'TRACE'
-      | 'PATCH';
-    status_code?: number;
-    reason?: string;
-  };
-} & BreadcrumbTypeBase;
+  data?:
+    | null
+    | Record<string, any>
+    // Though this is the expected type, more data can be attached to these crumbs
+    | {
+        method?:
+          | 'POST'
+          | 'PUT'
+          | 'GET'
+          | 'HEAD'
+          | 'DELETE'
+          | 'CONNECT'
+          | 'OPTIONS'
+          | 'TRACE'
+          | 'PATCH';
+        reason?: string;
+        status_code?: number;
+        url?: string;
+      };
+}
 
-export type BreadcrumbTypeDefault = {
+export interface BreadcrumbTypeDefault extends BreadcrumbTypeBase {
   type:
     | BreadcrumbType.INFO
     | BreadcrumbType.DEBUG
@@ -88,20 +89,27 @@ export type BreadcrumbTypeDefault = {
     | BreadcrumbType.WARNING
     | BreadcrumbType.ERROR
     | BreadcrumbType.DEFAULT
+    | BreadcrumbType.INIT
     | BreadcrumbType.SESSION
     | BreadcrumbType.SYSTEM
-    | BreadcrumbType.SESSION
     | BreadcrumbType.TRANSACTION;
-  data?: Record<string, any>;
-} & BreadcrumbTypeBase;
+  data?: Record<string, any> | null;
+}
 
 export type RawCrumb =
   | BreadcrumbTypeNavigation
   | BreadcrumbTypeHTTP
   | BreadcrumbTypeDefault;
 
-export type Crumb = RawCrumb & {
+interface BaseCrumb {
+  // This should not exist on the type and should instead live where the icon is used.
   description: string;
-  color: Color;
   id: number;
-};
+  variant: NonNullable<SVGIconProps['variant']>;
+}
+
+interface NavigationCrumb extends BaseCrumb, BreadcrumbTypeNavigation {}
+interface HTTPCrumb extends BaseCrumb, BreadcrumbTypeHTTP {}
+interface DefaultCrumb extends BaseCrumb, BreadcrumbTypeDefault {}
+
+export type Crumb = NavigationCrumb | HTTPCrumb | DefaultCrumb;

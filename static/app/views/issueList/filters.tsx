@@ -1,129 +1,91 @@
-import * as React from 'react';
-import {ClassNames} from '@emotion/react';
 import styled from '@emotion/styled';
 
-import GuideAnchor from 'app/components/assistant/guideAnchor';
-import space from 'app/styles/space';
-import {Organization, SavedSearch} from 'app/types';
+import {Flex} from '@sentry/scraps/layout';
 
-import IssueListDisplayOptions from './displayOptions';
-import IssueListSearchBar from './searchBar';
-import IssueListSortOptions from './sortOptions';
-import {TagValueLoader} from './types';
-import {IssueDisplayOptions} from './utils';
+import {DatePageFilter} from 'sentry/components/pageFilters/date/datePageFilter';
+import {EnvironmentPageFilter} from 'sentry/components/pageFilters/environment/environmentPageFilter';
+import PageFilterBar from 'sentry/components/pageFilters/pageFilterBar';
+import {ProjectPageFilter} from 'sentry/components/pageFilters/project/projectPageFilter';
+import {space} from 'sentry/styles/space';
+import IssueListSortOptions from 'sentry/views/issueList/actions/sortOptions';
+import {IssueSearch} from 'sentry/views/issueList/issueSearch';
+import {IssueViewSaveButton} from 'sentry/views/issueList/issueViews/issueViewSaveButton';
+import type {IssueSortOptions} from 'sentry/views/issueList/utils';
 
-type IssueListSearchBarProps = React.ComponentProps<typeof IssueListSearchBar>;
-
-type Props = {
-  organization: Organization;
-  savedSearch: SavedSearch;
-  display: IssueDisplayOptions;
-  sort: string;
-  query: string;
-  isSearchDisabled: boolean;
-  hasSessions: boolean;
-  selectedProjects: number[];
-
-  onDisplayChange: (display: string) => void;
-  onSortChange: (sort: string) => void;
+interface Props {
   onSearch: (query: string) => void;
-  onSidebarToggle: (event: React.MouseEvent) => void;
-  tagValueLoader: TagValueLoader;
-  tags: NonNullable<IssueListSearchBarProps['supportedTags']>;
-};
-
-class IssueListFilters extends React.Component<Props> {
-  render() {
-    const {
-      organization,
-      savedSearch,
-      query,
-      isSearchDisabled,
-      sort,
-      display,
-      hasSessions,
-      selectedProjects,
-
-      onSidebarToggle,
-      onSearch,
-      onSortChange,
-      onDisplayChange,
-      tagValueLoader,
-      tags,
-    } = this.props;
-    const isAssignedQuery = /\bassigned:/.test(query);
-    const hasIssuePercentDisplay = organization.features.includes(
-      'issue-percent-display'
-    );
-
-    return (
-      <SearchContainer hasIssuePercentDisplay={hasIssuePercentDisplay}>
-        <ClassNames>
-          {({css}) => (
-            <GuideAnchor
-              target="assigned_or_suggested_query"
-              disabled={!isAssignedQuery}
-              containerClassName={css`
-                width: 100%;
-              `}
-            >
-              <IssueListSearchBar
-                organization={organization}
-                query={query || ''}
-                sort={sort}
-                onSearch={onSearch}
-                disabled={isSearchDisabled}
-                excludeEnvironment
-                supportedTags={tags}
-                tagValueLoader={tagValueLoader}
-                savedSearch={savedSearch}
-                onSidebarToggle={onSidebarToggle}
-              />
-            </GuideAnchor>
-          )}
-        </ClassNames>
-
-        <DropdownsWrapper hasIssuePercentDisplay={hasIssuePercentDisplay}>
-          {hasIssuePercentDisplay && (
-            <IssueListDisplayOptions
-              onDisplayChange={onDisplayChange}
-              display={display}
-              hasSessions={hasSessions}
-              hasMultipleProjectsSelected={
-                selectedProjects.length !== 1 || selectedProjects[0] === -1
-              }
-            />
-          )}
-          <IssueListSortOptions sort={sort} query={query} onSelect={onSortChange} />
-        </DropdownsWrapper>
-      </SearchContainer>
-    );
-  }
+  onSortChange: (sort: string) => void;
+  query: string;
+  sort: IssueSortOptions;
 }
 
-const SearchContainer = styled('div')<{hasIssuePercentDisplay?: boolean}>`
-  display: inline-grid;
-  grid-gap: ${space(1)};
+const RESET_PARAMS_ON_CHANGE = ['page', 'cursor'];
+
+function IssueListFilters({query, sort, onSortChange, onSearch}: Props) {
+  return (
+    <FiltersContainer>
+      <StyledPageFilterBar>
+        <ProjectPageFilter resetParamsOnChange={RESET_PARAMS_ON_CHANGE} />
+        <EnvironmentPageFilter resetParamsOnChange={RESET_PARAMS_ON_CHANGE} />
+        <DatePageFilter resetParamsOnChange={RESET_PARAMS_ON_CHANGE} />
+      </StyledPageFilterBar>
+
+      <Search {...{query, onSearch}} />
+
+      <Flex justifySelf="end" gap="md" area="sort-save" align="start">
+        <IssueListSortOptions
+          query={query}
+          sort={sort}
+          onSelect={onSortChange}
+          triggerSize="md"
+          showIcon={false}
+        />
+
+        <IssueViewSaveButton query={query} sort={sort} />
+      </Flex>
+    </FiltersContainer>
+  );
+}
+
+const FiltersContainer = styled('div')`
+  display: grid;
+  column-gap: ${space(1)};
+  row-gap: ${space(1)};
   margin-bottom: ${space(2)};
   width: 100%;
 
-  @media (min-width: ${p => p.theme.breakpoints[p.hasIssuePercentDisplay ? 1 : 0]}) {
+  grid-template-columns: 100%;
+  grid-template-areas:
+    'page-filters'
+    'search'
+    'sort-save';
+
+  @media (min-width: ${p => p.theme.breakpoints.xs}) {
     grid-template-columns: 1fr auto;
+    grid-template-areas:
+      'page-filters sort-save'
+      'search search';
   }
 
-  @media (max-width: ${p => p.theme.breakpoints[0]}) {
-    grid-template-columns: 1fr;
+  @media (min-width: ${p => p.theme.breakpoints.xl}) {
+    grid-template-columns: auto 1fr auto;
+    grid-template-areas: 'page-filters search sort-save';
   }
 `;
 
-const DropdownsWrapper = styled('div')<{hasIssuePercentDisplay?: boolean}>`
-  display: grid;
-  grid-gap: ${space(1)};
-  grid-template-columns: 1fr ${p => (p.hasIssuePercentDisplay ? '1fr' : '')};
-  align-items: start;
+const Search = styled(IssueSearch)`
+  grid-area: search;
+`;
 
-  @media (max-width: ${p => p.theme.breakpoints[0]}) {
-    grid-template-columns: 1fr;
+const StyledPageFilterBar = styled(PageFilterBar)`
+  grid-area: page-filters;
+  display: flex;
+  flex-basis: content;
+  max-width: 100%;
+  justify-self: start;
+
+  > div > button {
+    width: 100%;
   }
 `;
 

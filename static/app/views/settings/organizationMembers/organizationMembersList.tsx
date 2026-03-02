@@ -1,110 +1,164 @@
-import * as React from 'react';
-import {RouteComponentProps} from 'react-router';
-import {ClassNames} from '@emotion/react';
+import {Fragment, useMemo, useState} from 'react';
 import styled from '@emotion/styled';
 
-import {addErrorMessage, addSuccessMessage} from 'app/actionCreators/indicator';
-import {resendMemberInvite} from 'app/actionCreators/members';
-import {redirectToRemainingOrganization} from 'app/actionCreators/organizations';
-import Button from 'app/components/button';
-import DropdownMenu from 'app/components/dropdownMenu';
-import HookOrDefault from 'app/components/hookOrDefault';
-import Pagination from 'app/components/pagination';
-import {Panel, PanelBody, PanelHeader} from 'app/components/panels';
-import {MEMBER_ROLES} from 'app/constants';
-import {IconSliders} from 'app/icons';
-import {t, tct} from 'app/locale';
-import ConfigStore from 'app/stores/configStore';
-import space from 'app/styles/space';
-import {Member, MemberRole, Organization, Team} from 'app/types';
-import trackAdvancedAnalyticsEvent from 'app/utils/analytics/trackAdvancedAnalyticsEvent';
-import routeTitleGen from 'app/utils/routeTitle';
-import theme from 'app/utils/theme';
-import withOrganization from 'app/utils/withOrganization';
-import withTeams from 'app/utils/withTeams';
-import AsyncView from 'app/views/asyncView';
+import {Button} from '@sentry/scraps/button';
+import {Tooltip} from '@sentry/scraps/tooltip';
+
+import {addErrorMessage, addSuccessMessage} from 'sentry/actionCreators/indicator';
+import {resendMemberInvite} from 'sentry/actionCreators/members';
+import {openInviteMembersModal} from 'sentry/actionCreators/modal';
+import {redirectToRemainingOrganization} from 'sentry/actionCreators/organizations';
+import FeatureDisabled from 'sentry/components/acl/featureDisabled';
+import EmptyMessage from 'sentry/components/emptyMessage';
+import HookOrDefault from 'sentry/components/hookOrDefault';
+import {Hovercard} from 'sentry/components/hovercard';
+import LoadingIndicator from 'sentry/components/loadingIndicator';
+import Pagination from 'sentry/components/pagination';
+import Panel from 'sentry/components/panels/panel';
+import PanelBody from 'sentry/components/panels/panelBody';
+import PanelHeader from 'sentry/components/panels/panelHeader';
+import SearchBar from 'sentry/components/searchBar';
+import {ORG_ROLES} from 'sentry/constants';
+import {IconMail} from 'sentry/icons';
+import {t, tct} from 'sentry/locale';
+import ConfigStore from 'sentry/stores/configStore';
+import {space} from 'sentry/styles/space';
+import type {OrganizationAuthProvider} from 'sentry/types/auth';
+import type {Member} from 'sentry/types/organization';
+import {trackAnalytics} from 'sentry/utils/analytics';
+import getApiUrl from 'sentry/utils/api/getApiUrl';
+import {isDemoModeActive} from 'sentry/utils/demoMode';
 import {
-  RenderSearch,
-  SearchWrapper,
-} from 'app/views/settings/components/defaultSearchBar';
-import EmptyMessage from 'app/views/settings/components/emptyMessage';
+  setApiQueryData,
+  useApiQuery,
+  useQueryClient,
+  type ApiQueryKey,
+} from 'sentry/utils/queryClient';
+import useApi from 'sentry/utils/useApi';
+import {useLocation} from 'sentry/utils/useLocation';
+import {useNavigate} from 'sentry/utils/useNavigate';
+import useOrganization from 'sentry/utils/useOrganization';
+import SettingsPageHeader from 'sentry/views/settings/components/settingsPageHeader';
+import InviteBanner from 'sentry/views/settings/organizationMembers/inviteBanner';
 
 import MembersFilter from './components/membersFilter';
 import InviteRequestRow from './inviteRequestRow';
 import OrganizationMemberRow from './organizationMemberRow';
-
-type Props = {
-  organization: Organization;
-  teams: Team[];
-} & RouteComponentProps<{orgId: string}, {}>;
-
-type State = AsyncView['state'] & {
-  member: (Member & {roles: MemberRole[]}) | null;
-  members: Member[];
-  invited: {[key: string]: 'loading' | 'success' | null};
-  inviteRequests: Member[];
-};
 
 const MemberListHeader = HookOrDefault({
   hookName: 'component:member-list-header',
   defaultComponent: () => <PanelHeader>{t('Active Members')}</PanelHeader>,
 });
 
-class OrganizationMembersList extends AsyncView<Props, State> {
-  getDefaultState() {
-    return {
-      ...super.getDefaultState(),
-      members: [],
-      invited: {},
-    };
-  }
+const InviteMembersButtonHook = HookOrDefault({
+  hookName: 'member-invite-button:customization',
+  defaultComponent: ({children, organization, onTriggerModal}) => {
+    const isSsoRequired = organization.requiresSso;
+    const disabled = isSsoRequired || !organization.features.includes('invite-members');
+    return children({disabled, isSsoRequired, onTriggerModal});
+  },
+});
 
-  getEndpoints(): ReturnType<AsyncView['getEndpoints']> {
-    const {orgId} = this.props.params;
+const getMembersQueryKey = ({
+  orgSlug,
+  query,
+}: {
+  orgSlug: string;
+  query: Record<string, string>;
+}): ApiQueryKey => [
+  getApiUrl(`/organizations/$organizationIdOrSlug/members/`, {
+    path: {organizationIdOrSlug: orgSlug},
+  }),
+  {query},
+];
 
-    return [
-      ['members', `/organizations/${orgId}/members/`, {}, {paginate: true}],
-      [
-        'member',
-        `/organizations/${orgId}/members/me/`,
-        {},
-        {allowError: error => error.status === 404},
-      ],
-      [
-        'authProvider',
-        `/organizations/${orgId}/auth-provider/`,
-        {},
-        {allowError: error => error.status === 403},
-      ],
+const getInviteRequestsQueryKey = ({organization}: any): ApiQueryKey => [
+  getApiUrl(`/organizations/$organizationIdOrSlug/invite-requests/`, {
+    path: {organizationIdOrSlug: organization.slug},
+  }),
+];
 
-      ['inviteRequests', `/organizations/${orgId}/invite-requests/`],
-    ];
-  }
+function OrganizationMembersList() {
+  const queryClient = useQueryClient();
+  const api = useApi({persistInFlight: true});
+  const organization = useOrganization();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const {data: inviteRequests = [], refetch: refetchInviteRequests} = useApiQuery<
+    Member[]
+  >(getInviteRequestsQueryKey({organization}), {staleTime: 0});
+  const {data: authProvider} = useApiQuery<OrganizationAuthProvider>(
+    [
+      getApiUrl(`/organizations/$organizationIdOrSlug/auth-provider/`, {
+        path: {organizationIdOrSlug: organization.slug},
+      }),
+    ],
+    {staleTime: 0}
+  );
+  const {data: currentMember} = useApiQuery<Member>(
+    [
+      getApiUrl(`/organizations/$organizationIdOrSlug/members/$memberId/`, {
+        path: {organizationIdOrSlug: organization.slug, memberId: 'me'},
+      }),
+    ],
+    {staleTime: 30000}
+  );
+  const {
+    data: members = [],
+    isPending: isPendingMembers,
+    refetch: refetchMembers,
+    getResponseHeader,
+  } = useApiQuery<Member[]>(
+    getMembersQueryKey({
+      orgSlug: organization.slug,
+      query: {
+        query: location.query.query as string,
+        cursor: location.query.cursor as string,
+      },
+    }),
+    {staleTime: 0}
+  );
+  const {data: activeOwnerMembers = [], isPending: isPendingOwners} = useApiQuery<
+    Member[]
+  >(
+    getMembersQueryKey({
+      orgSlug: organization.slug,
+      // Ignore search queries since this isn't displayed, it's okay not to paginate.
+      // This is only used to determine if the current user is the only owner.
+      // We also filter out active invites, so only active users are included.
+      query: {query: 'role:owner isInvited:false'},
+    }),
+    {staleTime: 30000}
+  );
 
-  getTitle() {
-    const orgId = this.props.organization.slug;
-    return routeTitleGen(t('Members'), orgId, false);
-  }
+  const [invited, setInvited] = useState<Record<string, 'loading' | 'success' | null>>(
+    {}
+  );
 
-  removeMember = async (id: string) => {
-    const {orgId} = this.props.params;
-
-    await this.api.requestPromise(`/organizations/${orgId}/members/${id}/`, {
+  const removeMember = async (id: string) => {
+    await api.requestPromise(`/organizations/${organization.slug}/members/${id}/`, {
       method: 'DELETE',
       data: {},
     });
 
-    this.setState(state => ({
-      members: state.members.filter(({id: existingId}) => existingId !== id),
-    }));
+    setApiQueryData<Member[]>(
+      queryClient,
+      getMembersQueryKey({
+        orgSlug: organization.slug,
+        query: {
+          query: location.query.query as string,
+          cursor: location.query.cursor as string,
+        },
+      }),
+      currentMembers => currentMembers?.filter(member => member.id !== id)
+    );
   };
 
-  handleRemove = async ({id, name}: Member) => {
-    const {organization} = this.props;
+  const handleRemove = async ({id, name}: Member) => {
     const {slug: orgName} = organization;
 
     try {
-      await this.removeMember(id);
+      await removeMember(id);
     } catch {
       addErrorMessage(tct('Error removing [name] from [orgName]', {name, orgName}));
       return;
@@ -113,82 +167,84 @@ class OrganizationMembersList extends AsyncView<Props, State> {
     addSuccessMessage(tct('Removed [name] from [orgName]', {name, orgName}));
   };
 
-  handleLeave = async ({id}: Member) => {
-    const {organization} = this.props;
-    const {slug: orgName} = organization;
-
+  const handleLeave = async ({id}: Member) => {
     try {
-      await this.removeMember(id);
+      await removeMember(id);
     } catch {
-      addErrorMessage(tct('Error leaving [orgName]', {orgName}));
+      addErrorMessage(tct('Error leaving [orgName]', {orgName: organization.slug}));
       return;
     }
 
-    redirectToRemainingOrganization({orgId: orgName, removeOrg: true});
-    addSuccessMessage(tct('You left [orgName]', {orgName}));
+    redirectToRemainingOrganization({
+      navigate,
+      orgId: organization.slug,
+      removeOrg: true,
+    });
+    addSuccessMessage(tct('You left [orgName]', {orgName: organization.slug}));
   };
 
-  handleSendInvite = async ({id, expired}) => {
-    this.setState(state => ({
-      invited: {...state.invited, [id]: 'loading'},
-    }));
+  const handleSendInvite = async ({id, expired}: any) => {
+    setInvited(state => ({...state, [id]: 'loading'}));
 
     try {
-      await resendMemberInvite(this.api, {
-        orgId: this.props.params.orgId,
+      await resendMemberInvite(api, {
+        orgId: organization.slug,
         memberId: id,
         regenerate: expired,
       });
     } catch {
-      this.setState(state => ({invited: {...state.invited, [id]: null}}));
+      setInvited(state => ({...state, [id]: null}));
       addErrorMessage(t('Error sending invite'));
       return;
     }
 
-    this.setState(state => ({invited: {...state.invited, [id]: 'success'}}));
+    setInvited(state => ({...state, [id]: 'success'}));
   };
 
-  updateInviteRequest = (id: string, data: Partial<Member>) =>
-    this.setState(state => {
-      const inviteRequests = [...state.inviteRequests];
-      const inviteIndex = inviteRequests.findIndex(request => request.id === id);
+  const updateInviteRequest = (id: string, data: Partial<Member>) => {
+    setApiQueryData<Member[]>(
+      queryClient,
+      getInviteRequestsQueryKey({organization}),
+      currentInviteRequests => {
+        return currentInviteRequests?.map(request => {
+          if (request.id === id) {
+            return {...request, ...data};
+          }
 
-      inviteRequests[inviteIndex] = {...inviteRequests[inviteIndex], ...data};
+          return request;
+        });
+      }
+    );
+  };
 
-      return {inviteRequests};
-    });
+  const removeInviteRequest = (id: string) => {
+    setApiQueryData<Member[]>(
+      queryClient,
+      getInviteRequestsQueryKey({organization}),
+      curentInviteRequests => curentInviteRequests?.filter(request => request.id !== id)
+    );
+  };
 
-  removeInviteRequest = (id: string) =>
-    this.setState(state => ({
-      inviteRequests: state.inviteRequests.filter(request => request.id !== id),
-    }));
-
-  handleInviteRequestAction = async ({
+  const handleInviteRequestAction = async ({
     inviteRequest,
     method,
     data,
     successMessage,
     errorMessage,
     eventKey,
-  }) => {
-    const {params, organization} = this.props;
-
-    this.setState(state => ({
-      inviteRequestBusy: {...state.inviteRequestBusy, [inviteRequest.id]: true},
-    }));
-
+  }: any) => {
     try {
-      await this.api.requestPromise(
-        `/organizations/${params.orgId}/invite-requests/${inviteRequest.id}/`,
+      await api.requestPromise(
+        `/organizations/${organization.slug}/invite-requests/${inviteRequest.id}/`,
         {
           method,
           data,
         }
       );
 
-      this.removeInviteRequest(inviteRequest.id);
+      removeInviteRequest(inviteRequest.id);
       addSuccessMessage(successMessage);
-      trackAdvancedAnalyticsEvent(eventKey, {
+      trackAnalytics(eventKey, {
         member_id: parseInt(inviteRequest.id, 10),
         invite_status: inviteRequest.inviteStatus,
         organization,
@@ -196,14 +252,10 @@ class OrganizationMembersList extends AsyncView<Props, State> {
     } catch {
       addErrorMessage(errorMessage);
     }
-
-    this.setState(state => ({
-      inviteRequestBusy: {...state.inviteRequestBusy, [inviteRequest.id]: false},
-    }));
   };
 
-  handleInviteRequestApprove = (inviteRequest: Member) => {
-    this.handleInviteRequestAction({
+  const handleInviteRequestApprove = (inviteRequest: Member) => {
+    handleInviteRequestAction({
       inviteRequest,
       method: 'PUT',
       data: {
@@ -217,8 +269,8 @@ class OrganizationMembersList extends AsyncView<Props, State> {
     });
   };
 
-  handleInviteRequestDeny = (inviteRequest: Member) => {
-    this.handleInviteRequestAction({
+  const handleInviteRequestDeny = (inviteRequest: Member) => {
+    handleInviteRequestAction({
       inviteRequest,
       method: 'DELETE',
       data: {},
@@ -232,160 +284,219 @@ class OrganizationMembersList extends AsyncView<Props, State> {
     });
   };
 
-  renderBody() {
-    const {params, organization, routes, teams} = this.props;
-    const {membersPageLinks, members, member: currentMember, inviteRequests} = this.state;
-    const {name: orgName, access} = organization;
+  const handleQueryChange = (query: string) => {
+    navigate({
+      pathname: location.pathname,
+      query: {...location.query, query, cursor: undefined},
+    });
+  };
 
-    const canAddMembers = access.includes('member:write');
-    const canRemove = access.includes('member:admin');
-    const currentUser = ConfigStore.get('user');
+  const canAddMembers = organization.access.includes('member:write');
+  const canRemove = organization.access.includes('member:admin');
+  const currentUser = ConfigStore.get('user');
 
-    // Find out if current user is the only owner
-    const isOnlyOwner = !members.find(
-      ({role, email, pending}) =>
-        role === 'owner' && email !== currentUser.email && !pending
-    );
+  // Find out if current user is the only owner
+  // Filter to members with valid users (user_id set and user exists)
+  // Members with user: null during eventual consistency window are excluded
+  const isOnlyOwner = !activeOwnerMembers
+    .filter(member => member.user !== null)
+    .some(member => member.email !== currentUser.email);
 
-    // Only admins/owners can remove members
-    const requireLink = !!this.state.authProvider && this.state.authProvider.require_link;
+  // Only admins/owners can remove members
+  const requireLink = !!authProvider && authProvider.require_link;
 
-    // eslint-disable-next-line react/prop-types
-    const renderSearch: RenderSearch = ({defaultSearchBar, value, handleChange}) => (
-      <SearchWrapperWithFilter>
-        <DropdownMenu closeOnEscape>
-          {({getActorProps, isOpen}) => (
-            <FilterWrapper>
-              <Button icon={<IconSliders size="xs" />} {...getActorProps({})}>
-                {t('Filter')}
-              </Button>
-              {isOpen && (
-                <StyledMembersFilter
-                  roles={currentMember?.roles ?? MEMBER_ROLES}
-                  query={value}
-                  onChange={(query: string) => handleChange(query)}
-                />
-              )}
-            </FilterWrapper>
-          )}
-        </DropdownMenu>
-        {defaultSearchBar}
-      </SearchWrapperWithFilter>
-    );
+  const searchQuery = (location.query.query as string) || '';
 
-    return (
-      <React.Fragment>
-        <ClassNames>
-          {({css}) =>
-            this.renderSearchInput({
-              updateRoute: true,
-              placeholder: t('Search Members'),
-              children: renderSearch,
-              className: css`
-                font-size: ${theme.fontSizeMedium};
-              `,
-            })
-          }
-        </ClassNames>
-        {inviteRequests && inviteRequests.length > 0 && (
-          <Panel>
-            <PanelHeader>
-              <StyledPanelItem>
-                <div>{t('Pending Members')}</div>
-                <div>{t('Role')}</div>
-                <div>{t('Teams')}</div>
-              </StyledPanelItem>
-            </PanelHeader>
-            <PanelBody>
-              {inviteRequests.map(inviteRequest => (
-                <InviteRequestRow
-                  key={inviteRequest.id}
-                  organization={organization}
-                  inviteRequest={inviteRequest}
-                  inviteRequestBusy={{}}
-                  allTeams={teams}
-                  allRoles={currentMember?.roles ?? MEMBER_ROLES}
-                  onApprove={this.handleInviteRequestApprove}
-                  onDeny={this.handleInviteRequestDeny}
-                  onUpdate={data => this.updateInviteRequest(inviteRequest.id, data)}
-                />
-              ))}
-            </PanelBody>
-          </Panel>
-        )}
-        <Panel data-test-id="org-member-list">
-          <MemberListHeader members={members} organization={organization} />
+  const membersPageLinks = getResponseHeader?.('Link');
+
+  // hides other users in demo mode
+  const membersToShow = useMemo(
+    () =>
+      isDemoModeActive()
+        ? members.filter(m => m).filter(({email}) => email === currentUser.email)
+        : members.filter(m => m),
+    [members, currentUser.email]
+  );
+
+  const action = (
+    <InviteMembersButtonHook
+      organization={organization}
+      onTriggerModal={() => {
+        openInviteMembersModal({
+          onClose: () => {
+            refetchInviteRequests();
+            refetchMembers();
+          },
+          source: 'members_settings',
+        });
+      }}
+    >
+      {({disabled, isSsoRequired, onTriggerModal}) => (
+        <InviteMembersButton
+          disabled={disabled}
+          isSsoRequired={isSsoRequired}
+          onTriggerModal={onTriggerModal}
+        />
+      )}
+    </InviteMembersButtonHook>
+  );
+
+  return (
+    <Fragment>
+      <SettingsPageHeader title="Members" action={action} />
+      <InviteBanner
+        onSendInvite={() => {
+          refetchMembers();
+        }}
+        onModalClose={() => {
+          refetchInviteRequests();
+          refetchMembers();
+        }}
+        allowedRoles={currentMember?.orgRoleList ?? currentMember?.roles ?? ORG_ROLES}
+      />
+      {!isDemoModeActive() && inviteRequests.length > 0 && (
+        <Panel>
+          <PanelHeader>
+            <StyledPanelItem>
+              <div>{t('Pending Members')}</div>
+              <div>{t('Role')}</div>
+              <div>{t('Teams')}</div>
+            </StyledPanelItem>
+          </PanelHeader>
           <PanelBody>
-            {members.map(member => (
-              <OrganizationMemberRow
-                routes={routes}
-                params={params}
-                key={member.id}
-                member={member}
-                status={this.state.invited[member.id]}
-                orgName={orgName}
-                memberCanLeave={!isOnlyOwner}
-                currentUser={currentUser}
-                canRemoveMembers={canRemove}
-                canAddMembers={canAddMembers}
-                requireLink={requireLink}
-                onSendInvite={this.handleSendInvite}
-                onRemove={this.handleRemove}
-                onLeave={this.handleLeave}
+            {inviteRequests.map(inviteRequest => (
+              <InviteRequestRow
+                key={inviteRequest.id}
+                organization={organization}
+                inviteRequest={inviteRequest}
+                inviteRequestBusy={{}}
+                allRoles={currentMember?.orgRoleList ?? currentMember?.roles ?? ORG_ROLES}
+                onApprove={handleInviteRequestApprove}
+                onDeny={handleInviteRequestDeny}
+                onUpdate={data => updateInviteRequest(inviteRequest.id, data)}
               />
             ))}
-            {members.length === 0 && (
-              <EmptyMessage>{t('No members found.')}</EmptyMessage>
-            )}
           </PanelBody>
         </Panel>
+      )}
+      <SearchWrapperWithFilter>
+        <MembersFilter
+          roles={currentMember?.orgRoleList ?? currentMember?.roles ?? ORG_ROLES}
+          query={searchQuery}
+          onChange={handleQueryChange}
+        />
+        <SearchBar
+          placeholder={t('Search Members')}
+          query={searchQuery}
+          onSearch={handleQueryChange}
+        />
+      </SearchWrapperWithFilter>
+      <Panel data-test-id="org-member-list">
+        <MemberListHeader members={membersToShow} organization={organization} />
+        <PanelBody>
+          {isPendingMembers || isPendingOwners ? (
+            <LoadingIndicator />
+          ) : (
+            <Fragment>
+              {membersToShow.map(member => (
+                <OrganizationMemberRow
+                  key={member.id}
+                  organization={organization}
+                  member={member}
+                  status={invited[member.id]!}
+                  memberCanLeave={
+                    !(
+                      isOnlyOwner ||
+                      member.flags['idp:provisioned'] ||
+                      member.flags['partnership:restricted']
+                    )
+                  }
+                  currentUser={currentUser}
+                  canRemoveMembers={canRemove}
+                  canAddMembers={canAddMembers}
+                  requireLink={requireLink}
+                  onSendInvite={handleSendInvite}
+                  onRemove={handleRemove}
+                  onLeave={handleLeave}
+                />
+              ))}
+              {membersToShow.length === 0 && (
+                <EmptyMessage>{t('No members found.')}</EmptyMessage>
+              )}
+            </Fragment>
+          )}
+        </PanelBody>
+      </Panel>
 
-        <Pagination pageLinks={membersPageLinks} />
-      </React.Fragment>
-    );
-  }
+      <Pagination pageLinks={membersPageLinks} />
+    </Fragment>
+  );
 }
 
-const SearchWrapperWithFilter = styled(SearchWrapper)`
+const SearchWrapperWithFilter = styled('div')`
+  position: relative;
   display: grid;
   grid-template-columns: max-content 1fr;
-  margin-top: 0;
-`;
-
-const FilterWrapper = styled('div')`
-  position: relative;
-`;
-
-const StyledMembersFilter = styled(MembersFilter)`
-  position: absolute;
-  right: 0;
-  top: 42px;
-  z-index: ${p => p.theme.zIndex.dropdown};
-
-  &:before,
-  &:after {
-    position: absolute;
-    top: -16px;
-    right: 32px;
-    content: '';
-    height: 16px;
-    width: 16px;
-    border: 8px solid transparent;
-    border-bottom-color: ${p => p.theme.backgroundSecondary};
-  }
-
-  &:before {
-    margin-top: -1px;
-    border-bottom-color: ${p => p.theme.border};
-  }
+  gap: ${space(1.5)};
+  margin-bottom: ${space(1.5)};
 `;
 
 const StyledPanelItem = styled('div')`
   display: grid;
   grid-template-columns: minmax(150px, auto) minmax(100px, 140px) 420px;
-  grid-gap: ${space(2)};
+  gap: ${space(2)};
   align-items: center;
   width: 100%;
 `;
 
-export default withTeams(withOrganization(OrganizationMembersList));
+export default OrganizationMembersList;
+
+function InviteMembersButton({
+  disabled,
+  isSsoRequired,
+  onTriggerModal,
+}: {
+  onTriggerModal: () => void;
+  disabled?: boolean;
+  isSsoRequired?: boolean;
+}) {
+  const action = (
+    <Button
+      priority="primary"
+      size="sm"
+      onClick={onTriggerModal}
+      data-test-id="email-invite"
+      icon={<IconMail />}
+      disabled={disabled}
+    >
+      {t('Invite Members')}
+    </Button>
+  );
+
+  return disabled ? (
+    isSsoRequired ? (
+      <Tooltip
+        skipWrapper
+        title={t(
+          `Your organization must use its single sign-on provider to register new members.`
+        )}
+      >
+        {action}
+      </Tooltip>
+    ) : (
+      <Hovercard
+        body={
+          <FeatureDisabled
+            featureName={t('Invite Members')}
+            features="organizations:invite-members"
+            hideHelpToggle
+          />
+        }
+      >
+        {action}
+      </Hovercard>
+    )
+  ) : (
+    action
+  );
+}

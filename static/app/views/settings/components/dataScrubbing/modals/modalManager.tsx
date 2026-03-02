@@ -1,63 +1,80 @@
-import * as React from 'react';
+import {Component} from 'react';
+import * as Sentry from '@sentry/react';
 import isEqual from 'lodash/isEqual';
 import omit from 'lodash/omit';
 
-import {addErrorMessage} from 'app/actionCreators/indicator';
-import {ModalRenderProps} from 'app/actionCreators/modal';
-import {Client} from 'app/api';
-import {t} from 'app/locale';
-import {Organization, Project} from 'app/types';
-
-import submitRules from '../submitRules';
-import {
-  EventIdStatus,
+import {addErrorMessage} from 'sentry/actionCreators/indicator';
+import type {ModalRenderProps} from 'sentry/actionCreators/modal';
+import type {Client} from 'sentry/api';
+import {t} from 'sentry/locale';
+import type {Organization} from 'sentry/types/organization';
+import type {Project} from 'sentry/types/project';
+import submitRules from 'sentry/views/settings/components/dataScrubbing/submitRules';
+import type {
+  AttributeResults,
   KeysOfUnion,
-  MethodType,
-  ProjectId,
   Rule,
+} from 'sentry/views/settings/components/dataScrubbing/types';
+import {
+  AllowedDataScrubbingDatasets,
+  EventIdStatus,
+  MethodType,
   RuleType,
-} from '../types';
-import {valueSuggestions} from '../utils';
+} from 'sentry/views/settings/components/dataScrubbing/types';
+import {
+  TraceItemFieldSelector,
+  valueSuggestions,
+} from 'sentry/views/settings/components/dataScrubbing/utils';
 
 import Form from './form';
 import handleError, {ErrorType} from './handleError';
 import Modal from './modal';
-import {fetchSourceGroupData, saveToSourceGroupData} from './utils';
+import {hasCaptureGroups, useSourceGroupData} from './utils';
 
 type FormProps = React.ComponentProps<typeof Form>;
 type Values = FormProps['values'];
 type EventId = NonNullable<FormProps['eventId']>;
 type SourceSuggestions = FormProps['sourceSuggestions'];
 
-type Props<T> = ModalRenderProps & {
-  onSubmitSuccess: (data: T extends undefined ? Organization : Project) => void;
-  onGetNewRules: (values: Values) => Array<Rule>;
-  orgSlug: Organization['slug'];
+export type ModalManagerProps = ModalRenderProps & {
   api: Client;
+  attributeResults: AttributeResults;
   endpoint: string;
-  savedRules: Array<Rule>;
+  onGetNewRules: (values: Values) => Rule[];
+  onSubmitSuccess: (data: {relayPiiConfig: string}) => void;
+  orgSlug: Organization['slug'];
+  savedRules: Rule[];
   title: string;
-  projectId?: T;
   initialState?: Partial<Values>;
+  projectId?: Project['id'];
+};
+
+type ModalManagerWithLocalStorageProps = ModalManagerProps & {
+  saveToSourceGroupData: (
+    eventId: EventId,
+    sourceSuggestions?: SourceSuggestions
+  ) => void;
+  sourceGroupData: {eventId: string; sourceSuggestions: SourceSuggestions};
 };
 
 type State = {
-  values: Values;
-  requiredValues: Array<keyof Values>;
+  dataset: AllowedDataScrubbingDatasets;
   errors: FormProps['errors'];
-  isFormValid: boolean;
-  sourceSuggestions: SourceSuggestions;
   eventId: EventId;
+  isFormValid: boolean;
+  requiredValues: Array<keyof Values>;
+  sourceSuggestions: SourceSuggestions;
+  values: Values;
 };
 
-class ModalManager<T extends ProjectId> extends React.Component<Props<T>, State> {
+class ModalManager extends Component<ModalManagerWithLocalStorageProps, State> {
   state = this.getDefaultState();
 
   componentDidMount() {
     this.handleValidateForm();
   }
 
-  componentDidUpdate(_prevProps: Props<T>, prevState: State) {
+  componentDidUpdate(_prevProps: ModalManagerWithLocalStorageProps, prevState: State) {
     if (!isEqual(prevState.values, this.state.values)) {
       this.handleValidateForm();
     }
@@ -66,21 +83,28 @@ class ModalManager<T extends ProjectId> extends React.Component<Props<T>, State>
       this.loadSourceSuggestions();
     }
     if (prevState.eventId.status !== this.state.eventId.status) {
-      saveToSourceGroupData(this.state.eventId, this.state.sourceSuggestions);
+      this.props.saveToSourceGroupData(this.state.eventId, this.state.sourceSuggestions);
     }
   }
 
   getDefaultState(): Readonly<State> {
-    const {eventId, sourceSuggestions} = fetchSourceGroupData();
+    const {eventId, sourceSuggestions} = this.props.sourceGroupData;
     const values = this.getInitialValues();
+    // Create a temporary rule-like object for dataset determination
+    const tempRule = {...values, id: 0} as Rule;
+    const traceItemFieldSelector = TraceItemFieldSelector.fromRule(tempRule);
+    const dataset =
+      traceItemFieldSelector?.getDataset() ?? AllowedDataScrubbingDatasets.DEFAULT;
+
     return {
       values,
       requiredValues: this.getRequiredValues(values),
+      dataset,
       errors: {},
       isFormValid: false,
       eventId: {
         value: eventId,
-        status: !eventId ? EventIdStatus.UNDEFINED : EventIdStatus.LOADED,
+        status: eventId ? EventIdStatus.LOADED : EventIdStatus.UNDEFINED,
       },
       sourceSuggestions,
     } as Readonly<State>;
@@ -94,6 +118,7 @@ class ModalManager<T extends ProjectId> extends React.Component<Props<T>, State>
       source: initialState?.source ?? '',
       placeholder: initialState?.placeholder ?? '',
       pattern: initialState?.pattern ?? '',
+      replaceCaptured: initialState?.replaceCaptured ?? false,
     };
   }
 
@@ -138,7 +163,7 @@ class ModalManager<T extends ProjectId> extends React.Component<Props<T>, State>
     }));
 
     try {
-      const query: {projectId?: string; eventId: string} = {eventId: eventId.value};
+      const query: {eventId: string; projectId?: string} = {eventId: eventId.value};
       if (projectId) {
         query.projectId = projectId;
       }
@@ -178,7 +203,7 @@ class ModalManager<T extends ProjectId> extends React.Component<Props<T>, State>
 
   convertRequestError(error: ReturnType<typeof handleError>) {
     switch (error.type) {
-      case ErrorType.InvalidSelector:
+      case ErrorType.INVALID_SELECTOR:
         this.setState(prevState => ({
           errors: {
             ...prevState.errors,
@@ -186,11 +211,19 @@ class ModalManager<T extends ProjectId> extends React.Component<Props<T>, State>
           },
         }));
         break;
-      case ErrorType.RegexParse:
+      case ErrorType.REGEX_PARSE:
         this.setState(prevState => ({
           errors: {
             ...prevState.errors,
             pattern: error.message,
+          },
+        }));
+        break;
+      case ErrorType.ATTRIBUTE_INVALID:
+        this.setState(prevState => ({
+          errors: {
+            ...prevState.errors,
+            source: error.message,
           },
         }));
         break;
@@ -199,14 +232,26 @@ class ModalManager<T extends ProjectId> extends React.Component<Props<T>, State>
     }
   }
 
+  handleAttributeError = (message: string) => {
+    this.convertRequestError({
+      type: ErrorType.ATTRIBUTE_INVALID,
+      message,
+    });
+  };
+
   handleChange = <R extends Rule, K extends KeysOfUnion<R>>(field: K, value: R[K]) => {
     const values = {
       ...this.state.values,
       [field]: value,
     };
 
-    if (values.type !== RuleType.PATTERN && values.pattern) {
+    if (values.type !== RuleType.PATTERN) {
       values.pattern = '';
+      values.replaceCaptured = false;
+    }
+
+    if (values.type === RuleType.PATTERN && !hasCaptureGroups(values.pattern)) {
+      values.replaceCaptured = false;
     }
 
     if (values.method !== MethodType.REPLACE && values.placeholder) {
@@ -220,6 +265,16 @@ class ModalManager<T extends ProjectId> extends React.Component<Props<T>, State>
     }));
   };
 
+  handleChangeDataset = (dataset: AllowedDataScrubbingDatasets) => {
+    if (!dataset) {
+      Sentry.captureException(new Error('Dataset is required'));
+      return;
+    }
+    this.setState({
+      dataset,
+    });
+  };
+
   handleSave = async () => {
     const {endpoint, api, onSubmitSuccess, closeModal, onGetNewRules} = this.props;
     const newRules = onGetNewRules(this.state.values);
@@ -228,7 +283,7 @@ class ModalManager<T extends ProjectId> extends React.Component<Props<T>, State>
       const data = await submitRules(api, endpoint, newRules);
       onSubmitSuccess(data);
       closeModal();
-    } catch (error) {
+    } catch (error: any) {
       this.convertRequestError(handleError(error));
     }
   };
@@ -242,7 +297,12 @@ class ModalManager<T extends ProjectId> extends React.Component<Props<T>, State>
   handleValidate =
     <K extends keyof Values>(field: K) =>
     () => {
-      const isFieldValueEmpty = !this.state.values[field].trim();
+      const value = this.state.values[field];
+      if (typeof value !== 'string') {
+        return;
+      }
+
+      const isFieldValueEmpty = !value.trim();
 
       const fieldErrorAlreadyExist = this.state.errors[field];
 
@@ -276,7 +336,7 @@ class ModalManager<T extends ProjectId> extends React.Component<Props<T>, State>
 
   render() {
     const {values, errors, isFormValid, eventId, sourceSuggestions} = this.state;
-    const {title} = this.props;
+    const {title, attributeResults, projectId} = this.props;
 
     return (
       <Modal
@@ -286,13 +346,18 @@ class ModalManager<T extends ProjectId> extends React.Component<Props<T>, State>
         disabled={!isFormValid}
         content={
           <Form
+            dataset={this.state.dataset}
             onChange={this.handleChange}
+            onChangeDataset={this.handleChangeDataset}
             onValidate={this.handleValidate}
             onUpdateEventId={this.handleUpdateEventId}
+            onAttributeError={this.handleAttributeError}
             eventId={eventId}
             errors={errors}
             values={values}
             sourceSuggestions={sourceSuggestions}
+            attributeResults={attributeResults}
+            projectId={projectId}
           />
         }
       />
@@ -300,4 +365,16 @@ class ModalManager<T extends ProjectId> extends React.Component<Props<T>, State>
   }
 }
 
-export default ModalManager;
+function ModalManagerWithLocalStorage(props: ModalManagerProps) {
+  const {sourceGroupData, saveToSourceGroupData} = useSourceGroupData();
+
+  return (
+    <ModalManager
+      {...props}
+      sourceGroupData={sourceGroupData}
+      saveToSourceGroupData={saveToSourceGroupData}
+    />
+  );
+}
+
+export default ModalManagerWithLocalStorage;

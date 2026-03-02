@@ -1,35 +1,28 @@
-import * as React from 'react';
+import {useContext} from 'react';
 
-import SentryTypes from 'app/sentryTypes';
-import {Project} from 'app/types';
-import getDisplayName from 'app/utils/getDisplayName';
+import type {Project} from 'sentry/types/project';
+import getDisplayName from 'sentry/utils/getDisplayName';
+import {ProjectContext} from 'sentry/views/projects/projectContext';
 
 type InjectedProjectProps = {
   project?: Project;
 };
 
-/**
- * Currently wraps component with project from context
- */
-const withProject = <P extends InjectedProjectProps>(
+function withProject<P extends InjectedProjectProps>(
   WrappedComponent: React.ComponentType<P>
-) =>
-  class extends React.Component<
-    Omit<P, keyof InjectedProjectProps> & Partial<InjectedProjectProps>
-  > {
-    static displayName = `withProject(${getDisplayName(WrappedComponent)})`;
-    static contextTypes = {
-      project: SentryTypes.Project,
-    };
+) {
+  type Props = Omit<P, keyof InjectedProjectProps> & Partial<InjectedProjectProps>;
 
-    render() {
-      const {project, ...props} = this.props;
-      return (
-        <WrappedComponent
-          {...({project: project ?? this.context.project, ...props} as P)}
-        />
-      );
-    }
-  };
+  function Wrapper(props: Props) {
+    const project = useContext(ProjectContext);
+
+    // TODO(any): HoC prop types not working w/ emotion https://github.com/emotion-js/emotion/issues/3261
+    return <WrappedComponent project={project} {...(props as P as any)} />;
+  }
+
+  Wrapper.displayName = `withProject(${getDisplayName(WrappedComponent)})`;
+
+  return Wrapper;
+}
 
 export default withProject;

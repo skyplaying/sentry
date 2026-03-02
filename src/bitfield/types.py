@@ -11,7 +11,7 @@ class Bit:
         if not self.is_set:
             self.mask = ~self.mask
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return "<%s: number=%d, is_set=%s>" % (self.__class__.__name__, self.number, self.is_set)
 
     def __int__(self):
@@ -19,8 +19,6 @@ class Bit:
 
     def __bool__(self):
         return self.is_set
-
-    __nonzero__ = __bool__
 
     def __eq__(self, value):
         if isinstance(value, Bit):
@@ -134,13 +132,13 @@ class BitHandler:
     def __cmp__(self, other):
         return cmp(self._value, other)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return "<{}: {}>".format(
             self.__class__.__name__,
             ", ".join(f"{k}={self.get_bit(n).is_set}" for n, k in enumerate(self._keys)),
         )
 
-    def __str__(self):
+    def __str__(self) -> str:
         return str(self._value)
 
     def __int__(self):
@@ -148,8 +146,6 @@ class BitHandler:
 
     def __bool__(self):
         return bool(self._value)
-
-    __nonzero__ = __bool__
 
     def __and__(self, value):
         return BitHandler(self._value & int(value), self._keys)
@@ -185,7 +181,7 @@ class BitHandler:
 
     __getitem__ = __getattr__
 
-    def __setattr__(self, key, value):
+    def __setattr__(self, key, value) -> None:
         if key.startswith("_"):
             return object.__setattr__(self, key, value)
         if key not in self._keys:
@@ -195,7 +191,7 @@ class BitHandler:
     __setitem__ = __setattr__
 
     def __iter__(self):
-        return self.iteritems()  # NOQA
+        return self.iteritems()
 
     def __sentry__(self):
         return repr(self)
@@ -227,7 +223,7 @@ class BitHandler:
         return iter(self._keys)
 
     def items(self):
-        return list(self.iteritems())  # NOQA
+        return list(self.iteritems())
 
     def iteritems(self):
         for k in self._keys:
@@ -241,14 +237,9 @@ class BitHandler:
         return self._labels[flag]
 
 
-from django.core.exceptions import ImproperlyConfigured
-
 # We need to register adapters in Django 1.8 in order to prevent
 # "ProgrammingError: can't adapt type"
-try:
-    from django.db.backends.postgresql_psycopg2.base import Database
+import psycopg2.extensions
 
-    Database.extensions.register_adapter(Bit, lambda x: Database.extensions.AsIs(int(x)))
-    Database.extensions.register_adapter(BitHandler, lambda x: Database.extensions.AsIs(int(x)))
-except ImproperlyConfigured:
-    pass
+psycopg2.extensions.register_adapter(Bit, lambda x: psycopg2.extensions.AsIs(int(x)))
+psycopg2.extensions.register_adapter(BitHandler, lambda x: psycopg2.extensions.AsIs(int(x)))

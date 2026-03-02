@@ -1,35 +1,35 @@
 import {Component} from 'react';
 
-import {addErrorMessage} from 'app/actionCreators/indicator';
-import {openModal} from 'app/actionCreators/modal';
-import {Client} from 'app/api';
-import Button from 'app/components/button';
-import {IconSettings} from 'app/icons';
-import {t} from 'app/locale';
-import {Organization, Project} from 'app/types';
-import {defined} from 'app/utils';
-import EventView from 'app/utils/discover/eventView';
-import withApi from 'app/utils/withApi';
-import withProjects from 'app/utils/withProjects';
+import {Button} from '@sentry/scraps/button';
 
-import TransactionThresholdModal, {
-  modalCss,
-  TransactionThresholdMetric,
-} from './transactionThresholdModal';
+import {addErrorMessage} from 'sentry/actionCreators/indicator';
+import {openModal} from 'sentry/actionCreators/modal';
+import type {Client} from 'sentry/api';
+import {IconSettings} from 'sentry/icons';
+import {t} from 'sentry/locale';
+import type {Organization} from 'sentry/types/organization';
+import type {Project} from 'sentry/types/project';
+import {defined} from 'sentry/utils';
+import type EventView from 'sentry/utils/discover/eventView';
+import withApi from 'sentry/utils/withApi';
+import withProjects from 'sentry/utils/withProjects';
+
+import type {TransactionThresholdMetric} from './transactionThresholdModal';
+import TransactionThresholdModal, {modalCss} from './transactionThresholdModal';
 
 type Props = {
   api: Client;
-  organization: Organization;
-  transactionName: string;
-  projects: Project[];
   eventView: EventView;
+  organization: Organization;
+  projects: Project[];
+  transactionName: string;
   onChangeThreshold?: (threshold: number, metric: TransactionThresholdMetric) => void;
 };
 
 type State = {
+  loadingThreshold: boolean;
   transactionThreshold: number | undefined;
   transactionThresholdMetric: TransactionThresholdMetric | undefined;
-  loadingThreshold: boolean;
 };
 
 class TransactionThresholdButton extends Component<Props, State> {
@@ -136,7 +136,7 @@ class TransactionThresholdButton extends Component<Props, State> {
           onApply={(threshold, metric) => this.onChangeThreshold(threshold, metric)}
         />
       ),
-      {modalCss, backdrop: 'static'}
+      {modalCss, closeEvents: 'escape-key'}
     );
   }
 
@@ -144,6 +144,7 @@ class TransactionThresholdButton extends Component<Props, State> {
     const {loadingThreshold} = this.state;
     return (
       <Button
+        size="sm"
         onClick={() => this.openModal()}
         icon={<IconSettings />}
         disabled={loadingThreshold}

@@ -1,16 +1,18 @@
+import type {Fuse} from 'sentry/utils/fuzzySearch';
+
 type Options = {
-  key: string;
   htmlString: string;
+  key: string;
   markTags: {
-    highlightPreTag: string;
     highlightPostTag: string;
+    highlightPreTag: string;
   };
 };
 
 /**
- * Parses the "marked" html strings into a {key, value, indices} (similar to
- * Fuse.js) object, where the indices are a set of zero indexed [start, end]
- * indices for what should be highlighted.
+ * Parses the "marked" html strings into a {key, value, indices} (mimincing the
+ * FuseResultMatch type) object, where the indices are a set of zero indexed
+ * [start, end] indices for what should be highlighted.
  *
  * @param key The key of the field, this mimics the Fuse match object
  * @param htmlString The html string to parse
@@ -20,14 +22,13 @@ type Options = {
 export default function parseHtmlMarks({key, htmlString, markTags}: Options) {
   const {highlightPreTag, highlightPostTag} = markTags;
 
-  const indices: [number, number][] = [];
+  const indices: Array<[number, number]> = [];
   let value = htmlString;
 
-  // eslint-disable-next-line no-constant-condition
   while (true) {
     const openIndex = value.indexOf(highlightPreTag);
     const openIndexEnd = openIndex + highlightPreTag.length;
-    if (openIndex === -1 || value.indexOf(highlightPostTag) === -1) {
+    if (openIndex === -1 || !value.includes(highlightPostTag)) {
       break;
     }
     value = value.slice(0, openIndex) + value.slice(openIndexEnd);
@@ -39,5 +40,5 @@ export default function parseHtmlMarks({key, htmlString, markTags}: Options) {
     indices.push([openIndex, closeIndex - 1]);
   }
 
-  return {key, value, indices};
+  return {key, value, indices} as Fuse.FuseResultMatch;
 }

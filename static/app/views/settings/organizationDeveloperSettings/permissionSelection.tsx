@@ -1,12 +1,14 @@
 import {Component, Fragment} from 'react';
-import find from 'lodash/find';
-import flatMap from 'lodash/flatMap';
 
-import {SENTRY_APP_PERMISSIONS} from 'app/constants';
-import {t} from 'app/locale';
-import {Permissions} from 'app/types/index';
-import FormContext from 'app/views/settings/components/forms/formContext';
-import SelectField from 'app/views/settings/components/forms/selectField';
+import SelectField from 'sentry/components/forms/fields/selectField';
+import FormContext from 'sentry/components/forms/formContext';
+import {SENTRY_APP_PERMISSIONS, type PermissionObj} from 'sentry/constants';
+import {t} from 'sentry/locale';
+import type {
+  PermissionResource,
+  Permissions,
+  PermissionValue,
+} from 'sentry/types/integrations';
 
 /**
  * Custom form element that presents API scopes in a resource-centric way. Meaning
@@ -79,58 +81,73 @@ import SelectField from 'app/views/settings/components/forms/selectField';
  */
 
 type Props = {
-  permissions: Permissions;
-  onChange: (permissions: Permissions) => void;
   appPublished: boolean;
+  onChange: (permissions: Permissions) => void;
+  permissions: Permissions;
+  /**
+   * Optional list of permissions to display in the selection.
+   * Defaults to SENTRY_APP_PERMISSIONS if not provided.
+   * Useful for limiting permissions available to personal tokens vs integration tokens.
+   */
+  displayedPermissions?: PermissionObj[];
 };
 
 type State = {
   permissions: Permissions;
 };
 
+function findResource(r: PermissionResource) {
+  return SENTRY_APP_PERMISSIONS.find(permissions => permissions.resource === r);
+}
+
+/**
+ * Converts the "Permission" values held in `state` to a list of raw
+ * API scopes we can send to the server. For example:
+ *
+ *    ['org:read', 'org:write', ...]
+ *
+ */
+function permissionStateToList(permissions: Permissions) {
+  return Object.entries(permissions).flatMap(
+    ([r, p]) => findResource(r as PermissionResource)?.choices?.[p]?.scopes
+  );
+}
+
 export default class PermissionSelection extends Component<Props, State> {
   state: State = {
     permissions: this.props.permissions,
   };
 
+  declare context: Required<React.ContextType<typeof FormContext>>;
   static contextType = FormContext;
 
-  /**
-   * Converts the "Permission" values held in `state` to a list of raw
-   * API scopes we can send to the server. For example:
-   *
-   *    ['org:read', 'org:write', ...]
-   *
-   */
-  permissionStateToList() {
-    const {permissions} = this.state;
-    const findResource = r => find(SENTRY_APP_PERMISSIONS, ['resource', r]);
-    return flatMap(
-      Object.entries(permissions),
-      ([r, p]) => findResource(r)?.choices?.[p]?.scopes
-    );
-  }
-
-  onChange = (resource, choice) => {
+  onChange = (resource: PermissionResource, choice: PermissionValue) => {
     const {permissions} = this.state;
     permissions[resource] = choice;
     this.save(permissions);
   };
 
-  save = permissions => {
+  save = (permissions: Permissions) => {
     this.setState({permissions});
     this.props.onChange(permissions);
-    this.context.form.setValue('scopes', this.permissionStateToList());
+    this.context.form.setValue(
+      'scopes',
+      permissionStateToList(this.state.permissions) as string[]
+    );
   };
 
   render() {
     const {permissions} = this.state;
+    const {displayedPermissions = SENTRY_APP_PERMISSIONS} = this.props;
 
     return (
       <Fragment>
-        {SENTRY_APP_PERMISSIONS.map(config => {
-          const toChoice = ([value, opt]) => [value, opt.label];
-          const choices = Object.entries(config.choices).map(toChoice);
+        {displayedPermissions.map(config => {
+          const options = Object.entries(config.choices).map(([value, {label}]) => ({
+            value,
+            label,
+          }));
+
           const value = permissions[config.resource];
 
           return (
@@ -141,9 +158,9 @@ export default class PermissionSelection extends Component<Props, State> {
               // sentryApplicationDetails.jsx
               name={`${config.resource}--permission`}
               key={config.resource}
-              choices={choices}
-              help={t(config.help)}
-              label={t(config.label || config.resource)}
+              options={options}
+              help={config.help}
+              label={config.label || config.resource}
               onChange={this.onChange.bind(this, config.resource)}
               value={value}
               defaultValue={value}

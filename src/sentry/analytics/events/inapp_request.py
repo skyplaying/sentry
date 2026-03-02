@@ -1,18 +1,31 @@
+import abc
+
 from sentry import analytics
 
 
-class InAppRequestSentEvent(analytics.Event):
-    attributes = (
-        analytics.Attribute("organization_id"),
-        analytics.Attribute("user_id", required=False),
-        analytics.Attribute("target_user_id"),
-        analytics.Attribute("providers"),
-        analytics.Attribute("subtype", required=False),
-    )
+@analytics.eventclass()
+class InAppRequestSentEvent(analytics.Event, abc.ABC):
+    organization_id: int
+    user_id: int | None = None
+    target_user_id: int
+    providers: str
+    subtype: str | None = None
 
 
-class InviteRequestSentEvent(InAppRequestSentEvent):
-    type = "invite_request.sent"
+@analytics.eventclass()
+class InviteOrJoinRequest(InAppRequestSentEvent, abc.ABC):
+    invited_member_id: int
+
+
+@analytics.eventclass("invite_request.sent")
+class InviteRequestSentEvent(InviteOrJoinRequest):
+    pass
+
+
+@analytics.eventclass("join_request.sent")
+class JoinRequestSentEvent(InviteOrJoinRequest):
+    pass
 
 
 analytics.register(InviteRequestSentEvent)
+analytics.register(JoinRequestSentEvent)

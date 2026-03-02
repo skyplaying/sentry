@@ -1,15 +1,13 @@
-from datetime import datetime
-
-from sentry.integrations import FeatureDescription, IntegrationFeatures
-from sentry.plugins.bases.notify import NotifyPlugin
+from sentry.integrations.base import FeatureDescription, IntegrationFeatures
+from sentry.plugins.bases.notify import NotificationPlugin
 from sentry.utils.http import absolute_uri
 from sentry_plugins.base import CorePluginMixin
 from sentry_plugins.utils import get_secret_field_config
 
-from .client import PagerDutyClient
+from .client import PagerDutyPluginClient
 
 
-class PagerDutyPlugin(CorePluginMixin, NotifyPlugin):
+class PagerDutyPlugin(CorePluginMixin, NotificationPlugin):
     description = "Send alerts to PagerDuty."
     slug = "pagerduty"
     title = "PagerDuty"
@@ -31,9 +29,6 @@ class PagerDutyPlugin(CorePluginMixin, NotifyPlugin):
             IntegrationFeatures.ALERT_RULE,
         ),
     ]
-    deprecation_date = datetime(2021, 9, 20)
-    alternative = "pagerduty"
-    alt_is_sentry_app = False
 
     def error_message_from_json(self, data):
         message = data.get("message", "unknown error")
@@ -43,11 +38,11 @@ class PagerDutyPlugin(CorePluginMixin, NotifyPlugin):
 
         return message
 
-    def is_configured(self, project, **kwargs):
+    def is_configured(self, project) -> bool:
         return bool(self.get_option("service_key", project))
 
-    def get_config(self, **kwargs):
-        service_key = self.get_option("service_key", kwargs["project"])
+    def get_config(self, project, user=None, initial=None, add_additional_fields: bool = False):
+        service_key = self.get_option("service_key", project)
         secret_field = get_secret_field_config(
             service_key, "PagerDuty's Sentry service Integration Key", include_prefix=True
         )
@@ -70,7 +65,7 @@ class PagerDutyPlugin(CorePluginMixin, NotifyPlugin):
             },
         ]
 
-    def notify_users(self, group, event, fail_silently=False, **kwargs):
+    def notify_users(self, group, event, triggering_rules) -> None:
         if not self.is_configured(group.project):
             return
 
@@ -105,7 +100,7 @@ class PagerDutyPlugin(CorePluginMixin, NotifyPlugin):
                 service_key = route_service_key
                 break
 
-        client = PagerDutyClient(service_key=service_key)
+        client = PagerDutyPluginClient(service_key=service_key)
         try:
             response = client.trigger_incident(
                 description=description,

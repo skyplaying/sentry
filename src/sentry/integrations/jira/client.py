@@ -1,10 +1,16 @@
 import datetime
 import logging
 import re
+from typing import Any
 from urllib.parse import parse_qs, urlparse, urlsplit
 
-from sentry.integrations.atlassian_connect import get_query_hash
+from requests import PreparedRequest
+
 from sentry.integrations.client import ApiClient
+from sentry.integrations.models.integration import Integration
+from sentry.integrations.services.integration.model import RpcIntegration
+from sentry.integrations.types import IntegrationProviderSlug
+from sentry.integrations.utils.atlassian_connect import get_query_hash
 from sentry.shared_integrations.exceptions import ApiError
 from sentry.utils import jwt
 from sentry.utils.http import absolute_uri
@@ -16,39 +22,78 @@ ISSUE_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*-\d+$")
 CUSTOMFIELD_PREFIX = "customfield_"
 
 
-class JiraCloud:
-    """
-    Contains the jira-cloud specifics that a JiraClient needs
-    in order to communicate with jira
-    """
+class JiraCloudClient(ApiClient):
+    # TODO: Update to v3 endpoints
+    COMMENTS_URL = "/rest/api/2/issue/%s/comment"
+    COMMENT_URL = "/rest/api/2/issue/%s/comment/%s"
+    STATUS_URL = "/rest/api/2/status"
+    CREATE_URL = "/rest/api/2/issue"
+    ISSUE_URL = "/rest/api/2/issue/%s"
+    META_URL = "/rest/api/2/issue/createmeta"
+    PRIORITIES_URL = "/rest/api/2/priority"
+    PROJECTS_PAGINATED_URL = "/rest/api/2/project/search"
+    PROJECT_URL = "/rest/api/2/project"
+    SEARCH_URL = "/rest/api/2/search/jql/"
+    VERSIONS_URL = "/rest/api/2/project/%s/versions"
+    USERS_URL = "/rest/api/2/user/assignable/search"
+    USER_URL = "/rest/api/2/user"
+    SERVER_INFO_URL = "/rest/api/2/serverInfo"
+    STATUS_SEARCH_URL = "/rest/api/2/statuses/search"
+    ASSIGN_URL = "/rest/api/2/issue/%s/assignee"
+    TRANSITION_URL = "/rest/api/2/issue/%s/transitions"
+    EMAIL_URL = "/rest/api/3/user/email"
+    AUTOCOMPLETE_URL = "/rest/api/2/jql/autocompletedata/suggestions"
+    PROPERTIES_URL = "/rest/api/3/issue/%s/properties/%s"
 
-    def __init__(self, shared_secret):
-        self.shared_secret = shared_secret
+    integration_name = IntegrationProviderSlug.JIRA.value
 
-    @property
-    def cache_prefix(self):
-        return "sentry-jira-2:"
+    # This timeout is completely arbitrary. Jira doesn't give us any
+    # caching headers to work with. Ideally we want a duration that
+    # lets the user make their second jira issue with cached data.
+    cache_time = 240
 
-    def request_hook(self, method, path, data, params, **kwargs):
-        """
-        Used by Jira Client to apply the jira-cloud authentication
-        """
-        # handle params that are already part of the path
+    def __init__(
+        self,
+        integration: RpcIntegration | Integration,
+        verify_ssl: bool,
+        logging_context: Any | None = None,
+    ):
+        self.base_url = integration.metadata["base_url"]
+        self.shared_secret = integration.metadata["shared_secret"]
+        super().__init__(
+            integration_id=integration.id,
+            verify_ssl=verify_ssl,
+            logging_context=logging_context,
+        )
+
+    def finalize_request(self, prepared_request: PreparedRequest):
+        assert prepared_request.url is not None
+        assert prepared_request.method is not None
+        path = prepared_request.url[len(self.base_url) :]
         url_params = dict(parse_qs(urlsplit(path).query))
-        url_params.update(params or {})
         path = path.split("?")[0]
-
         jwt_payload = {
             "iss": JIRA_KEY,
             "iat": datetime.datetime.utcnow(),
             "exp": datetime.datetime.utcnow() + datetime.timedelta(seconds=5 * 60),
-            "qsh": get_query_hash(path, method.upper(), url_params),
+            "qsh": get_query_hash(
+                uri=path,
+                method=prepared_request.method.upper(),
+                query_params=url_params,
+            ),
         }
         encoded_jwt = jwt.encode(jwt_payload, self.shared_secret)
-        params = dict(jwt=encoded_jwt, **(url_params or {}))
-        request_spec = kwargs.copy()
-        request_spec.update(dict(method=method, path=path, data=data, params=params))
-        return request_spec
+        prepared_request.headers["Authorization"] = f"JWT {encoded_jwt}"
+        return prepared_request
+
+    def get_cache_prefix(self) -> str:
+        return "sentry-jira-2:"
+
+    def user_id_get_param(self):
+        """
+        Jira-Cloud requires GDPR compliant API usage so we have to use accountId
+        """
+        return "accountId"
 
     def user_id_field(self):
         """
@@ -62,85 +107,17 @@ class JiraCloud:
         """
         return "query"
 
-    def user_id_get_param(self):
-        """
-        Jira-Cloud requires GDPR compliant API usage so we have to use accountId
-        """
-        return "accountId"
-
-
-class JiraApiClient(ApiClient):
-    # TODO: Update to v3 endpoints
-    COMMENTS_URL = "/rest/api/2/issue/%s/comment"
-    COMMENT_URL = "/rest/api/2/issue/%s/comment/%s"
-    STATUS_URL = "/rest/api/2/status"
-    CREATE_URL = "/rest/api/2/issue"
-    ISSUE_URL = "/rest/api/2/issue/%s"
-    META_URL = "/rest/api/2/issue/createmeta"
-    PRIORITIES_URL = "/rest/api/2/priority"
-    PROJECT_URL = "/rest/api/2/project"
-    SEARCH_URL = "/rest/api/2/search/"
-    VERSIONS_URL = "/rest/api/2/project/%s/versions"
-    USERS_URL = "/rest/api/2/user/assignable/search"
-    USER_URL = "/rest/api/2/user"
-    SERVER_INFO_URL = "/rest/api/2/serverInfo"
-    ASSIGN_URL = "/rest/api/2/issue/%s/assignee"
-    TRANSITION_URL = "/rest/api/2/issue/%s/transitions"
-    EMAIL_URL = "/rest/api/3/user/email"
-    AUTOCOMPLETE_URL = "/rest/api/2/jql/autocompletedata/suggestions"
-
-    integration_name = "jira"
-
-    # This timeout is completely arbitrary. Jira doesn't give us any
-    # caching headers to work with. Ideally we want a duration that
-    # lets the user make their second jira issue with cached data.
-    cache_time = 240
-
-    def __init__(self, base_url, jira_style, verify_ssl, logging_context=None):
-        self.base_url = base_url
-        # `jira_style` encapsulates differences between jira server & jira cloud.
-        # We only support one API version for Jira, but server/cloud require different
-        # authentication mechanisms and caching.
-        self.jira_style = jira_style
-        super().__init__(verify_ssl, logging_context)
-
-    def get_cache_prefix(self):
-        return self.jira_style.cache_prefix
-
-    def request(self, method, path, data=None, params=None, **kwargs):
-        """
-        Use the request_hook method for our specific style of Jira to
-        add authentication data and transform parameters.
-        """
-        request_spec = self.jira_style.request_hook(method, path, data, params, **kwargs)
-        if "headers" not in request_spec:
-            request_spec["headers"] = {}
-
-        # Force adherence to the GDPR compliant API conventions.
-        # See
-        # https://developer.atlassian.com/cloud/jira/platform/deprecation-notice-user-privacy-api-migration-guide
-        request_spec["headers"]["x-atlassian-force-account-id"] = "true"
-        return self._request(**request_spec)
-
-    def user_id_get_param(self):
-        return self.jira_style.user_id_get_param()
-
-    def user_id_field(self):
-        return self.jira_style.user_id_field()
-
-    def user_query_param(self):
-        return self.jira_style.user_query_param()
-
     def get_issue(self, issue_id):
         return self.get(self.ISSUE_URL % (issue_id,))
 
     def search_issues(self, query):
+        q = query.replace('"', '\\"')
         # check if it looks like an issue id
         if ISSUE_KEY_RE.match(query):
-            jql = 'id="%s"' % query.replace('"', '\\"')
+            jql = f'id="{q}"'
         else:
-            jql = 'text ~ "%s"' % query.replace('"', '\\"')
-        return self.get(self.SEARCH_URL, params={"jql": jql})
+            jql = f'text ~ "{q}"'
+        return self.get(self.SEARCH_URL, params={"jql": jql, "fields": "*all"})
 
     def create_comment(self, issue_key, comment):
         return self.post(self.COMMENTS_URL % issue_key, data={"body": comment})
@@ -148,16 +125,21 @@ class JiraApiClient(ApiClient):
     def update_comment(self, issue_key, comment_id, comment):
         return self.put(self.COMMENT_URL % (issue_key, comment_id), data={"body": comment})
 
+    def get_projects_paginated(self, params: dict[str, Any] | None = None):
+        response = self.get(self.PROJECTS_PAGINATED_URL, params=params)
+        return response
+
     def get_projects_list(self):
+        """deprecated - please use paginated projects endpoint"""
         return self.get_cached(self.PROJECT_URL)
 
-    def get_project_key_for_id(self, project_id):
+    def get_project_key_for_id(self, project_id) -> str:
         if not project_id:
             return ""
         projects = self.get_projects_list()
         for project in projects:
             if project["id"] == project_id:
-                return project["key"].encode("utf-8")
+                return project["key"]
         return ""
 
     def get_create_meta_for_project(self, project):
@@ -190,11 +172,6 @@ class JiraApiClient(ApiClient):
     def get_priorities(self):
         return self.get_cached(self.PRIORITIES_URL)
 
-    def get_users_for_project(self, project):
-        # Jira Server wants a project key, while cloud is indifferent.
-        project_key = self.get_project_key_for_id(project)
-        return self.get_cached(self.USERS_URL, params={"project": project_key})
-
     def search_users_for_project(self, project, username):
         # Jira Server wants a project key, while cloud is indifferent.
         project_key = self.get_project_key_for_id(project)
@@ -225,11 +202,19 @@ class JiraApiClient(ApiClient):
         return self.get_cached(self.TRANSITION_URL % issue_key)["transitions"]
 
     def transition_issue(self, issue_key, transition_id):
-        return self.post(self.TRANSITION_URL % issue_key, {"transition": {"id": transition_id}})
+        return self.post(
+            self.TRANSITION_URL % issue_key, data={"transition": {"id": transition_id}}
+        )
 
     def assign_issue(self, key, name_or_account_id):
         user_id_field = self.user_id_field()
         return self.put(self.ASSIGN_URL % key, data={user_id_field: name_or_account_id})
+
+    def set_issue_property(self, issue_key, badge_num):
+        module_key = "sentry-issues-glance"
+        properties_key = f"com.atlassian.jira.issue:{JIRA_KEY}:{module_key}:status"
+        data = {"type": "badge", "value": {"label": badge_num}}
+        return self.put(self.PROPERTIES_URL % (issue_key, properties_key), data=data)
 
     def get_email(self, account_id):
         user = self.get_cached(self.EMAIL_URL, params={"accountId": account_id})
@@ -245,3 +230,6 @@ class JiraApiClient(ApiClient):
         return self.get_cached(
             self.AUTOCOMPLETE_URL, params={"fieldName": jql_name, "fieldValue": value}
         )
+
+    def get_project_statuses(self, project_id: str) -> dict[str, Any]:
+        return dict(self.get_cached(self.STATUS_SEARCH_URL, params={"projectId": project_id}))

@@ -1,21 +1,23 @@
+from functools import cached_property
 from urllib.parse import parse_qs, urlparse
 
 import responses
 from django.urls import reverse
-from exam import fixture
 
-from sentry.testutils import APITestCase
+from sentry.testutils.cases import APITestCase
+from sentry.testutils.silo import control_silo_test
 
 from . import EXAMPLE_ISSUE_SEARCH, EXAMPLE_USER_SEARCH_RESPONSE, get_integration
 
 
-class JiraSearchEndpointTest(APITestCase):
-    @fixture
+@control_silo_test
+class JiraServerSearchEndpointTest(APITestCase):
+    @cached_property
     def integration(self):
         return get_integration(self.organization, self.user)
 
     @responses.activate
-    def test_get_success_text_search(self):
+    def test_get_success_text_search(self) -> None:
         org = self.organization
         integration = self.integration
         responses.add(
@@ -33,7 +35,7 @@ class JiraSearchEndpointTest(APITestCase):
         assert resp.data == [{"label": "(HSP-1) this is a test issue summary", "value": "HSP-1"}]
 
     @responses.activate
-    def test_get_success_id_search(self):
+    def test_get_success_id_search(self) -> None:
         org = self.organization
         integration = self.integration
         responses.add(
@@ -51,7 +53,7 @@ class JiraSearchEndpointTest(APITestCase):
         assert resp.data == [{"label": "(HSP-1) this is a test issue summary", "value": "HSP-1"}]
 
     @responses.activate
-    def test_get_network_error(self):
+    def test_get_network_error(self) -> None:
         org = self.organization
         integration = self.integration
         responses.add(
@@ -67,7 +69,7 @@ class JiraSearchEndpointTest(APITestCase):
 
         assert resp.status_code == 400
 
-    def test_get_missing_integration(self):
+    def test_get_missing_integration(self) -> None:
         self.login_as(self.user)
         org = self.organization
 
@@ -77,12 +79,11 @@ class JiraSearchEndpointTest(APITestCase):
         assert resp.status_code == 404
 
     @responses.activate
-    def test_assignee_search(self):
+    def test_assignee_search(self) -> None:
         responses.add(
             responses.GET,
             "https://jira.example.org/rest/api/2/project",
             json=[{"key": "HSP", "id": "10000"}],
-            match_querystring=False,
         )
 
         def responder(request):
@@ -96,7 +97,6 @@ class JiraSearchEndpointTest(APITestCase):
             "https://jira.example.org/rest/api/2/user/assignable/search",
             callback=responder,
             content_type="json",
-            match_querystring=False,
         )
         org = self.organization
         self.login_as(self.user)
@@ -108,19 +108,17 @@ class JiraSearchEndpointTest(APITestCase):
         assert resp.data == [{"value": "bob", "label": "Bobby - bob@example.org (bob)"}]
 
     @responses.activate
-    def test_assignee_search_error(self):
+    def test_assignee_search_error(self) -> None:
         responses.add(
             responses.GET,
             "https://jira.example.org/rest/api/2/project",
             json=[{"key": "HSP", "id": "10000"}],
-            match_querystring=False,
         )
         responses.add(
             responses.GET,
             "https://jira.example.org/rest/api/2/user/assignable/search",
             status=500,
             body="Bad things",
-            match_querystring=False,
         )
         org = self.organization
         self.login_as(self.user)

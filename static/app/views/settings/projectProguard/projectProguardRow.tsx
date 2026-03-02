@@ -1,27 +1,32 @@
 import {Fragment} from 'react';
 import styled from '@emotion/styled';
 
-import Access from 'app/components/acl/access';
-import Role from 'app/components/acl/role';
-import Button from 'app/components/button';
-import ButtonBar from 'app/components/buttonBar';
-import Confirm from 'app/components/confirm';
-import FileSize from 'app/components/fileSize';
-import TimeSince from 'app/components/timeSince';
-import Tooltip from 'app/components/tooltip';
-import {IconClock, IconDelete, IconDownload} from 'app/icons';
-import {t} from 'app/locale';
-import space from 'app/styles/space';
-import {DebugFile} from 'app/types/debugFiles';
+import {Button, LinkButton} from '@sentry/scraps/button';
+import {Grid, Stack} from '@sentry/scraps/layout';
+import {Link} from '@sentry/scraps/link';
+import {Tooltip} from '@sentry/scraps/tooltip';
+
+import Access from 'sentry/components/acl/access';
+import {useRole} from 'sentry/components/acl/useRole';
+import Confirm from 'sentry/components/confirm';
+import FileSize from 'sentry/components/fileSize';
+import TimeSince from 'sentry/components/timeSince';
+import {IconClock, IconDelete, IconDownload} from 'sentry/icons';
+import {t, tct} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {DebugFile} from 'sentry/types/debugFiles';
+import type {ProguardMappingAssociation} from 'sentry/views/settings/projectProguard';
 
 type Props = {
+  downloadUrl: string;
   mapping: DebugFile;
   onDelete: (id: string) => void;
-  downloadUrl: string;
-  downloadRole: string;
+  orgSlug: string;
+  associations?: ProguardMappingAssociation;
 };
 
-const ProjectProguardRow = ({mapping, onDelete, downloadUrl, downloadRole}: Props) => {
+function ProjectProguardRow({mapping, onDelete, downloadUrl, orgSlug}: Props) {
+  const {hasRole, roleRequired: downloadRole} = useRole({role: 'debugFilesRole'});
   const {id, debugId, uuid, size, dateCreated} = mapping;
 
   const handleDeleteClick = () => {
@@ -30,34 +35,39 @@ const ProjectProguardRow = ({mapping, onDelete, downloadUrl, downloadRole}: Prop
 
   return (
     <Fragment>
-      <NameColumn>
+      <Stack justify="center" align="start">
         <Name>{debugId || uuid || `(${t('empty')})`}</Name>
         <TimeWrapper>
           <IconClock size="sm" />
           <TimeSince date={dateCreated} />
         </TimeWrapper>
-      </NameColumn>
+      </Stack>
       <SizeColumn>
         <FileSize bytes={size} />
       </SizeColumn>
       <ActionsColumn>
-        <ButtonBar gap={0.5}>
-          <Role role={downloadRole}>
-            {({hasRole}) => (
-              <Tooltip
-                title={t('You do not have permission to download mappings.')}
-                disabled={hasRole}
-              >
-                <Button
-                  size="small"
-                  icon={<IconDownload size="sm" />}
-                  disabled={!hasRole}
-                  href={downloadUrl}
-                  title={hasRole ? t('Download Mapping') : undefined}
-                />
-              </Tooltip>
+        <Grid flow="column" align="center" gap="xs">
+          <Tooltip
+            title={tct(
+              'Mappings can only be downloaded by users with organization [downloadRole] role[orHigher]. This can be changed in [settingsLink:Debug Files Access] settings.',
+              {
+                downloadRole,
+                orHigher: downloadRole === 'owner' ? '' : ` ${t('or higher')}`,
+                settingsLink: <Link to={`/settings/${orgSlug}/#debugFilesRole`} />,
+              }
             )}
-          </Role>
+            disabled={hasRole}
+            isHoverable
+          >
+            <LinkButton
+              size="sm"
+              icon={<IconDownload size="sm" />}
+              disabled={!hasRole}
+              href={downloadUrl}
+              tooltipProps={{title: hasRole ? t('Download Mapping') : undefined}}
+              aria-label={t('Download Mapping')}
+            />
+          </Tooltip>
 
           <Access access={['project:releases']}>
             {({hasAccess}) => (
@@ -71,28 +81,21 @@ const ProjectProguardRow = ({mapping, onDelete, downloadUrl, downloadRole}: Prop
                   disabled={!hasAccess}
                 >
                   <Button
-                    size="small"
+                    size="sm"
                     icon={<IconDelete size="sm" />}
-                    title={hasAccess ? t('Remove Mapping') : undefined}
-                    label={t('Remove Mapping')}
+                    tooltipProps={{title: hasAccess ? t('Remove Mapping') : undefined}}
+                    aria-label={t('Remove Mapping')}
                     disabled={!hasAccess}
                   />
                 </Confirm>
               </Tooltip>
             )}
           </Access>
-        </ButtonBar>
+        </Grid>
       </ActionsColumn>
     </Fragment>
   );
-};
-
-const NameColumn = styled('div')`
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: center;
-`;
+}
 
 const SizeColumn = styled('div')`
   display: flex;
@@ -111,11 +114,11 @@ const Name = styled('div')`
 
 const TimeWrapper = styled('div')`
   display: grid;
-  grid-gap: ${space(0.5)};
+  gap: ${space(0.5)};
   grid-template-columns: min-content 1fr;
-  font-size: ${p => p.theme.fontSizeMedium};
+  font-size: ${p => p.theme.font.size.md};
   align-items: center;
-  color: ${p => p.theme.subText};
+  color: ${p => p.theme.tokens.content.secondary};
   margin-top: ${space(1)};
 `;
 

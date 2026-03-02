@@ -1,114 +1,178 @@
-import * as React from 'react';
-import {withRouter, WithRouterProps} from 'react-router';
+import {useCallback, useEffect, useMemo, useState} from 'react';
 
-import {loadSearchMap} from 'app/actionCreators/formSearch';
-import FormSearchStore, {FormSearchField} from 'app/stores/formSearchStore';
-import {createFuzzySearch} from 'app/utils/createFuzzySearch';
-import replaceRouterParams from 'app/utils/replaceRouterParams';
+import {FORM_FIELD_REGISTRY} from '@sentry/scraps/form';
 
-import {ChildProps, Result} from './types';
+import type {Field, JsonFormObject} from 'sentry/components/forms/types';
+import type {Fuse} from 'sentry/utils/fuzzySearch';
+import {createFuzzySearch} from 'sentry/utils/fuzzySearch';
 
-type Props = WithRouterProps<{orgId: string}> & {
+import type {ChildProps, Result} from './types';
+import {makeResolvedTs, strGetFn} from './utils';
+
+type FormSearchField = {
+  description: React.ReactNode;
+  field: {name: string};
+  route: string;
+  title: React.ReactNode;
+};
+
+let ALL_FORM_FIELDS_CACHED: FormSearchField[] | null = null;
+
+type SearchMapParams = {
+  fields: Record<string, Field>;
+  formGroups: JsonFormObject[];
+  route: string;
+};
+
+/**
+ * Creates a list of objects to be injected by a search source
+ *
+ * @param route The route a form field belongs on
+ * @param formGroups An array of `FormGroup: {title: string, fields: [Field]}`
+ * @param fields An object whose key is field name and value is a `Field`
+ */
+function createSearchMap({
+  route,
+  formGroups,
+  fields,
+  ...other
+}: SearchMapParams): FormSearchField[] {
+  // There are currently two ways to define forms (TODO(billy): Turn this into one):
+  // If `formGroups` is defined, then return a flattened list of fields in all formGroups
+  // Otherwise `fields` is a map of fieldName -> fieldObject -- create a list of fields
+  const listOfFields = formGroups
+    ? formGroups.flatMap(formGroup => formGroup.fields)
+    : Object.keys(fields).map(fieldName => fields[fieldName]);
+
+  return listOfFields.map<FormSearchField>(field => ({
+    ...other,
+    route,
+    title: typeof field === 'function' ? undefined : (field?.label as string),
+    description: typeof field === 'function' ? undefined : (field?.help as string),
+    field: field!,
+  }));
+}
+
+/**
+ * Get fields from the new Scraps form system (statically extracted)
+ */
+function getNewFormFields() {
+  return Object.values(FORM_FIELD_REGISTRY).map(f => ({
+    title: f.label ?? f.name,
+    description: f.hintText ?? '',
+    route: f.route,
+    field: {
+      name: f.name,
+      label: f.label,
+      help: f.hintText,
+    },
+  }));
+}
+
+/**
+ * Get fields from the old form system (data/forms/*.tsx files)
+ */
+function getOldFormFields(): FormSearchField[] {
+  // Load all form configuration files via webpack that export a named `route`
+  // as well as either `fields` or `formGroups`
+  const context = require.context('sentry/data/forms', true, /\.tsx?$/);
+
+  // Get a list of all form fields defined in `../data/forms`
+  return context.keys().flatMap((key: any) => {
+    const mod = context(key);
+
+    // Since we're dynamically importing an entire directly, there could be malformed modules defined?
+    // Only look for module that have `route` exported
+    if (!mod?.route) {
+      return [];
+    }
+
+    const searchMap = createSearchMap({
+      // `formGroups` can be a default export or a named export :<
+      formGroups: mod.default || mod.formGroups,
+      fields: mod.fields,
+      route: mod.route,
+    });
+
+    if (searchMap !== null) {
+      return searchMap;
+    }
+
+    return [];
+  });
+}
+
+function getSearchMap() {
+  if (ALL_FORM_FIELDS_CACHED !== null) {
+    return ALL_FORM_FIELDS_CACHED;
+  }
+
+  const oldFormFields = getOldFormFields();
+  const newFormFields = getNewFormFields();
+
+  // Merge both sources, with new form fields taking precedence for same route+field
+  const fieldMap = new Map<string, FormSearchField>();
+  oldFormFields.forEach(f => fieldMap.set(`${f.route}#${f.field.name}`, f));
+  newFormFields.forEach(f => fieldMap.set(`${f.route}#${f.field.name}`, f));
+
+  ALL_FORM_FIELDS_CACHED = Array.from(fieldMap.values());
+  return ALL_FORM_FIELDS_CACHED;
+}
+
+/**
+ * @internal Used specifically for tests
+ */
+export function setSearchMap(fields: FormSearchField[]) {
+  ALL_FORM_FIELDS_CACHED = fields;
+}
+
+interface Props {
+  children: (props: ChildProps) => React.ReactElement;
   /**
    * search term
    */
   query: string;
-  children: (props: ChildProps) => React.ReactElement;
   /**
    * fusejs options.
    */
-  searchOptions?: Fuse.FuseOptions<FormSearchField>;
-  /**
-   * List of form fields to search
-   */
-  searchMap?: null | FormSearchField[];
-};
+  searchOptions?: Fuse.IFuseOptions<FormSearchField>;
+}
 
-type State = {
-  fuzzy: null | Fuse<FormSearchField, Fuse.FuseOptions<FormSearchField>>;
-};
+function FormSource({searchOptions, query, children}: Props) {
+  const [fuzzy, setFuzzy] = useState<Fuse<FormSearchField> | null>(null);
 
-class FormSource extends React.Component<Props, State> {
-  static defaultProps = {
-    searchOptions: {},
-  };
-  state: State = {
-    fuzzy: null,
-  };
-
-  componentDidMount() {
-    this.createSearch(this.props.searchMap);
-  }
-
-  componentDidUpdate(prevProps: Props) {
-    if (this.props.searchMap !== prevProps.searchMap) {
-      this.createSearch(this.props.searchMap);
-    }
-  }
-
-  async createSearch(searchMap: Props['searchMap']) {
-    this.setState({
-      fuzzy: await createFuzzySearch<FormSearchField>(searchMap || [], {
-        ...this.props.searchOptions,
+  const createSearch = useCallback(async () => {
+    setFuzzy(
+      await createFuzzySearch(getSearchMap(), {
+        ...searchOptions,
         keys: ['title', 'description'],
-      }),
-    });
-  }
+        getFn: strGetFn,
+      })
+    );
+  }, [searchOptions]);
 
-  render() {
-    const {searchMap, query, params, children} = this.props;
+  useEffect(() => void createSearch(), [createSearch]);
 
-    let results: Result[] = [];
-    if (this.state.fuzzy) {
-      const rawResults = this.state.fuzzy.search<FormSearchField, true, true>(query);
-      results = rawResults.map<Result>(value => {
-        const {item, ...rest} = value;
-        return {
-          item: {
-            ...item,
-            sourceType: 'field',
-            resultType: 'field',
-            to: `${replaceRouterParams(item.route, params)}#${encodeURIComponent(
-              item.field.name
-            )}`,
-          },
-          ...rest,
-        };
-      });
-    }
+  const results = useMemo(() => {
+    const resolvedTs = makeResolvedTs();
+    return (
+      fuzzy?.search(query).map<Result>(({item, ...rest}) => ({
+        item: {
+          ...item,
+          sourceType: 'field',
+          resultType: 'field',
+          to: {pathname: item.route, hash: `#${encodeURIComponent(item.field.name)}`},
+          resolvedTs,
+        },
+        ...rest,
+      })) ?? []
+    );
+  }, [fuzzy, query]);
 
-    return children({
-      isLoading: searchMap === null,
-      results,
-    });
-  }
+  return children({
+    isLoading: fuzzy === null,
+    results,
+  });
 }
 
-type ContainerProps = Omit<Props, 'searchMap'>;
-type ContainerState = Pick<Props, 'searchMap'>;
-
-class FormSourceContainer extends React.Component<ContainerProps, ContainerState> {
-  state = {
-    searchMap: FormSearchStore.get(),
-  };
-
-  componentDidMount() {
-    // Loads form fields
-    loadSearchMap();
-  }
-
-  componentWillUnmount() {
-    this.unsubscribe();
-  }
-
-  unsubscribe = FormSearchStore.listen(
-    (searchMap: ContainerState['searchMap']) => this.setState({searchMap}),
-    undefined
-  );
-
-  render() {
-    return <FormSource searchMap={this.state.searchMap} {...this.props} />;
-  }
-}
-
-export default withRouter(FormSourceContainer);
+export default FormSource;

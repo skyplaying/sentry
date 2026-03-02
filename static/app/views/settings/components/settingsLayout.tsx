@@ -1,116 +1,38 @@
-import * as React from 'react';
-import {browserHistory, RouteComponentProps} from 'react-router';
 import styled from '@emotion/styled';
 
-import Button from 'app/components/button';
-import {IconClose, IconMenu} from 'app/icons';
-import {t} from 'app/locale';
-import {fadeIn, slideInLeft} from 'app/styles/animations';
-import space from 'app/styles/space';
+import {Flex} from '@sentry/scraps/layout';
+
+import * as Layout from 'sentry/components/layouts/thirds';
+import {space} from 'sentry/styles/space';
+import {useParams} from 'sentry/utils/useParams';
+import {useRoutes} from 'sentry/utils/useRoutes';
 
 import SettingsBreadcrumb from './settingsBreadcrumb';
 import SettingsHeader from './settingsHeader';
 import SettingsSearch from './settingsSearch';
 
-type Props = {
-  renderNavigation?: () => React.ReactNode;
+interface Props {
   children: React.ReactNode;
-} & RouteComponentProps<{}, {}>;
+}
 
-type State = {
-  /**
-   * This is used when the screen is small enough that the navigation should
-   * be hidden. On large screens this state will end up unused.
-   */
-  navVisible: boolean;
-  /**
-   * Offset mobile settings navigation by the height of main navigation,
-   * settings breadcrumbs and optional warnings.
-   */
-  navOffsetTop: number;
-};
+export default function SettingsLayout({children}: Props) {
+  const params = useParams();
+  const routes = useRoutes();
 
-class SettingsLayout extends React.Component<Props, State> {
-  state: State = {
-    navVisible: false,
-    navOffsetTop: 0,
-  };
+  return (
+    <SettingsColumn>
+      <SettingsHeader>
+        <Flex align="center" justify="between">
+          <StyledSettingsBreadcrumb params={params} routes={routes} />
+          <SettingsSearch />
+        </Flex>
+      </SettingsHeader>
 
-  componentDidMount() {
-    // Close the navigation when navigating.
-    this.unlisten = browserHistory.listen(() => this.toggleNav(false));
-  }
-
-  componentWillUnmount() {
-    this.unlisten();
-  }
-
-  unlisten!: () => void;
-  headerRef = React.createRef<HTMLDivElement>();
-
-  toggleNav(navVisible: boolean) {
-    // when the navigation is opened, body should be scroll-locked
-    this.toggleBodyScrollLock(navVisible);
-
-    this.setState({
-      navOffsetTop: this.headerRef.current?.getBoundingClientRect().bottom ?? 0,
-      navVisible,
-    });
-  }
-
-  toggleBodyScrollLock(lock: boolean) {
-    const bodyElement = document.getElementsByTagName('body')[0];
-
-    if (window.scrollTo) {
-      window.scrollTo(0, 0);
-    }
-    bodyElement.classList[lock ? 'add' : 'remove']('scroll-lock');
-  }
-
-  render() {
-    const {params, routes, route, renderNavigation, children} = this.props;
-    const {navVisible, navOffsetTop} = this.state;
-
-    // We want child's view's props
-    const childProps =
-      children && React.isValidElement(children) ? children.props : this.props;
-    const childRoutes = childProps.routes || routes || [];
-    const childRoute = childProps.route || route || {};
-    const shouldRenderNavigation = typeof renderNavigation === 'function';
-
-    return (
-      <SettingsColumn>
-        <SettingsHeader ref={this.headerRef}>
-          <HeaderContent>
-            {shouldRenderNavigation && (
-              <NavMenuToggle
-                priority="link"
-                label={t('Open the menu')}
-                icon={navVisible ? <IconClose aria-hidden /> : <IconMenu aria-hidden />}
-                onClick={() => this.toggleNav(!navVisible)}
-              />
-            )}
-            <StyledSettingsBreadcrumb
-              params={params}
-              routes={childRoutes}
-              route={childRoute}
-            />
-            <SettingsSearch />
-          </HeaderContent>
-        </SettingsHeader>
-
-        <MaxWidthContainer>
-          {shouldRenderNavigation && (
-            <SidebarWrapper isVisible={navVisible} offsetTop={navOffsetTop}>
-              {renderNavigation!()}
-            </SidebarWrapper>
-          )}
-          <NavMask isVisible={navVisible} onClick={() => this.toggleNav(false)} />
-          <Content>{children}</Content>
-        </MaxWidthContainer>
-      </SettingsColumn>
-    );
-  }
+      <Flex flex="1" maxWidth="1440px">
+        <Content>{children}</Content>
+      </Flex>
+    </SettingsColumn>
+  );
 }
 
 const SettingsColumn = styled('div')`
@@ -123,66 +45,8 @@ const SettingsColumn = styled('div')`
   }
 `;
 
-const HeaderContent = styled('div')`
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-`;
-
-const NavMenuToggle = styled(Button)`
-  display: none;
-  margin: -${space(1)} ${space(1)} -${space(1)} -${space(1)};
-  padding: ${space(1)};
-  color: ${p => p.theme.subText};
-  &:hover,
-  &:focus,
-  &:active {
-    color: ${p => p.theme.textColor};
-  }
-  @media (max-width: ${p => p.theme.breakpoints[0]}) {
-    display: block;
-  }
-`;
-
 const StyledSettingsBreadcrumb = styled(SettingsBreadcrumb)`
   flex: 1;
-`;
-
-const MaxWidthContainer = styled('div')`
-  display: flex;
-  max-width: ${p => p.theme.settings.containerWidth};
-  flex: 1;
-`;
-
-const SidebarWrapper = styled('div')<{isVisible: boolean; offsetTop: number}>`
-  flex-shrink: 0;
-  width: ${p => p.theme.settings.sidebarWidth};
-  background: ${p => p.theme.background};
-  border-right: 1px solid ${p => p.theme.border};
-
-  @media (max-width: ${p => p.theme.breakpoints[0]}) {
-    display: ${p => (p.isVisible ? 'block' : 'none')};
-    position: fixed;
-    top: ${p => p.offsetTop}px;
-    bottom: 0;
-    overflow-y: auto;
-    animation: ${slideInLeft} 100ms ease-in-out;
-    z-index: ${p => p.theme.zIndex.settingsSidebarNav};
-    box-shadow: ${p => p.theme.dropShadowHeavy};
-  }
-`;
-
-const NavMask = styled('div')<{isVisible: boolean}>`
-  display: none;
-  @media (max-width: ${p => p.theme.breakpoints[0]}) {
-    display: ${p => (p.isVisible ? 'block' : 'none')};
-    background: rgba(0, 0, 0, 0.35);
-    height: 100%;
-    width: 100%;
-    position: absolute;
-    z-index: ${p => p.theme.zIndex.settingsSidebarNavMask};
-    animation: ${fadeIn} 250ms ease-in-out;
-  }
 `;
 
 /**
@@ -193,6 +57,16 @@ const Content = styled('div')`
   flex: 1;
   padding: ${space(4)};
   min-width: 0; /* keep children from stretching container */
-`;
 
-export default SettingsLayout;
+  @media (max-width: ${p => p.theme.breakpoints.md}) {
+    padding: ${space(2)};
+  }
+
+  /**
+   * Layout.Page is not normally used in settings but <PermissionDenied /> uses
+   * it under the hood. This prevents double padding.
+   */
+  ${Layout.Page} {
+    padding: 0;
+  }
+`;

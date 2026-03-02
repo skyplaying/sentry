@@ -1,15 +1,15 @@
-import {FunctionComponent, ReactNode} from 'react';
-import {Location} from 'history';
+import type {Location} from 'history';
 
-import {Client} from 'app/api';
-import BaseChart from 'app/components/charts/baseChart';
-import {RenderProps} from 'app/components/charts/eventsRequest';
-import {DateString, Organization} from 'app/types';
-import EventView from 'app/utils/discover/eventView';
+import type {Client} from 'sentry/api';
+import type BaseChart from 'sentry/components/charts/baseChart';
+import type {DateString} from 'sentry/types/core';
+import type {Organization, OrganizationSummary} from 'sentry/types/organization';
+import type EventView from 'sentry/utils/discover/eventView';
 
-import {PerformanceWidgetContainerTypes} from './components/performanceWidgetContainer';
+import type {PerformanceWidgetContainerTypes} from './components/performanceWidgetContainer';
+import type {ChartDefinition, PerformanceWidgetSetting} from './widgetDefinitions';
 
-export enum VisualizationDataState {
+enum VisualizationDataState {
   ERROR = 'error',
   LOADING = 'loading',
   EMPTY = 'empty',
@@ -17,106 +17,148 @@ export enum VisualizationDataState {
 }
 
 export enum GenericPerformanceWidgetDataType {
-  histogram = 'histogram',
-  area = 'area',
-  vitals = 'vitals',
-  trends = 'trends',
+  HISTOGRAM = 'histogram',
+  AREA = 'area',
+  LINE_LIST = 'line_list',
+  TRENDS = 'trends',
+  STACKED_AREA = 'stacked_area',
+  PERFORMANCE_SCORE = 'performance_score',
+  SLOW_SCREENS_BY_TTID = 'slow_screens_by_ttid',
+  PERFORMANCE_SCORE_LIST = 'performance_score_list',
+  SLOW_SCREENS_BY_COLD_START = 'slow_screens_by_cold_start',
+  SLOW_SCREENS_BY_WARM_START = 'slow_screens_by_warm_start',
 }
+
+export type PerformanceWidgetProps = {
+  ContainerActions: React.ComponentType<{isLoading: boolean}> | null;
+  chartDefinition: ChartDefinition;
+  chartHeight: number;
+
+  chartSetting: PerformanceWidgetSetting;
+  eventView: EventView;
+  fields: string[];
+
+  organization: Organization;
+  title: string;
+  titleTooltip: string;
+  InteractiveTitle?: React.ComponentType<{isLoading: boolean}> | null;
+
+  chartColor?: string;
+
+  subTitle?: string;
+
+  withStaticFilters?: boolean;
+};
 
 export interface WidgetDataResult {
-  isLoading: boolean;
-  isErrored: boolean;
   hasData: boolean;
+  isErrored: boolean;
+  isLoading: boolean;
 }
-export interface WidgetDataConstraint {
-  [dataKey: string]: WidgetDataResult | undefined;
-}
+export type WidgetDataConstraint = Record<string, WidgetDataResult | undefined>;
 
-export type QueryChildren = {
-  children: (props: any) => ReactNode; // TODO(k-fish): Fix any type.
+type QueryChildren = {
+  children: (props: any) => React.ReactNode; // TODO(k-fish): Fix any type.
 };
-export type QueryFC = FunctionComponent<
+type QueryFC<T extends WidgetDataConstraint> = React.ComponentType<
   QueryChildren & {
-    fields?: string | string[];
-    yAxis?: string | string[];
-    period?: string;
-    start?: DateString;
+    eventView: EventView;
+    orgSlug: string;
+    organization: OrganizationSummary;
+    widgetData: T;
     end?: DateString;
-    project?: Readonly<number[]>;
-    environment?: Readonly<string[]>;
+    environment?: readonly string[];
+    fields?: string | string[];
+    period?: string | null;
+    project?: readonly number[];
+    query?: string;
+    referrer?: string;
+    start?: DateString;
     team?: Readonly<string | string[]>;
-    organization?: Organization;
+    yAxis?: string | string[];
   }
 >;
 
 export type QueryDefinition<
   T extends WidgetDataConstraint,
-  S extends WidgetDataResult | undefined
+  S extends WidgetDataResult | undefined,
 > = {
-  component: QueryFC;
+  component: QueryFC<T>;
   fields: string | string[];
-  enabled?: (data: T) => boolean;
   transform: (
     props: GenericPerformanceWidgetProps<T>,
     results: any,
     queryDefinition: QueryDefinitionWithKey<T>
   ) => S; // TODO(k-fish): Fix any type.
+  enabled?: (data: T) => boolean;
 };
-export type Queries<T extends WidgetDataConstraint> = Record<
+type Queries<T extends WidgetDataConstraint> = Record<
   string,
   QueryDefinition<T, T[string]>
 >;
 
 type Visualization<T> = {
-  component: FunctionComponent<{
+  component: React.ComponentType<{
     widgetData: T;
-    queryFields?: string;
     grid?: React.ComponentProps<typeof BaseChart>['grid'];
     height?: number;
+    queryFields?: string;
   }>;
+  height: number;
+  bottomPadding?: boolean;
   dataState?: (data: T) => VisualizationDataState;
   fields?: string;
   noPadding?: boolean;
-  bottomPadding?: boolean;
-  queryFields?: string[];
-  height: number; // Used to determine placeholder and loading sizes. Will also be passed to the component.
+  queryFields?: string[]; // Used to determine placeholder and loading sizes. Will also be passed to the component.
 };
 
-type Visualizations<T extends WidgetDataConstraint> = Readonly<Visualization<T>[]>; // Readonly because of index being used for React key.
+type Visualizations<T extends WidgetDataConstraint> = ReadonlyArray<Visualization<T>>; // Readonly because of index being used for React key.
 
-type HeaderActions<T> = FunctionComponent<{
+type HeaderActions<T> = React.ComponentType<{
+  widgetData: T;
+}>;
+
+type InteractiveTitle<T> = React.ComponentType<{widgetData: T}>;
+
+type Subtitle<T> = React.ComponentType<{
   widgetData: T;
 }>;
 
 export type GenericPerformanceWidgetProps<T extends WidgetDataConstraint> = {
+  Queries: Queries<T>;
+  Visualizations: Visualizations<T>;
+
+  chartDefinition: ChartDefinition;
+  chartSetting: PerformanceWidgetSetting;
+  eventView: EventView;
+
+  fields: string[];
+  location: Location;
+  organization: Organization;
+
   // Header;
   title: string;
   titleTooltip: string;
-  subtitle?: JSX.Element;
-
-  fields: string[];
-  chartHeight: number;
-  containerType: PerformanceWidgetContainerTypes;
-
-  location: Location;
-  eventView: EventView;
-  organization: Organization;
-
-  // Components
+  EmptyComponent?: React.ComponentType<{height?: number}>;
   HeaderActions?: HeaderActions<T>;
-  Queries: Queries<T>;
-  Visualizations: Visualizations<T>;
-};
 
-export type GenericPerformanceWithData<T extends WidgetDataConstraint> =
-  GenericPerformanceWidgetProps<T> & WidgetDataProps<T>;
+  InteractiveTitle?: InteractiveTitle<T> | null;
+  Subtitle?: Subtitle<T>;
+  /**
+   * @default 200
+   */
+  chartHeight?: number;
+  /**
+   * @default 'panel'
+   */
+  containerType?: PerformanceWidgetContainerTypes;
+};
 
 export type WidgetDataProps<T> = {
-  widgetData: T;
+  removeWidgetDataForKey: (dataKey: string) => void;
   setWidgetDataForKey: (dataKey: string, result?: WidgetDataResult) => void;
+  widgetData: T;
 };
-
-export type EventsRequestChildrenProps = RenderProps;
 
 export type QueryDefinitionWithKey<T extends WidgetDataConstraint> = QueryDefinition<
   T,
@@ -125,9 +167,10 @@ export type QueryDefinitionWithKey<T extends WidgetDataConstraint> = QueryDefini
 
 export type QueryHandlerProps<T extends WidgetDataConstraint> = {
   api: Client;
-  queries: QueryDefinitionWithKey<T>[];
-  children?: ReactNode;
+  eventView: EventView;
+  queries: Array<QueryDefinitionWithKey<T>>;
   queryProps: WidgetPropUnion<T>;
+  children?: React.ReactNode;
 } & WidgetDataProps<T>;
 
 export type WidgetPropUnion<T extends WidgetDataConstraint> =

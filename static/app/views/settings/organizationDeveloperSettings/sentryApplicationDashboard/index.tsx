@@ -1,96 +1,129 @@
 import {Fragment} from 'react';
-import {RouteComponentProps} from 'react-router';
 import styled from '@emotion/styled';
 
-import BarChart from 'app/components/charts/barChart';
-import LineChart from 'app/components/charts/lineChart';
-import DateTime from 'app/components/dateTime';
-import Link from 'app/components/links/link';
-import {Panel, PanelBody, PanelFooter, PanelHeader} from 'app/components/panels';
-import {t} from 'app/locale';
-import space from 'app/styles/space';
-import {SentryApp} from 'app/types';
-import AsyncView from 'app/views/asyncView';
-import SettingsPageHeader from 'app/views/settings/components/settingsPageHeader';
+import {Flex} from '@sentry/scraps/layout';
+import {Link} from '@sentry/scraps/link';
+
+import {BarChart} from 'sentry/components/charts/barChart';
+import type {LineChartSeries} from 'sentry/components/charts/lineChart';
+import {LineChart} from 'sentry/components/charts/lineChart';
+import {DateTime} from 'sentry/components/dateTime';
+import LoadingError from 'sentry/components/loadingError';
+import LoadingIndicator from 'sentry/components/loadingIndicator';
+import Panel from 'sentry/components/panels/panel';
+import PanelBody from 'sentry/components/panels/panelBody';
+import PanelFooter from 'sentry/components/panels/panelFooter';
+import PanelHeader from 'sentry/components/panels/panelHeader';
+import SentryDocumentTitle from 'sentry/components/sentryDocumentTitle';
+import {t} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {SentryApp} from 'sentry/types/integrations';
+import getApiUrl from 'sentry/utils/api/getApiUrl';
+import {useApiQuery} from 'sentry/utils/queryClient';
+import useOrganization from 'sentry/utils/useOrganization';
+import {useParams} from 'sentry/utils/useParams';
+import SettingsPageHeader from 'sentry/views/settings/components/settingsPageHeader';
 
 import RequestLog from './requestLog';
 
-type Props = RouteComponentProps<{appSlug: string; orgId: string}, {}>;
-
-type State = AsyncView['state'] & {
-  stats: {
-    totalUninstalls: number;
-    totalInstalls: number;
-    installStats: [number, number][];
-    uninstallStats: [number, number][];
-  };
-  interactions: {
-    componentInteractions: {
-      [key: string]: [number, number][];
-    };
-    views: [number, number][];
-  };
-  app: SentryApp;
+type Interactions = {
+  componentInteractions: Record<string, Array<[number, number]>>;
+  views: Array<[number, number]>;
 };
 
-export default class SentryApplicationDashboard extends AsyncView<Props, State> {
-  getEndpoints(): ReturnType<AsyncView['getEndpoints']> {
-    const {appSlug} = this.props.params;
+type Stats = {
+  installStats: Array<[number, number]>;
+  totalInstalls: number;
+  totalUninstalls: number;
+  uninstallStats: Array<[number, number]>;
+};
 
-    // Default time range for now: 90 days ago to now
-    const now = Math.floor(new Date().getTime() / 1000);
-    const ninety_days_ago = 3600 * 24 * 90;
+function SentryApplicationDashboard() {
+  const organization = useOrganization();
+  const {appSlug} = useParams<{appSlug: string}>();
 
-    return [
-      [
-        'stats',
-        `/sentry-apps/${appSlug}/stats/`,
-        {query: {since: now - ninety_days_ago, until: now}},
-      ],
+  // Default time range for now: 90 days ago to now
+  const now = Math.floor(Date.now() / 1000);
+  const ninety_days_ago = 3600 * 24 * 90;
 
-      [
-        'interactions',
-        `/sentry-apps/${appSlug}/interaction/`,
-        {query: {since: now - ninety_days_ago, until: now}},
-      ],
-      ['app', `/sentry-apps/${appSlug}/`],
-    ];
+  const {
+    data: app,
+    isPending: isAppPending,
+    isError: isAppError,
+  } = useApiQuery<SentryApp>(
+    [
+      getApiUrl(`/sentry-apps/$sentryAppIdOrSlug/`, {
+        path: {sentryAppIdOrSlug: appSlug},
+      }),
+    ],
+    {staleTime: 0}
+  );
+
+  const {
+    data: interactions,
+    isPending: isInteractionsPending,
+    isError: isInteractionsError,
+  } = useApiQuery<Interactions>(
+    [
+      getApiUrl(`/sentry-apps/$sentryAppIdOrSlug/interaction/`, {
+        path: {sentryAppIdOrSlug: appSlug},
+      }),
+      {query: {since: now - ninety_days_ago, until: now}},
+    ],
+    {staleTime: 0}
+  );
+
+  const {
+    data: stats,
+    isPending: isStatsPending,
+    isError: isStatsError,
+  } = useApiQuery<Stats>(
+    [
+      getApiUrl(`/sentry-apps/$sentryAppIdOrSlug/stats/`, {
+        path: {sentryAppIdOrSlug: appSlug},
+      }),
+      {query: {since: now - ninety_days_ago, until: now}},
+    ],
+    {staleTime: 0}
+  );
+
+  if (isAppPending || isStatsPending || isInteractionsPending) {
+    return <LoadingIndicator />;
   }
 
-  getTitle() {
-    return t('Integration Dashboard');
+  if (isAppError || isStatsError || isInteractionsError) {
+    return <LoadingError />;
   }
 
-  renderInstallData() {
-    const {app, stats} = this.state;
-    const {totalUninstalls, totalInstalls} = stats;
+  const {installStats, uninstallStats, totalUninstalls, totalInstalls} = stats;
+  const {views, componentInteractions} = interactions;
+
+  const renderInstallData = () => {
     return (
       <Fragment>
         <h5>{t('Installation & Interaction Data')}</h5>
-        <Row>
+        <Flex>
           {app.datePublished ? (
             <StatsSection>
               <StatsHeader>{t('Date published')}</StatsHeader>
               <DateTime dateOnly date={app.datePublished} />
             </StatsSection>
           ) : null}
-          <StatsSection>
+          <StatsSection data-test-id="installs">
             <StatsHeader>{t('Total installs')}</StatsHeader>
             <p>{totalInstalls}</p>
           </StatsSection>
-          <StatsSection>
+          <StatsSection data-test-id="uninstalls">
             <StatsHeader>{t('Total uninstalls')}</StatsHeader>
             <p>{totalUninstalls}</p>
           </StatsSection>
-        </Row>
-        {this.renderInstallCharts()}
+        </Flex>
+        {renderInstallCharts()}
       </Fragment>
     );
-  }
+  };
 
-  renderInstallCharts() {
-    const {installStats, uninstallStats} = this.state.stats;
-
+  const renderInstallCharts = () => {
     const installSeries = {
       data: installStats.map(point => ({
         name: point[0] * 1000,
@@ -128,12 +161,9 @@ export default class SentryApplicationDashboard extends AsyncView<Props, State> 
         </ChartWrapper>
       </Panel>
     );
-  }
+  };
 
-  renderIntegrationViews() {
-    const {views} = this.state.interactions;
-    const {appSlug, orgId} = this.props.params;
-
+  const renderIntegrationViews = () => {
     return (
       <Panel>
         <PanelHeader>{t('Integration Views')}</PanelHeader>
@@ -148,15 +178,16 @@ export default class SentryApplicationDashboard extends AsyncView<Props, State> 
               {t('external installation page')}
             </Link>
             {t(' and views on the Learn More/Install modal on the ')}
-            <Link to={`/settings/${orgId}/integrations/`}>{t('integrations page')}</Link>
+            <Link to={`/settings/${organization.slug}/integrations/`}>
+              {t('integrations page')}
+            </Link>
           </StyledFooter>
         </PanelFooter>
       </Panel>
     );
-  }
+  };
 
-  renderComponentInteractions() {
-    const {componentInteractions} = this.state.interactions;
+  const renderComponentInteractions = () => {
     const componentInteractionsDetails = {
       'stacktrace-link': t(
         'Each link click or context menu open counts as one interaction'
@@ -176,10 +207,16 @@ export default class SentryApplicationDashboard extends AsyncView<Props, State> 
           <StyledFooter>
             {Object.keys(componentInteractions).map(
               (component, idx) =>
-                componentInteractionsDetails[component] && (
+                componentInteractionsDetails[
+                  component as keyof typeof componentInteractionsDetails
+                ] && (
                   <Fragment key={idx}>
                     <strong>{`${component}: `}</strong>
-                    {componentInteractionsDetails[component]}
+                    {
+                      componentInteractionsDetails[
+                        component as keyof typeof componentInteractionsDetails
+                      ]
+                    }
                     <br />
                   </Fragment>
                 )
@@ -188,39 +225,38 @@ export default class SentryApplicationDashboard extends AsyncView<Props, State> 
         </PanelFooter>
       </Panel>
     );
-  }
+  };
 
-  renderBody() {
-    const {app} = this.state;
-
-    return (
-      <div>
-        <SettingsPageHeader title={`${t('Integration Dashboard')} - ${app.name}`} />
-        {app.status === 'published' && this.renderInstallData()}
-        {app.status === 'published' && this.renderIntegrationViews()}
-        {app.schema.elements && this.renderComponentInteractions()}
-        <RequestLog app={app} />
-      </div>
-    );
-  }
+  return (
+    <div>
+      <SentryDocumentTitle title={t('Integration Dashboard')} />
+      <SettingsPageHeader title={`${t('Integration Dashboard')} - ${app.name}`} />
+      {app.status === 'published' && renderInstallData()}
+      {app.status === 'published' && renderIntegrationViews()}
+      {app.schema.elements && renderComponentInteractions()}
+      <RequestLog app={app} />
+    </div>
+  );
 }
 
+export default SentryApplicationDashboard;
+
 type InteractionsChartProps = {
-  data: {
-    [key: string]: [number, number][];
-  };
+  data: Record<string, Array<[number, number]>>;
 };
-const InteractionsChart = ({data}: InteractionsChartProps) => {
-  const elementInteractionsSeries = Object.keys(data).map((key: string) => {
-    const seriesData = data[key].map(point => ({
-      value: point[1],
-      name: point[0] * 1000,
-    }));
-    return {
-      seriesName: key,
-      data: seriesData,
-    };
-  });
+function InteractionsChart({data}: InteractionsChartProps) {
+  const elementInteractionsSeries: LineChartSeries[] = Object.keys(data).map(
+    (key: string) => {
+      const seriesData = data[key]!.map(point => ({
+        value: point[1],
+        name: point[0] * 1000,
+      }));
+      return {
+        seriesName: key,
+        data: seriesData,
+      };
+    }
+  );
 
   return (
     <ChartWrapper>
@@ -236,11 +272,7 @@ const InteractionsChart = ({data}: InteractionsChartProps) => {
       />
     </ChartWrapper>
   );
-};
-
-const Row = styled('div')`
-  display: flex;
-`;
+}
 
 const StatsSection = styled('div')`
   margin-right: ${space(4)};
@@ -249,7 +281,7 @@ const StatsHeader = styled('h6')`
   margin-bottom: ${space(1)};
   font-size: 12px;
   text-transform: uppercase;
-  color: ${p => p.theme.subText};
+  color: ${p => p.theme.tokens.content.secondary};
 `;
 
 const StyledFooter = styled('div')`

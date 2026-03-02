@@ -1,32 +1,41 @@
 from dateutil.parser import parse as parse_date
 from django.db.models import Q
 from rest_framework import status
+from rest_framework.request import Request
 from rest_framework.response import Response
 
 from sentry import features
+from sentry.api.api_owners import ApiOwner
+from sentry.api.api_publish_status import ApiPublishStatus
+from sentry.api.base import region_silo_endpoint
 from sentry.api.bases.incident import IncidentPermission
 from sentry.api.bases.organization import OrganizationEndpoint
 from sentry.api.exceptions import ResourceDoesNotExist
 from sentry.api.paginator import OffsetPaginator
 from sentry.api.serializers import serialize
-from sentry.api.serializers.models.incident import IncidentSerializer
-from sentry.api.utils import InvalidParams
-from sentry.incidents.models import (
-    AlertRuleActivity,
-    AlertRuleActivityType,
-    Incident,
-    IncidentStatus,
-)
+from sentry.exceptions import InvalidParams
+from sentry.incidents.endpoints.serializers.incident import IncidentSerializer
+from sentry.incidents.models.alert_rule import AlertRuleActivity, AlertRuleActivityType
+from sentry.incidents.models.incident import Incident, IncidentStatus
+from sentry.models.organization import Organization
 from sentry.snuba.dataset import Dataset
 from sentry.utils.dates import ensure_aware
+from sentry.workflow_engine.endpoints.utils.ids import to_valid_int_id
+from sentry.workflow_engine.utils.legacy_metric_tracking import track_alert_endpoint_execution
 
 from .utils import parse_team_params
 
 
+@region_silo_endpoint
 class OrganizationIncidentIndexEndpoint(OrganizationEndpoint):
+    owner = ApiOwner.ISSUES
+    publish_status = {
+        "GET": ApiPublishStatus.PRIVATE,
+    }
     permission_classes = (IncidentPermission,)
 
-    def get(self, request, organization):
+    @track_alert_endpoint_execution("GET", "sentry-api-0-organization-incident-index")
+    def get(self, request: Request, organization: Organization) -> Response:
         """
         List Incidents that a User can access within an Organization
         ````````````````````````````````````````````````````````````
@@ -50,11 +59,12 @@ class OrganizationIncidentIndexEndpoint(OrganizationEndpoint):
         query_alert_rule = request.GET.get("alertRule")
         query_include_snapshots = request.GET.get("includeSnapshots")
         if query_alert_rule is not None:
-            alert_rule_ids = [int(query_alert_rule)]
+            query_alert_rule_id = to_valid_int_id("alertRule", query_alert_rule)
+            alert_rule_ids = [query_alert_rule_id]
             if query_include_snapshots:
                 snapshot_alerts = list(
                     AlertRuleActivity.objects.filter(
-                        previous_alert_rule=query_alert_rule,
+                        previous_alert_rule=query_alert_rule_id,
                         type=AlertRuleActivityType.SNAPSHOT.value,
                     )
                 )
@@ -62,16 +72,16 @@ class OrganizationIncidentIndexEndpoint(OrganizationEndpoint):
                     alert_rule_ids.append(snapshot_alert.alert_rule_id)
             incidents = incidents.filter(alert_rule__in=alert_rule_ids)
 
-        query_start = request.GET.get("start")
-        if query_start is not None:
+        query_start_s = request.GET.get("start")
+        if query_start_s is not None:
             # exclude incidents closed before the window
-            query_start = ensure_aware(parse_date(query_start))
+            query_start = ensure_aware(parse_date(query_start_s))
             incidents = incidents.exclude(date_closed__lt=query_start)
 
-        query_end = request.GET.get("end")
-        if query_end is not None:
+        query_end_s = request.GET.get("end")
+        if query_end_s is not None:
             # exclude incidents started after the window
-            query_end = ensure_aware(parse_date(query_end))
+            query_end = ensure_aware(parse_date(query_end_s))
             incidents = incidents.exclude(date_started__gt=query_end)
 
         query_status = request.GET.get("status")
@@ -92,11 +102,9 @@ class OrganizationIncidentIndexEndpoint(OrganizationEndpoint):
             except InvalidParams as err:
                 return Response(str(err), status=status.HTTP_400_BAD_REQUEST)
 
-            team_filter_query = Q(
-                alert_rule__owner_id__in=teams_query.values_list("actor_id", flat=True)
-            )
+            team_filter_query = Q(alert_rule__team_id__in=teams_query.values_list("id", flat=True))
             if unassigned:
-                team_filter_query = team_filter_query | Q(alert_rule__owner_id=None)
+                team_filter_query = team_filter_query | Q(alert_rule__team_id__isnull=True)
 
             incidents = incidents.filter(team_filter_query)
 

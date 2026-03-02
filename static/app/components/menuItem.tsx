@@ -1,47 +1,46 @@
-import * as React from 'react';
+import {css, type Theme} from '@emotion/react';
 import styled from '@emotion/styled';
 import omit from 'lodash/omit';
 
-import Link from 'app/components/links/link';
-import space from 'app/styles/space';
-import {callIfFunction} from 'app/utils/callIfFunction';
-import {Theme} from 'app/utils/theme';
+import {Flex} from '@sentry/scraps/layout';
+import type {LinkProps} from '@sentry/scraps/link';
+import {Link} from '@sentry/scraps/link';
+
+import {space} from 'sentry/styles/space';
 
 type MenuItemProps = {
   /**
-   * Should this item act as a header
+   * Enable to allow default event on click
    */
-  header?: boolean;
-  /**
-   * Renders a bottom border (excludes the last item)
-   */
-  withBorder?: boolean;
-  /**
-   * Renders an icon next to the item
-   */
-  icon?: React.ReactNode;
-  /**
-   * Should this item act as a divider
-   */
-  divider?: boolean;
-  /**
-   * The title/tooltipe of the item
-   */
-  title?: string;
+  allowDefaultEvent?: boolean;
+  'aria-label'?: string;
+  className?: string;
   /**
    * Is the item disabled?
    */
   disabled?: boolean;
   /**
-   * Triggered when the item is clicked
+   * Should this item act as a divider
    */
-  onSelect?: (eventKey: any) => void;
+  divider?: boolean;
   /**
    * Provided to the onSelect callback when this item is selected
    */
   eventKey?: any;
   /**
-   * Is the item actively seleted?
+   * Should this item act as a header
+   */
+  header?: boolean;
+  /**
+   * A server rendered URL.
+   */
+  href?: string;
+  /**
+   * Renders an icon next to the item
+   */
+  icon?: React.ReactNode;
+  /**
+   * Is the item actively selected?
    */
   isActive?: boolean;
   /**
@@ -49,28 +48,33 @@ type MenuItemProps = {
    */
   noAnchor?: boolean;
   /**
-   * A router target destination
+   * Triggered when the item is clicked
    */
-  to?: React.ComponentProps<typeof Link>['to'];
-  /**
-   * A server rendered URL.
-   */
-  href?: string;
-  /**
-   * Enable to allow default event on click
-   */
-  allowDefaultEvent?: boolean;
+  onSelect?: (eventKey: any) => void;
   /**
    * Enable to stop event propagation on click
    */
   stopPropagation?: boolean;
+  /**
+   * The title/tooltip of the item
+   */
+  title?: string;
 
-  className?: string;
+  /**
+   * A router target destination
+   */
+  to?: LinkProps['to'];
+
+  /**
+   * Renders a bottom border (excludes the last item)
+   */
+  withBorder?: boolean;
 };
 
-type Props = MenuItemProps & Omit<React.HTMLProps<HTMLLIElement>, keyof MenuItemProps>;
+interface Props
+  extends MenuItemProps, Omit<React.HTMLAttributes<HTMLLIElement>, 'onSelect'> {}
 
-const MenuItem = ({
+function MenuItem({
   header,
   icon,
   divider,
@@ -79,7 +83,7 @@ const MenuItem = ({
   className,
   children,
   ...props
-}: Props) => {
+}: Props) {
   const {
     to,
     href,
@@ -103,7 +107,7 @@ const MenuItem = ({
       if (stopPropagation) {
         e.stopPropagation();
       }
-      callIfFunction(onSelect, eventKey);
+      onSelect?.(eventKey);
     }
   };
 
@@ -118,8 +122,12 @@ const MenuItem = ({
 
     if (to) {
       return (
-        <MenuLink to={to} {...linkProps} title={title}>
-          {icon && <MenuIcon>{icon}</MenuIcon>}
+        <MenuLink to={to} {...linkProps} title={title} data-test-id="menu-item">
+          {icon && (
+            <Flex align="center" marginRight="md">
+              {icon}
+            </Flex>
+          )}
           {children}
         </MenuLink>
       );
@@ -127,16 +135,24 @@ const MenuItem = ({
 
     if (href) {
       return (
-        <MenuAnchor {...linkProps} href={href}>
-          {icon && <MenuIcon>{icon}</MenuIcon>}
+        <MenuAnchor {...linkProps} href={href} data-test-id="menu-item">
+          {icon && (
+            <Flex align="center" marginRight="md">
+              {icon}
+            </Flex>
+          )}
           {children}
         </MenuAnchor>
       );
     }
 
     return (
-      <MenuTarget role="button" {...linkProps} title={title}>
-        {icon && <MenuIcon>{icon}</MenuIcon>}
+      <MenuTarget role="button" {...linkProps} title={title} data-test-id="menu-item">
+        {icon && (
+          <Flex align="center" marginRight="md">
+            {icon}
+          </Flex>
+        )}
         {children}
       </MenuTarget>
     );
@@ -164,19 +180,19 @@ const MenuItem = ({
       {renderChildren}
     </MenuListItem>
   );
-};
+}
 
-type MenuListItemProps = {
-  header?: boolean;
-  withBorder?: boolean;
-  noAnchor?: boolean;
-  isActive?: boolean;
+interface MenuListItemProps extends React.HTMLAttributes<HTMLLIElement> {
   disabled?: boolean;
   divider?: boolean;
-} & React.HTMLProps<HTMLLIElement>;
+  header?: boolean;
+  isActive?: boolean;
+  noAnchor?: boolean;
+  withBorder?: boolean;
+}
 
 function getListItemStyles(props: MenuListItemProps & {theme: Theme}) {
-  const common = `
+  const common = css`
     display: block;
     padding: ${space(0.5)} ${space(2)};
     &:focus {
@@ -185,31 +201,31 @@ function getListItemStyles(props: MenuListItemProps & {theme: Theme}) {
   `;
 
   if (props.disabled) {
-    return `
+    return css`
       ${common}
-      color: ${props.theme.disabled};
+      color: ${props.theme.tokens.content.disabled};
       background: transparent;
       cursor: not-allowed;
     `;
   }
 
   if (props.isActive) {
-    return `
+    return css`
       ${common}
-      color: ${props.theme.white};
-      background: ${props.theme.active};
+      color: ${props.theme.colors.white};
+      background: ${props.theme.tokens.background.accent.vibrant};
 
       &:hover {
-        color: ${props.theme.black};
+        background: ${props.theme.tokens.interactive.chonky.embossed.accent.background};
       }
     `;
   }
 
-  return `
+  return css`
     ${common}
 
     &:hover {
-      background: ${props.theme.focus};
+      background: ${props.theme.tokens.interactive.transparent.neutral.background.hover};
     }
   `;
 }
@@ -219,7 +235,7 @@ function getChildStyles(props: MenuListItemProps & {theme: Theme}) {
     return '';
   }
 
-  return `
+  return css`
     & a {
       ${getListItemStyles(props)}
     }
@@ -238,29 +254,30 @@ const MenuListItem = styled('li')<MenuListItemProps>`
 
   ${p =>
     p.withBorder &&
-    `
-    border-bottom: 1px solid ${p.theme.innerBorder};
+    css`
+      border-bottom: 1px solid ${p.theme.tokens.border.secondary};
 
-    &:last-child {
-      border-bottom: none;
-    }
-  `};
+      &:last-child {
+        border-bottom: none;
+      }
+    `};
   ${p =>
     p.divider &&
-    `
-    height: 1px;
-    margin: ${space(0.5)} 0;
-    overflow: hidden;
-    background-color: ${p.theme.innerBorder};
-  `}
+    css`
+      height: 1px;
+      margin: ${space(0.5)} 0;
+      overflow: hidden;
+      /* eslint-disable-next-line @sentry/scraps/use-semantic-token */
+      background-color: ${p.theme.tokens.border.secondary};
+    `}
   ${p =>
     p.header &&
-    `
-    padding: ${space(0.25)} ${space(0.5)};
-    font-size: ${p.theme.fontSizeSmall};
-    line-height: 1.4;
-    color: ${p.theme.gray300};
-  `}
+    css`
+      padding: ${space(0.25)} ${space(0.5)};
+      font-size: ${p.theme.font.size.sm};
+      line-height: 1.4;
+      color: ${p.theme.tokens.content.secondary};
+    `}
 
   ${getChildStyles}
 `;
@@ -269,12 +286,6 @@ const MenuTarget = styled('span')<MenuListItemProps>`
   ${getListItemStyles}
   display: flex;
   align-items: center;
-`;
-
-const MenuIcon = styled('div')`
-  display: flex;
-  align-items: center;
-  margin-right: ${space(1)};
 `;
 
 const MenuLink = styled(Link, {shouldForwardProp})<MenuListItemProps>`

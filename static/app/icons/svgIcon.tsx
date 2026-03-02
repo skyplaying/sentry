@@ -1,32 +1,75 @@
-import * as React from 'react';
-import {withTheme} from '@emotion/react';
+import {useTheme} from '@emotion/react';
 
-import {Aliases, Color, IconSize, Theme} from 'app/utils/theme';
+import type {ContentVariant, IconSize} from 'sentry/utils/theme';
 
-type Props = React.SVGAttributes<SVGSVGElement> & {
-  theme: Theme;
-  color?: Color | keyof Aliases;
-  // TODO (Priscila): make size prop theme icon size only
-  size?: IconSize | string;
-  className?: string;
-};
+import {useIconDefaults} from './useIconDefaults';
 
-const SvgIcon = React.forwardRef<SVGSVGElement, Props>(function SvgIcon(
-  {
-    theme,
-    color: providedColor = 'currentColor',
-    size: providedSize = 'sm',
-    viewBox = '0 0 16 16',
-    ...props
-  },
-  ref
-) {
-  const color = theme[providedColor] ?? providedColor;
-  const size = theme.iconSizes[providedSize] ?? providedSize;
+export interface SVGIconProps extends Omit<React.SVGAttributes<SVGSVGElement>, 'color'> {
+  /**
+   * DO NOT USE THIS! Please use the `size` prop
+   *
+   * @deprecated
+   */
+  legacySize?: string;
+  ref?: React.Ref<SVGSVGElement>;
+  size?: IconSize;
+  variant?: ContentVariant | 'muted';
+}
+
+export function SvgIcon(props: SVGIconProps) {
+  const theme = useTheme();
+  const iconProps = useIconDefaults(props);
+  const size = iconProps.legacySize ?? ICON_SIZES[iconProps.size ?? 'md'];
+
+  const {variant: _variant, size: _size, legacySize: _legacySize, ...rest} = iconProps;
 
   return (
-    <svg {...props} viewBox={viewBox} fill={color} height={size} width={size} ref={ref} />
+    <svg
+      // The icons only ever contain a single graphic, so we can use the img role
+      role="img"
+      viewBox="0 0 16 16"
+      {...rest}
+      fill={
+        // Exception for warning icon variant. Design enginering needs to figure out what
+        // to align this color to, as content.warning looks too dark in this context.
+        iconProps.variant === 'warning'
+          ? theme.tokens.graphics.warning.vibrant
+          : iconProps.variant
+            ? theme.tokens.content[
+                iconProps.variant === 'muted' ? 'secondary' : iconProps.variant
+              ]
+            : 'currentColor'
+      }
+      height={size}
+      width={size}
+    />
   );
-});
+}
 
-export default withTheme(SvgIcon);
+export type SVGIconDirection = 'up' | 'right' | 'down' | 'left';
+const ICON_DIRECTION_TO_ROTATION_ANGLE = {
+  up: 0,
+  right: 90,
+  down: 180,
+  left: 270,
+} as const;
+
+SvgIcon.ICON_DIRECTION_TO_ROTATION_ANGLE = ICON_DIRECTION_TO_ROTATION_ANGLE;
+
+/**
+ * @TODO(jonasbadalic): There are other icons that either already use or should use this size map.
+ * Our icon implementation is specialized for SVGs, but this is not always the case for other icons that
+ * might be img or div elements, and we should instead provide a container implementation that implements
+ * a common icon size interface and handles the resolution. With some small changes to the types, this
+ * could be achieved via a small wrapper around the Container component.
+ */
+const ICON_SIZES: Record<IconSize, string> = {
+  xs: '12px',
+  sm: '14px',
+  md: '16px',
+  lg: '24px',
+  xl: '32px',
+  '2xl': '72px',
+} as const;
+
+SvgIcon.ICON_SIZES = ICON_SIZES;

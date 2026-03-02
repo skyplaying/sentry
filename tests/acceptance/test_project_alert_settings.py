@@ -1,9 +1,11 @@
-from sentry.models import Rule
-from sentry.testutils import AcceptanceTestCase
+from sentry.models.rule import Rule
+from sentry.testutils.cases import AcceptanceTestCase
+from sentry.testutils.silo import no_silo_test
 
 
+@no_silo_test
 class ProjectAlertSettingsTest(AcceptanceTestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         super().setUp()
         self.user = self.create_user("foo@example.com")
         self.org = self.create_organization(name="Rowdy Tiger", owner=None)
@@ -35,24 +37,7 @@ class ProjectAlertSettingsTest(AcceptanceTestCase):
 
         Rule.objects.filter(project=self.project).delete()
 
-        Rule.objects.create(
-            project=self.project, data={"conditions": condition_data, "actions": action_data}
-        )
+        self.create_project_rule(condition_data=condition_data, action_data=action_data)
 
         self.login_as(self.user)
         self.path1 = f"/settings/{self.org.slug}/projects/{self.project.slug}/alerts/"
-
-    def test_settings_load(self):
-        self.browser.get(self.path1)
-        self.browser.wait_until_not(".loading-indicator")
-        self.browser.snapshot("project alert settings")
-        self.browser.wait_until(".ref-plugin-enable-webhooks")
-        self.browser.click(".ref-plugin-enable-webhooks")
-        self.browser.wait_until(".ref-plugin-config-webhooks")
-        self.browser.wait_until_not(".loading-indicator")
-
-        # flakey Toast animation being snapshotted in CI
-        # click it to clear it before snapshotting
-        self.browser.click_when_visible('[data-test-id="toast-success"]')
-        self.browser.wait_until_not('[data-test-id="toast-success"]')
-        self.browser.snapshot("project alert settings webhooks enabled")

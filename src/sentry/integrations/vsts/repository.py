@@ -1,48 +1,43 @@
-import logging
-from typing import Any, Mapping, MutableMapping, Optional, Sequence
+from __future__ import annotations
 
-from sentry.integrations import IntegrationInstallation
-from sentry.models import Commit, Integration, Organization, Repository
-from sentry.plugins import providers
-from sentry.shared_integrations.exceptions import IntegrationError
+import logging
+from collections.abc import Mapping, MutableMapping, Sequence
+from typing import Any
+
+from sentry.integrations.types import IntegrationProviderSlug
+from sentry.models.organization import Organization
+from sentry.models.repository import Repository
+from sentry.organizations.services.organization.model import RpcOrganization
+from sentry.plugins.providers import IntegrationRepositoryProvider
+from sentry.plugins.providers.integration_repository import RepositoryConfig
 
 MAX_COMMIT_DATA_REQUESTS = 90
 
+logger = logging.getLogger(__name__)
 
-class VstsRepositoryProvider(providers.IntegrationRepositoryProvider):  # type: ignore
+
+class VstsRepositoryProvider(IntegrationRepositoryProvider):
     name = "Azure DevOps"
-    logger = logging.getLogger("sentry.integrations.vsts")
-
-    def get_installation(
-        self, integration_id: Optional[int], organization_id: int
-    ) -> IntegrationInstallation:
-        if integration_id is None:
-            raise IntegrationError(f"{self.name} requires an integration id.")
-
-        integration_model = Integration.objects.get(
-            id=integration_id, organizations=organization_id, provider="vsts"
-        )
-
-        # Explicitly typing to satisfy mypy.
-        installation: IntegrationInstallation = integration_model.get_installation(organization_id)
-        return installation
+    repo_provider = IntegrationProviderSlug.AZURE_DEVOPS.value
 
     def get_repository_data(
         self, organization: Organization, config: MutableMapping[str, Any]
     ) -> Mapping[str, str]:
+        from sentry.integrations.vsts.integration import VstsIntegration
+
         installation = self.get_installation(config.get("installation"), organization.id)
+        assert isinstance(installation, VstsIntegration), installation
         client = installation.get_client()
-        instance = installation.instance
 
         repo_id = config["identifier"]
 
         try:
-            repo = client.get_repo(instance, repo_id)
+            repo = client.get_repo(repo_id)
         except Exception as e:
-            installation.raise_error(e)
+            raise installation.raise_error(e)
         config.update(
             {
-                "instance": instance,
+                "instance": installation.instance,
                 "project": repo["project"]["name"],
                 "name": repo["name"],
                 "external_id": str(repo["id"]),
@@ -52,8 +47,8 @@ class VstsRepositoryProvider(providers.IntegrationRepositoryProvider):  # type: 
         return config
 
     def build_repository_config(
-        self, organization: Organization, data: Mapping[str, str]
-    ) -> Mapping[str, Any]:
+        self, organization: RpcOrganization, data: dict[str, Any]
+    ) -> RepositoryConfig:
         return {
             "name": data["name"],
             "external_id": data["external_id"],
@@ -81,8 +76,8 @@ class VstsRepositoryProvider(providers.IntegrationRepositoryProvider):  # type: 
         return file_changes
 
     def zip_commit_data(
-        self, repo: Repository, commit_list: Sequence[Commit], organization_id: int
-    ) -> Sequence[Commit]:
+        self, repo: Repository, commit_list: list[dict[str, Any]], organization_id: int
+    ) -> list[dict[str, Any]]:
         installation = self.get_installation(repo.integration_id, organization_id)
         client = installation.get_client()
         n = 0
@@ -92,15 +87,11 @@ class VstsRepositoryProvider(providers.IntegrationRepositoryProvider):  # type: 
             # This is important because issue refs could be anywhere in the commit
             # message.
             if commit.get("commentTruncated", False):
-                full_commit = client.get_commit(
-                    repo.config["instance"], repo.external_id, commit["commitId"]
-                )
+                full_commit = client.get_commit(repo.external_id, commit["commitId"])
                 commit["comment"] = full_commit["comment"]
 
             commit["patch_set"] = self.transform_changes(
-                client.get_commit_filechanges(
-                    repo.config["instance"], repo.external_id, commit["commitId"]
-                )
+                client.get_commit_filechanges(repo.external_id, commit["commitId"])
             )
             # We only fetch patch data for 90 commits.
             n += 1
@@ -110,20 +101,19 @@ class VstsRepositoryProvider(providers.IntegrationRepositoryProvider):  # type: 
         return commit_list
 
     def compare_commits(
-        self, repo: Repository, start_sha: Optional[str], end_sha: str
+        self, repo: Repository, start_sha: str | None, end_sha: str
     ) -> Sequence[Mapping[str, str]]:
         """TODO(mgaeta): This function is kinda a mess."""
         installation = self.get_installation(repo.integration_id, repo.organization_id)
         client = installation.get_client()
-        instance = repo.config["instance"]
 
         try:
             if start_sha is None:
-                res = client.get_commits(instance, repo.external_id, commit=end_sha, limit=10)
+                res = client.get_commits(repo.external_id, commit=end_sha, limit=10)
             else:
-                res = client.get_commit_range(instance, repo.external_id, start_sha, end_sha)
+                res = client.get_commit_range(repo.external_id, start_sha, end_sha)
         except Exception as e:
-            installation.raise_error(e)
+            raise installation.raise_error(e)
 
         commits = self.zip_commit_data(repo, res["value"], repo.organization_id)
         return self._format_commits(repo, commits)
@@ -144,7 +134,5 @@ class VstsRepositoryProvider(providers.IntegrationRepositoryProvider):  # type: 
             for c in commit_list
         ]
 
-    def repository_external_slug(self, repo: Repository) -> str:
-        # Explicitly typing to satisfy mypy.
-        external_id: str = repo.external_id
-        return external_id
+    def repository_external_slug(self, repo: Repository) -> str | None:
+        return repo.external_id

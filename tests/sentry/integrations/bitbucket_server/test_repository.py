@@ -1,16 +1,11 @@
 import datetime
+from datetime import timezone
+from functools import cached_property
 
 import pytest
 import responses
-from django.utils import timezone
-from exam import fixture
 
-from sentry.integrations.bitbucket_server.repository import BitbucketServerRepositoryProvider
-from sentry.models import Identity, IdentityProvider, IdentityStatus, Integration, Repository
-from sentry.shared_integrations.exceptions import IntegrationError
-from sentry.testutils import APITestCase
-
-from .testutils import (
+from fixtures.bitbucket_server import (
     COMMIT_CHANGELIST_EXAMPLE,
     COMMIT_CHANGELIST_WITH_PAGES_FIRST_COMMIT_EXAMPLE,
     COMMIT_CHANGELIST_WITH_PAGES_SECOND_COMMIT_EXAMPLE_1_2,
@@ -21,51 +16,64 @@ from .testutils import (
     EXAMPLE_PRIVATE_KEY,
     REPO,
 )
+from sentry.integrations.bitbucket_server.repository import BitbucketServerRepositoryProvider
+from sentry.integrations.models.integration import Integration
+from sentry.models.repository import Repository
+from sentry.shared_integrations.exceptions import IntegrationError
+from sentry.silo.base import SiloMode
+from sentry.testutils.cases import APITestCase
+from sentry.testutils.silo import assume_test_silo_mode
+from sentry.users.models.identity import Identity, IdentityStatus
 
 
 class BitbucketServerRepositoryProviderTest(APITestCase):
-    @fixture
-    def integration(self):
-        integration = Integration.objects.create(
-            provider="bitbucket_server",
-            name="Example Bitbucket",
-            metadata={"verify_ssl": False, "base_url": "https://bitbucket.example.com"},
-        )
-        identity_provider = IdentityProvider.objects.create(
-            external_id="bitbucket.example.com:sentry-test", type="bitbucket_server"
-        )
-        identity = Identity.objects.create(
-            idp=identity_provider,
-            user=self.user,
-            scopes=(),
-            status=IdentityStatus.VALID,
-            data={
-                "consumer_key": "sentry-test",
-                "private_key": EXAMPLE_PRIVATE_KEY,
-                "access_token": "access-token",
-                "access_token_secret": "access-token-secret",
-            },
-        )
-        integration.add_organization(self.organization, self.user, default_auth_id=identity.id)
+    @cached_property
+    def integration(self) -> Integration:
+        with assume_test_silo_mode(SiloMode.CONTROL):
+            integration = self.create_provider_integration(
+                provider="bitbucket_server",
+                name="Example Bitbucket",
+                metadata={"verify_ssl": False, "base_url": "https://bitbucket.example.com"},
+            )
+            identity_provider = self.create_identity_provider(
+                external_id="bitbucket.example.com:sentry-test", type="bitbucket_server"
+            )
+            identity = Identity.objects.create(
+                idp=identity_provider,
+                user=self.user,
+                scopes=(),
+                status=IdentityStatus.VALID,
+                data={
+                    "consumer_key": "sentry-test",
+                    "private_key": EXAMPLE_PRIVATE_KEY,
+                    "access_token": "access-token",
+                    "access_token_secret": "access-token-secret",
+                },
+            )
+            integration.add_organization(self.organization, self.user, default_auth_id=identity.id)
         return integration
 
-    @fixture
-    def provider(self):
+    @cached_property
+    def provider(self) -> BitbucketServerRepositoryProvider:
         return BitbucketServerRepositoryProvider("bitbucket_server")
 
-    def test_get_client(self):
+    def test_get_client(self) -> None:
         installation = self.integration.get_installation(self.organization.id)
         client = installation.get_client()
         assert client.base_url == self.integration.metadata["base_url"]
         assert client.verify_ssl == self.integration.metadata["verify_ssl"]
 
     @responses.activate
-    def test_compare_commits(self):
+    def test_compare_commits(self) -> None:
         repo = Repository.objects.create(
             provider="bitbucket_server",
             name="sentryuser/newsdiffs",
             organization_id=self.organization.id,
-            config={"name": "sentryuser/newsdiffs", "project": "sentryuser", "repo": "newsdiffs"},
+            config={
+                "name": "sentryuser/newsdiffs",
+                "project": "sentryuser",
+                "repo": "newsdiffs",
+            },
             integration_id=self.integration.id,
         )
 
@@ -102,12 +110,16 @@ class BitbucketServerRepositoryProviderTest(APITestCase):
         ]
 
     @responses.activate
-    def test_compare_commits_with_two_pages(self):
+    def test_compare_commits_with_two_pages(self) -> None:
         repo = Repository.objects.create(
             provider="bitbucket_server",
             name="sentryuser/newsdiffs",
             organization_id=self.organization.id,
-            config={"name": "sentryuser/newsdiffs", "project": "sentryuser", "repo": "newsdiffs"},
+            config={
+                "name": "sentryuser/newsdiffs",
+                "project": "sentryuser",
+                "repo": "newsdiffs",
+            },
             integration_id=self.integration.id,
         )
 
@@ -173,7 +185,7 @@ class BitbucketServerRepositoryProviderTest(APITestCase):
         ]
 
     @responses.activate
-    def test_build_repository_config(self):
+    def test_build_repository_config(self) -> None:
         project = "laurynsentry"
         repo = "helloworld"
         full_repo_name = f"{project}/{repo}"
@@ -212,9 +224,9 @@ class BitbucketServerRepositoryProviderTest(APITestCase):
         }
 
         data["identifier"] = full_repo_name
-        data = self.provider.build_repository_config(organization, data)
+        repo_config_data = self.provider.build_repository_config(organization, data)
 
-        assert data == {
+        assert repo_config_data == {
             "name": full_repo_name,
             "external_id": str(REPO["id"]),
             "url": "https://bitbucket.example.com/projects/laurynsentry/repos/helloworld/browse",
@@ -227,7 +239,7 @@ class BitbucketServerRepositoryProviderTest(APITestCase):
             },
         }
 
-    def test_repository_external_slug(self):
+    def test_repository_external_slug(self) -> None:
         repo = Repository.objects.create(
             provider="bitbucket_server",
             name="sentryuser/newsdiffs",
@@ -239,7 +251,7 @@ class BitbucketServerRepositoryProviderTest(APITestCase):
         result = self.provider.repository_external_slug(repo)
         assert result == repo.name
 
-    def test_get_repository_data_no_installation_id(self):
+    def test_get_repository_data_no_installation_id(self) -> None:
         with pytest.raises(IntegrationError) as e:
             self.provider.get_repository_data(self.organization, {})
-            assert "requires an integration id" in str(e)
+        assert "requires an integration id" in str(e.value)

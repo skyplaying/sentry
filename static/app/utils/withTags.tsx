@@ -1,8 +1,8 @@
-import * as React from 'react';
+import {Component} from 'react';
 
-import TagStore from 'app/stores/tagStore';
-import {TagCollection} from 'app/types';
-import getDisplayName from 'app/utils/getDisplayName';
+import TagStore from 'sentry/stores/tagStore';
+import type {TagCollection} from 'sentry/types/group';
+import getDisplayName from 'sentry/utils/getDisplayName';
 
 type InjectedTagsProps = {
   tags: TagCollection;
@@ -15,17 +15,20 @@ type State = {
 /**
  * HOC for getting *only* tags from the TagStore.
  */
-function withTags<P extends InjectedTagsProps>(WrappedComponent: React.ComponentType<P>) {
-  class WithTags extends React.Component<Omit<P, keyof InjectedTagsProps>, State> {
+function withTags<P extends InjectedTagsProps>(
+  WrappedComponent: React.ComponentType<P>
+): React.ComponentType<Omit<P, keyof InjectedTagsProps>> {
+  class WithTags extends Component<Omit<P, keyof InjectedTagsProps>, State> {
     static displayName = `withTags(${getDisplayName(WrappedComponent)})`;
 
     state: State = {
-      tags: TagStore.getAllTags(),
+      tags: TagStore.getState(),
     };
 
     componentWillUnmount() {
       this.unsubscribe();
     }
+
     unsubscribe = TagStore.listen(
       (tags: TagCollection) => this.setState({tags}),
       undefined
@@ -33,7 +36,13 @@ function withTags<P extends InjectedTagsProps>(WrappedComponent: React.Component
 
     render() {
       const {tags, ...props} = this.props as P;
-      return <WrappedComponent {...({tags: tags ?? this.state.tags, ...props} as P)} />;
+      return (
+        <WrappedComponent
+          tags={tags ?? this.state.tags}
+          // TODO(any): HoC prop types not working w/ emotion https://github.com/emotion-js/emotion/issues/3261
+          {...(props as P as any)}
+        />
+      );
     }
   }
 

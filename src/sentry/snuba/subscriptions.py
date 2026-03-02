@@ -1,8 +1,18 @@
 import logging
+from collections.abc import Collection, Iterable, Sequence
+from datetime import timedelta
 
-from django.db import transaction
+from django.db import router, transaction
 
-from sentry.snuba.models import QueryDatasets, QuerySubscription, SnubaQuery, SnubaQueryEventType
+from sentry.models.environment import Environment
+from sentry.models.project import Project
+from sentry.snuba.dataset import Dataset
+from sentry.snuba.models import (
+    ExtrapolationMode,
+    QuerySubscription,
+    SnubaQuery,
+    SnubaQueryEventType,
+)
 from sentry.snuba.tasks import (
     create_subscription_in_snuba,
     delete_subscription_from_snuba,
@@ -13,11 +23,21 @@ logger = logging.getLogger(__name__)
 
 
 def create_snuba_query(
-    dataset, query, aggregate, time_window, resolution, environment, event_types=None
-):
+    query_type: SnubaQuery.Type,
+    dataset: Dataset,
+    query: str,
+    aggregate: str,
+    time_window: timedelta,
+    resolution: timedelta,
+    environment: Environment | None,
+    event_types: Collection[SnubaQueryEventType.EventType] = (),
+    group_by: Sequence[str] | None = None,
+    extrapolation_mode: ExtrapolationMode | None = None,
+) -> SnubaQuery:
     """
-    Creates a SnubaQuery.
+    Constructs a SnubaQuery which is the postgres representation of a query in snuba
 
+    :param query_type: The SnubaQuery.Type of this query
     :param dataset: The snuba dataset to query and aggregate over
     :param query: An event search query that we can parse and convert into a
     set of Snuba conditions
@@ -30,34 +50,52 @@ def create_snuba_query(
     :return: A list of QuerySubscriptions
     """
     snuba_query = SnubaQuery.objects.create(
+        type=query_type.value,
         dataset=dataset.value,
         query=query,
         aggregate=aggregate,
         time_window=int(time_window.total_seconds()),
         resolution=int(resolution.total_seconds()),
         environment=environment,
+        group_by=group_by,
+        extrapolation_mode=(
+            extrapolation_mode.value
+            if extrapolation_mode is not None
+            else ExtrapolationMode.UNKNOWN.value
+        ),
     )
     if not event_types:
-        event_types = [
-            SnubaQueryEventType.EventType.ERROR
-            if dataset == QueryDatasets.EVENTS
-            else SnubaQueryEventType.EventType.TRANSACTION
+        if dataset == Dataset.Events:
+            event_types = [SnubaQueryEventType.EventType.ERROR]
+        elif dataset == Dataset.Transactions:
+            event_types = [SnubaQueryEventType.EventType.TRANSACTION]
+
+    if event_types:
+        sq_event_types = [
+            SnubaQueryEventType(snuba_query=snuba_query, type=event_type.value)
+            for event_type in set(event_types)
         ]
-    sq_event_types = [
-        SnubaQueryEventType(snuba_query=snuba_query, type=event_type.value)
-        for event_type in set(event_types)
-    ]
-    SnubaQueryEventType.objects.bulk_create(sq_event_types)
+        SnubaQueryEventType.objects.bulk_create(sq_event_types)
     return snuba_query
 
 
 def update_snuba_query(
-    snuba_query, dataset, query, aggregate, time_window, resolution, environment, event_types
-):
+    snuba_query: SnubaQuery,
+    query_type: SnubaQuery.Type,
+    dataset: Dataset,
+    query: str,
+    aggregate: str,
+    time_window: timedelta,
+    resolution: timedelta,
+    environment: Environment | None,
+    event_types: Collection[SnubaQueryEventType.EventType] | None,
+    extrapolation_mode: ExtrapolationMode | None = None,
+) -> None:
     """
     Updates a SnubaQuery. Triggers updates to any related QuerySubscriptions.
 
     :param snuba_query: The `SnubaQuery` to update.
+    :param query_type: The SnubaQuery.Type of this query
     :param dataset: The snuba dataset to query and aggregate over
     :param query: An event search query that we can parse and convert into a
     set of Snuba conditions
@@ -68,6 +106,9 @@ def update_snuba_query(
     :param event_types: A (currently) optional list of event_types that apply to this
     query. If not passed, we'll use the existing event types on the query.
     :return: A list of QuerySubscriptions
+
+    TODO: Ensure update handles activated alert rule updates
+    eg. insert start_time into query, insert release version into query, etc.
     """
     current_event_types = set(snuba_query.event_types)
     if not event_types:
@@ -75,16 +116,25 @@ def update_snuba_query(
 
     new_event_types = set(event_types) - current_event_types
     removed_event_types = current_event_types - set(event_types)
-    old_dataset = QueryDatasets(snuba_query.dataset)
-    with transaction.atomic():
+    old_query_type = SnubaQuery.Type(snuba_query.type)
+    old_dataset = Dataset(snuba_query.dataset)
+    old_query = snuba_query.query
+    old_aggregate = snuba_query.aggregate
+    with transaction.atomic(router.db_for_write(SnubaQuery)):
         query_subscriptions = list(snuba_query.subscriptions.all())
         snuba_query.update(
+            type=query_type.value,
             dataset=dataset.value,
             query=query,
             aggregate=aggregate,
             time_window=int(time_window.total_seconds()),
             resolution=int(resolution.total_seconds()),
             environment=environment,
+            extrapolation_mode=(
+                extrapolation_mode.value
+                if extrapolation_mode is not None
+                else snuba_query.extrapolation_mode
+            ),
         )
         if new_event_types:
             SnubaQueryEventType.objects.bulk_create(
@@ -98,10 +148,17 @@ def update_snuba_query(
                 snuba_query=snuba_query, type__in=[et.value for et in removed_event_types]
             ).delete()
 
-        bulk_update_snuba_subscriptions(query_subscriptions, old_dataset)
+        bulk_update_snuba_subscriptions(
+            query_subscriptions, old_query_type, old_dataset, old_aggregate, old_query
+        )
 
 
-def bulk_create_snuba_subscriptions(projects, subscription_type, snuba_query):
+def bulk_create_snuba_subscriptions(
+    projects: Iterable[Project],
+    subscription_type: str,
+    snuba_query: SnubaQuery,
+    query_extra: str | None = None,
+) -> list[QuerySubscription]:
     """
     Creates a subscription to a snuba query for each project.
 
@@ -114,11 +171,18 @@ def bulk_create_snuba_subscriptions(projects, subscription_type, snuba_query):
     subscriptions = []
     # TODO: Batch this up properly once we care about multi-project rules.
     for project in projects:
-        subscriptions.append(create_snuba_subscription(project, subscription_type, snuba_query))
+        subscriptions.append(
+            create_snuba_subscription(project, subscription_type, snuba_query, query_extra)
+        )
     return subscriptions
 
 
-def create_snuba_subscription(project, subscription_type, snuba_query):
+def create_snuba_subscription(
+    project: Project,
+    subscription_type: str,
+    snuba_query: SnubaQuery,
+    query_extra: str | None = None,
+) -> QuerySubscription:
     """
     Creates a subscription to a snuba query.
 
@@ -133,15 +197,24 @@ def create_snuba_subscription(project, subscription_type, snuba_query):
         project=project,
         snuba_query=snuba_query,
         type=subscription_type,
+        query_extra=query_extra,
     )
-    create_subscription_in_snuba.apply_async(
-        kwargs={"query_subscription_id": subscription.id}, countdown=5
+
+    transaction.on_commit(
+        lambda: create_subscription_in_snuba.delay(query_subscription_id=subscription.id),
+        using=router.db_for_write(QuerySubscription),
     )
 
     return subscription
 
 
-def bulk_update_snuba_subscriptions(subscriptions, old_dataset):
+def bulk_update_snuba_subscriptions(
+    subscriptions: list[QuerySubscription],
+    old_query_type: SnubaQuery.Type,
+    old_dataset: Dataset,
+    old_aggregate: str,
+    old_query: str,
+) -> list[QuerySubscription]:
     """
     Updates a list of query subscriptions.
 
@@ -152,11 +225,21 @@ def bulk_update_snuba_subscriptions(subscriptions, old_dataset):
     updated_subscriptions = []
     # TODO: Batch this up properly once we care about multi-project rules.
     for subscription in subscriptions:
-        updated_subscriptions.append(update_snuba_subscription(subscription, old_dataset))
+        updated_subscriptions.append(
+            update_snuba_subscription(
+                subscription, old_query_type, old_dataset, old_aggregate, old_query
+            )
+        )
     return subscriptions
 
 
-def update_snuba_subscription(subscription, old_dataset):
+def update_snuba_subscription(
+    subscription: QuerySubscription,
+    old_query_type: SnubaQuery.Type,
+    old_dataset: Dataset,
+    old_aggregate: str,
+    old_query: str,
+) -> QuerySubscription:
     """
     Updates a subscription to a snuba query.
 
@@ -166,18 +249,24 @@ def update_snuba_subscription(subscription, old_dataset):
     before the update.
     :return: The QuerySubscription representing the subscription
     """
-    with transaction.atomic():
+    with transaction.atomic(router.db_for_write(QuerySubscription)):
         subscription.update(status=QuerySubscription.Status.UPDATING.value)
 
-        update_subscription_in_snuba.apply_async(
-            kwargs={"query_subscription_id": subscription.id, "old_dataset": old_dataset.value},
-            countdown=5,
+        transaction.on_commit(
+            lambda: update_subscription_in_snuba.delay(
+                query_subscription_id=subscription.id,
+                old_query_type=old_query_type.value,
+                old_dataset=old_dataset.value,
+                old_aggregate=old_aggregate,
+                old_query=old_query,
+            ),
+            using=router.db_for_write(QuerySubscription),
         )
 
     return subscription
 
 
-def bulk_delete_snuba_subscriptions(subscriptions):
+def bulk_delete_snuba_subscriptions(subscriptions: Iterable[QuerySubscription]) -> None:
     """
     Deletes a list of snuba query subscriptions.
     :param subscriptions: The subscriptions to delete
@@ -188,7 +277,7 @@ def bulk_delete_snuba_subscriptions(subscriptions):
         delete_snuba_subscription(subscription)
 
 
-def delete_snuba_subscription(subscription):
+def delete_snuba_subscription(subscription: QuerySubscription) -> None:
     """
     Deletes a subscription to a snuba query.
     :param subscription: The subscription to delete
@@ -196,12 +285,13 @@ def delete_snuba_subscription(subscription):
     """
     subscription.update(status=QuerySubscription.Status.DELETING.value)
 
-    delete_subscription_from_snuba.apply_async(
-        kwargs={"query_subscription_id": subscription.id}, countdown=5
+    transaction.on_commit(
+        lambda: delete_subscription_from_snuba.delay(query_subscription_id=subscription.id),
+        using=router.db_for_write(QuerySubscription),
     )
 
 
-def bulk_disable_snuba_subscriptions(subscriptions):
+def bulk_disable_snuba_subscriptions(subscriptions: Iterable[QuerySubscription]) -> None:
     """
     Disables a list of snuba query subscriptions.
     :param subscriptions: The subscriptions to disable
@@ -212,7 +302,7 @@ def bulk_disable_snuba_subscriptions(subscriptions):
         disable_snuba_subscription(subscription)
 
 
-def disable_snuba_subscription(subscription):
+def disable_snuba_subscription(subscription: QuerySubscription) -> None:
     """
     Disables a subscription to a snuba query.
     :param subscription: The subscription to disable
@@ -220,12 +310,13 @@ def disable_snuba_subscription(subscription):
     """
     subscription.update(status=QuerySubscription.Status.DISABLED.value)
 
-    delete_subscription_from_snuba.apply_async(
-        kwargs={"query_subscription_id": subscription.id}, countdown=5
+    transaction.on_commit(
+        lambda: delete_subscription_from_snuba.delay(query_subscription_id=subscription.id),
+        using=router.db_for_write(QuerySubscription),
     )
 
 
-def bulk_enable_snuba_subscriptions(subscriptions):
+def bulk_enable_snuba_subscriptions(subscriptions: Iterable[QuerySubscription]) -> None:
     """
     enables a list of snuba query subscriptions.
     :param subscriptions: The subscriptions to enable
@@ -236,13 +327,15 @@ def bulk_enable_snuba_subscriptions(subscriptions):
         enable_snuba_subscription(subscription)
 
 
-def enable_snuba_subscription(subscription):
+def enable_snuba_subscription(subscription: QuerySubscription) -> None:
     """
     enables a subscription to a snuba query.
     :param subscription: The subscription to enable
     :return:
     """
     subscription.update(status=QuerySubscription.Status.CREATING.value)
-    create_subscription_in_snuba.apply_async(
-        kwargs={"query_subscription_id": subscription.id}, countdown=5
+
+    transaction.on_commit(
+        lambda: create_subscription_in_snuba.delay(query_subscription_id=subscription.id),
+        using=router.db_for_write(QuerySubscription),
     )

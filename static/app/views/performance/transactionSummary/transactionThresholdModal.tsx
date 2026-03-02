@@ -1,25 +1,27 @@
-import * as React from 'react';
+import {Component, Fragment} from 'react';
 import {css} from '@emotion/react';
 import styled from '@emotion/styled';
 import cloneDeep from 'lodash/cloneDeep';
 import set from 'lodash/set';
 
-import {addErrorMessage} from 'app/actionCreators/indicator';
-import {ModalRenderProps} from 'app/actionCreators/modal';
-import {Client} from 'app/api';
-import Button from 'app/components/button';
-import ButtonBar from 'app/components/buttonBar';
-import SelectControl from 'app/components/forms/selectControl';
-import Link from 'app/components/links/link';
-import {t, tct} from 'app/locale';
-import space from 'app/styles/space';
-import {Organization, Project} from 'app/types';
-import {defined} from 'app/utils';
-import EventView from 'app/utils/discover/eventView';
-import withApi from 'app/utils/withApi';
-import withProjects from 'app/utils/withProjects';
-import Input from 'app/views/settings/components/forms/controls/input';
-import Field from 'app/views/settings/components/forms/field';
+import {Button} from '@sentry/scraps/button';
+import {Input} from '@sentry/scraps/input';
+import {Grid} from '@sentry/scraps/layout';
+import {Link} from '@sentry/scraps/link';
+import {Select} from '@sentry/scraps/select';
+
+import {addErrorMessage} from 'sentry/actionCreators/indicator';
+import type {ModalRenderProps} from 'sentry/actionCreators/modal';
+import type {Client} from 'sentry/api';
+import FieldGroup from 'sentry/components/forms/fieldGroup';
+import {t, tct} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {Organization} from 'sentry/types/organization';
+import type {Project} from 'sentry/types/project';
+import {defined} from 'sentry/utils';
+import type EventView from 'sentry/utils/discover/eventView';
+import withApi from 'sentry/utils/withApi';
+import withProjects from 'sentry/utils/withProjects';
 
 import {transactionSummaryRouteWithQuery} from './utils';
 
@@ -28,30 +30,30 @@ export enum TransactionThresholdMetric {
   LARGEST_CONTENTFUL_PAINT = 'lcp',
 }
 
-export const METRIC_CHOICES = [
+const METRIC_CHOICES = [
   {label: t('Transaction Duration'), value: 'duration'},
   {label: t('Largest Contentful Paint'), value: 'lcp'},
 ];
 
 type Props = {
   api: Client;
-  organization: Organization;
-  transactionName: string;
-  onApply?: (threshold, metric) => void;
-  project?: string;
-  projects: Project[];
   eventView: EventView;
+  organization: Organization;
+  projects: Project[];
+  transactionName: string;
   transactionThreshold: number | undefined;
   transactionThresholdMetric: TransactionThresholdMetric | undefined;
+  onApply?: (threshold: any, metric: any) => void;
+  project?: string;
 } & ModalRenderProps;
 
 type State = {
-  threshold: number | undefined;
-  metric: TransactionThresholdMetric | undefined;
   error: string | null;
+  metric: TransactionThresholdMetric | undefined;
+  threshold: number | undefined;
 };
 
-class TransactionThresholdModal extends React.Component<Props, State> {
+class TransactionThresholdModal extends Component<Props, State> {
   state: State = {
     threshold: this.props.transactionThreshold,
     metric: this.props.transactionThresholdMetric,
@@ -63,13 +65,12 @@ class TransactionThresholdModal extends React.Component<Props, State> {
 
     if (defined(project)) {
       return projects.find(proj => proj.id === project);
-    } else {
-      const projectId = String(eventView.project[0]);
-      return projects.find(proj => proj.id === projectId);
     }
+    const projectId = String(eventView.project[0]);
+    return projects.find(proj => proj.id === projectId);
   }
 
-  handleApply = async (event: React.FormEvent) => {
+  handleApply = (event: React.FormEvent) => {
     event.preventDefault();
 
     const {api, closeModal, organization, transactionName, onApply} = this.props;
@@ -104,8 +105,11 @@ class TransactionThresholdModal extends React.Component<Props, State> {
         this.setState({
           error: err,
         });
-        const errorMessage =
+        let errorMessage =
           err.responseJSON?.threshold ?? err.responseJSON?.non_field_errors ?? null;
+        if (Array.isArray(errorMessage)) {
+          errorMessage = errorMessage[0];
+        }
         addErrorMessage(errorMessage);
       });
   };
@@ -119,7 +123,7 @@ class TransactionThresholdModal extends React.Component<Props, State> {
     });
   };
 
-  handleReset = async (event: React.FormEvent) => {
+  handleReset = (event: React.FormEvent) => {
     event.preventDefault();
 
     const {api, closeModal, organization, transactionName, onApply} = this.props;
@@ -176,8 +180,8 @@ class TransactionThresholdModal extends React.Component<Props, State> {
 
   renderModalFields() {
     return (
-      <React.Fragment>
-        <Field
+      <Fragment>
+        <FieldGroup
           data-test-id="response-metric"
           label={t('Calculation Method')}
           inline={false}
@@ -189,7 +193,7 @@ class TransactionThresholdModal extends React.Component<Props, State> {
           stacked
           required
         >
-          <SelectControl
+          <Select
             required
             options={METRIC_CHOICES.slice()}
             name="responseMetric"
@@ -199,8 +203,8 @@ class TransactionThresholdModal extends React.Component<Props, State> {
               this.handleFieldChange('metric')(option.value);
             }}
           />
-        </Field>
-        <Field
+        </FieldGroup>
+        <FieldGroup
           data-test-id="response-time-threshold"
           label={t('Response Time Threshold (ms)')}
           inline={false}
@@ -215,7 +219,6 @@ class TransactionThresholdModal extends React.Component<Props, State> {
           <Input
             type="number"
             name="threshold"
-            required
             pattern="[0-9]*(\.[0-9]*)?"
             onChange={(event: React.ChangeEvent<HTMLInputElement>) => {
               this.handleFieldChange('threshold')(event.target.value);
@@ -224,8 +227,8 @@ class TransactionThresholdModal extends React.Component<Props, State> {
             step={100}
             min={100}
           />
-        </Field>
-      </React.Fragment>
+        </FieldGroup>
+      </Fragment>
     );
   }
 
@@ -237,14 +240,14 @@ class TransactionThresholdModal extends React.Component<Props, State> {
     const summaryView = eventView.clone();
     summaryView.query = summaryView.getQueryWithAdditionalConditions();
     const target = transactionSummaryRouteWithQuery({
-      orgSlug: organization.slug,
+      organization,
       transaction: transactionName,
       query: summaryView.generateQueryStringObject(),
       projectID: project?.id,
     });
 
     return (
-      <React.Fragment>
+      <Fragment>
         <Header closeButton>
           <h4>{t('Transaction Settings')}</h4>
         </Header>
@@ -265,7 +268,7 @@ class TransactionThresholdModal extends React.Component<Props, State> {
           {this.renderModalFields()}
         </Body>
         <Footer>
-          <ButtonBar gap={1}>
+          <Grid flow="column" align="center" gap="md">
             <Button
               priority="default"
               onClick={this.handleReset}
@@ -274,16 +277,16 @@ class TransactionThresholdModal extends React.Component<Props, State> {
               {t('Reset All')}
             </Button>
             <Button
-              label={t('Apply')}
+              aria-label={t('Apply')}
               priority="primary"
               onClick={this.handleApply}
               data-test-id="apply-threshold"
             >
               {t('Apply')}
             </Button>
-          </ButtonBar>
+          </Grid>
         </Footer>
-      </React.Fragment>
+      </Fragment>
     );
   }
 }
@@ -295,7 +298,6 @@ const Instruction = styled('div')`
 export const modalCss = css`
   width: 100%;
   max-width: 650px;
-  margin: 70px auto;
 `;
 
 export default withApi(withProjects(TransactionThresholdModal));

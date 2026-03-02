@@ -1,66 +1,72 @@
-import * as React from 'react';
-import {InjectedRouter} from 'react-router';
-import {EChartOption} from 'echarts/lib/echarts';
-import moment from 'moment';
+import {Component} from 'react';
+import type {
+  DataZoomComponentOption,
+  ECharts,
+  ToolboxComponentOption,
+  XAXisComponentOption,
+} from 'echarts';
+import moment, {type MomentInput} from 'moment-timezone';
 import * as qs from 'query-string';
 
-import {updateDateTime} from 'app/actionCreators/globalSelection';
-import DataZoomInside from 'app/components/charts/components/dataZoomInside';
-import ToolBox from 'app/components/charts/components/toolBox';
-import {DateString} from 'app/types';
-import {
+import DataZoomInside from 'sentry/components/charts/components/dataZoomInside';
+import ToolBox from 'sentry/components/charts/components/toolBox';
+import {updateDateTime} from 'sentry/components/pageFilters/actions';
+import type {DateString} from 'sentry/types/core';
+import type {
   EChartChartReadyHandler,
   EChartDataZoomHandler,
   EChartFinishedHandler,
   EChartRestoreHandler,
-} from 'app/types/echarts';
-import {callIfFunction} from 'app/utils/callIfFunction';
-import {getUtcDateString, getUtcToLocalDateObject} from 'app/utils/dates';
+} from 'sentry/types/echarts';
+import type {InjectedRouter} from 'sentry/types/legacyReactRouter';
+import {getUtcDateString, getUtcToLocalDateObject} from 'sentry/utils/dates';
+// eslint-disable-next-line no-restricted-imports
+import withSentryRouter from 'sentry/utils/withSentryRouter';
 
-const getDate = date =>
+const getDate = (date: MomentInput) =>
   date ? moment.utc(date).format(moment.HTML5_FMT.DATETIME_LOCAL_SECONDS) : null;
 
 type Period = {
-  period: string;
-  start: DateString;
   end: DateString;
+  period: string | null;
+  start: DateString;
 };
 
-const ZoomPropKeys = [
-  'period',
-  'xAxis',
-  'onChartReady',
-  'onDataZoom',
-  'onRestore',
-  'onFinished',
-] as const;
+type ZoomPropKeys =
+  | 'period'
+  | 'xAxis'
+  | 'onChartReady'
+  | 'onDataZoom'
+  | 'onRestore'
+  | 'onFinished';
 
-export type ZoomRenderProps = Pick<Props, typeof ZoomPropKeys[number]> & {
-  utc?: boolean;
-  start?: Date;
+export interface ZoomRenderProps extends Pick<Props, ZoomPropKeys> {
+  dataZoom?: DataZoomComponentOption[];
   end?: Date;
   isGroupedByDate?: boolean;
   showTimeInTooltip?: boolean;
-  dataZoom?: EChartOption.DataZoom[];
-  toolBox?: EChartOption['toolbox'];
-};
+  start?: Date;
+  toolBox?: ToolboxComponentOption;
+  utc?: boolean;
+}
 
 type Props = {
-  router?: InjectedRouter;
   children: (props: ZoomRenderProps) => React.ReactNode;
   disabled?: boolean;
-  xAxis?: EChartOption.XAxis;
-  xAxisIndex?: number | number[];
-  start?: DateString;
   end?: DateString;
-  period?: string;
-  utc?: boolean | null;
   onChartReady?: EChartChartReadyHandler;
   onDataZoom?: EChartDataZoomHandler;
   onFinished?: EChartFinishedHandler;
   onRestore?: EChartRestoreHandler;
   onZoom?: (period: Period) => void;
+  period?: string | null;
+  router?: InjectedRouter;
+  saveOnZoom?: boolean;
+  start?: DateString;
   usePageDate?: boolean;
+  utc?: boolean | null;
+  xAxis?: XAXisComponentOption;
+  xAxisIndex?: number | number[];
 };
 
 /**
@@ -70,9 +76,11 @@ type Props = {
  *
  * This also is very tightly coupled with the Global Selection Header. We can make it more
  * generic if need be in the future.
+ *
+ * @deprecated use useChartZoom instead
  */
-class ChartZoom extends React.Component<Props> {
-  constructor(props) {
+class ChartZoom extends Component<Props> {
+  constructor(props: Props) {
     super(props);
 
     // Zoom history
@@ -92,6 +100,15 @@ class ChartZoom extends React.Component<Props> {
     this.saveCurrentPeriod(this.props);
   }
 
+  componentWillUnmount(): void {
+    document.body.removeEventListener('keydown', this.handleKeyDown);
+    document.body.removeEventListener('mouseup', this.handleMouseUp);
+    this.$chart?.removeEventListener('mousedown', this.handleMouseDown);
+  }
+
+  chart?: ECharts;
+  $chart?: HTMLElement;
+  isCancellingZoom?: boolean;
   history: Period[];
   currentPeriod?: Period;
   zooming: (() => void) | null = null;
@@ -100,7 +117,7 @@ class ChartZoom extends React.Component<Props> {
    * Save current period state from period in props to be used
    * in handling chart's zoom history state
    */
-  saveCurrentPeriod = props => {
+  saveCurrentPeriod = (props: any) => {
     this.currentPeriod = {
       period: props.period,
       start: getDate(props.start),
@@ -117,8 +134,8 @@ class ChartZoom extends React.Component<Props> {
    *
    * Saves a callback function to be called after chart animation is completed
    */
-  setPeriod = ({period, start, end}, saveHistory = false) => {
-    const {router, onZoom, usePageDate} = this.props;
+  setPeriod = ({period, start, end}: any, saveHistory = false) => {
+    const {router, onZoom, usePageDate, saveOnZoom} = this.props;
     const startFormatted = getDate(start);
     const endFormatted = getDate(end);
 
@@ -133,56 +150,74 @@ class ChartZoom extends React.Component<Props> {
     //
     // Parent container can use this to change into a loading state before
     // URL parameters are changed
-    callIfFunction(onZoom, {
+    onZoom?.({
       period,
       start: startFormatted,
       end: endFormatted,
     });
 
-    this.zooming = () => {
-      if (usePageDate && router) {
-        const newQuery = {
-          ...router.location.query,
-          pageStart: start ? getUtcDateString(start) : undefined,
-          pageEnd: end ? getUtcDateString(end) : undefined,
-          pageStatsPeriod: period ?? undefined,
-        };
+    if (usePageDate && router) {
+      const newQuery = {
+        ...router.location.query,
+        pageStart: start ? getUtcDateString(start) : undefined,
+        pageEnd: end ? getUtcDateString(end) : undefined,
+        pageStatsPeriod: period ?? undefined,
+      };
 
-        // Only push new location if query params has changed because this will cause a heavy re-render
-        if (qs.stringify(newQuery) !== qs.stringify(router.location.query)) {
-          router.push({
-            pathname: router.location.pathname,
-            query: newQuery,
-          });
-        }
-      } else {
-        updateDateTime(
-          {
-            period,
-            start: startFormatted
-              ? getUtcToLocalDateObject(startFormatted)
-              : startFormatted,
-            end: endFormatted ? getUtcToLocalDateObject(endFormatted) : endFormatted,
-          },
-          router
-        );
+      // Only push new location if query params has changed because this will cause a heavy re-render
+      if (qs.stringify(newQuery) !== qs.stringify(router.location.query)) {
+        router.push({
+          pathname: router.location.pathname,
+          query: newQuery,
+        });
       }
+    } else {
+      updateDateTime(
+        {
+          period,
+          start: startFormatted
+            ? getUtcToLocalDateObject(startFormatted)
+            : startFormatted,
+          end: endFormatted ? getUtcToLocalDateObject(endFormatted) : endFormatted,
+        },
+        router,
+        {save: saveOnZoom}
+      );
+    }
 
-      this.saveCurrentPeriod({period, start, end});
-    };
+    this.saveCurrentPeriod({period, start, end});
   };
 
   /**
    * Enable zoom immediately instead of having to toggle to zoom
    */
-  handleChartReady = chart => {
-    chart.dispatchAction({
-      type: 'takeGlobalCursor',
-      key: 'dataZoomSelect',
-      dataZoomSelectActive: true,
-    });
+  handleChartReady = (chart: ECharts) => {
+    this.props.onChartReady?.(chart);
 
-    callIfFunction(this.props.onChartReady, chart);
+    this.chart = chart;
+    this.$chart = chart.getDom();
+
+    this.$chart.addEventListener('mousedown', this.handleMouseDown);
+  };
+
+  handleKeyDown = (evt: any) => {
+    if (!this.chart) {
+      return;
+    }
+
+    // This handler only exists if mouse down was caught inside the chart.
+    // Therefore, no need to check any other state.
+    if (evt.key === 'Escape') {
+      evt.stopPropagation();
+      // Mark the component as currently cancelling a zoom selection. This allows
+      // us to prevent "restore" handlers from running
+      this.isCancellingZoom = true;
+
+      // "restore" removes the current chart zoom selection
+      this.chart.dispatchAction({
+        type: 'restore',
+      });
+    }
   };
 
   /**
@@ -190,26 +225,50 @@ class ChartZoom extends React.Component<Props> {
    *
    * Updates URL state to reflect initial params
    */
-  handleZoomRestore = (evt, chart) => {
+  handleZoomRestore = (evt: any, chart: any) => {
+    if (this.isCancellingZoom) {
+      // If this restore is caused by a zoom cancel, do not run handlers!
+      // The regular handler restores to the earliest point in the zoom history
+      // and we do not want that. We want to cancel the selection and do nothing
+      // else. Reset `isCancellingZoom` here in case the dispatch was async
+      this.isCancellingZoom = false;
+      return;
+    }
+
     if (!this.history.length) {
       return;
     }
 
-    this.setPeriod(this.history[0]);
+    this.setPeriod(this.history[0]!);
 
     // reset history
     this.history = [];
 
-    callIfFunction(this.props.onRestore, evt, chart);
+    this.props.onRestore?.(evt, chart);
   };
 
-  handleDataZoom = (evt, chart) => {
+  handleMouseDown = () => {
+    // Register `mouseup` and `keydown` listeners on mouse down
+    // This ensures that there is only one live listener at a time
+    // regardless of how many charts are rendered. NOTE: It's
+    // important to set `useCapture: true` in the `"keydown"` handler
+    // otherwise the Escape will close whatever modal or panel the
+    // chart is in. Those elements register their handlers _earlier_.
+    document.body.addEventListener('mouseup', this.handleMouseUp);
+    document.body.addEventListener('keydown', this.handleKeyDown, true);
+  };
+
+  handleMouseUp = () => {
+    document.body.removeEventListener('mouseup', this.handleMouseUp);
+    document.body.removeEventListener('keydown', this.handleKeyDown, true);
+  };
+
+  handleDataZoom = (evt: any, chart: any) => {
     const model = chart.getModel();
-    const {xAxis} = model.option;
-    const axis = xAxis[0];
+    const {startValue, endValue} = model._payload.batch[0];
 
     // if `rangeStart` and `rangeEnd` are null, then we are going back
-    if (axis.rangeStart === null && axis.rangeEnd === null) {
+    if (startValue === null && endValue === null) {
       const previousPeriod = this.history.pop();
 
       if (!previousPeriod) {
@@ -218,30 +277,35 @@ class ChartZoom extends React.Component<Props> {
 
       this.setPeriod(previousPeriod);
     } else {
-      const start = moment.utc(axis.rangeStart);
+      const start = moment.utc(startValue);
 
       // Add a day so we go until the end of the day (e.g. next day at midnight)
-      const end = moment.utc(axis.rangeEnd);
+      const end = moment.utc(endValue);
 
       this.setPeriod({period: null, start, end}, true);
     }
 
-    callIfFunction(this.props.onDataZoom, evt, chart);
+    this.props.onDataZoom?.(evt, chart);
   };
 
   /**
    * Chart event when *any* rendering+animation finishes
-   *
-   * `this.zooming` acts as a callback function so that
-   * we can let the native zoom animation on the chart complete
-   * before we update URL state and re-render
    */
-  handleChartFinished = () => {
-    if (typeof this.zooming === 'function') {
-      this.zooming();
-      this.zooming = null;
+  handleChartFinished = (_props: any, chart: any) => {
+    // This attempts to activate the area zoom toolbox feature
+    const zoom = chart._componentsViews?.find((c: any) => c._features?.dataZoom);
+    if (zoom && !zoom._features.dataZoom._isZoomActive) {
+      // Calling dispatchAction will re-trigger handleChartFinished
+      chart.dispatchAction({
+        type: 'takeGlobalCursor',
+        key: 'dataZoomSelect',
+        dataZoomSelectActive: true,
+      });
     }
-    callIfFunction(this.props.onFinished);
+
+    if (typeof this.props.onFinished === 'function') {
+      this.props.onFinished(_props, chart);
+    }
   };
 
   render() {
@@ -271,10 +335,10 @@ class ChartZoom extends React.Component<Props> {
         utc,
         start,
         end,
+        isGroupedByDate: true,
         ...props,
       });
     }
-
     const renderProps = {
       // Zooming only works when grouped by date
       isGroupedByDate: true,
@@ -282,7 +346,9 @@ class ChartZoom extends React.Component<Props> {
       utc,
       start,
       end,
-      dataZoom: DataZoomInside({xAxisIndex}),
+      dataZoom: DataZoomInside({
+        xAxisIndex,
+      }),
       showTimeInTooltip: true,
       toolBox: ToolBox(
         {},
@@ -310,4 +376,7 @@ class ChartZoom extends React.Component<Props> {
   }
 }
 
-export default ChartZoom;
+/**
+ * @deprecated use useChartZoom instead
+ */
+export default withSentryRouter(ChartZoom);

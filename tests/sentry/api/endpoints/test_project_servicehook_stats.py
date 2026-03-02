@@ -1,10 +1,11 @@
 from sentry import tsdb
-from sentry.models import ServiceHook
-from sentry.testutils import APITestCase
+from sentry.sentry_apps.models.servicehook import ServiceHook
+from sentry.testutils.cases import APITestCase
+from sentry.tsdb.base import TSDBModel
 
 
 class ProjectServiceHookStatsTest(APITestCase):
-    def test_simple(self):
+    def test_simple(self) -> None:
         project = self.create_project()
         hook = ServiceHook.objects.get_or_create(
             project_id=project.id, actor_id=self.user.id, url="http://example.com"
@@ -14,7 +15,7 @@ class ProjectServiceHookStatsTest(APITestCase):
             f"/api/0/projects/{project.organization.slug}/{project.slug}/hooks/{hook.guid}/stats/"
         )
 
-        tsdb.incr(tsdb.models.servicehook_fired, hook.id, count=3)
+        tsdb.backend.incr(TSDBModel.servicehook_fired, hook.id, count=3)
 
         response = self.client.get(path)
         assert response.status_code == 200

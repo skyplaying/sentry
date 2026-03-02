@@ -1,115 +1,138 @@
-import {Component, Fragment} from 'react';
-import {RouteComponentProps} from 'react-router';
-import styled from '@emotion/styled';
+import {Fragment, useState} from 'react';
 
-import * as Layout from 'app/components/layouts/thirds';
-import SentryDocumentTitle from 'app/components/sentryDocumentTitle';
-import {t} from 'app/locale';
-import space from 'app/styles/space';
-import {Organization, Project} from 'app/types';
-import {trackAnalyticsEvent} from 'app/utils/analytics';
-import BuilderBreadCrumbs from 'app/views/alerts/builder/builderBreadCrumbs';
-import IncidentRulesDetails from 'app/views/alerts/incidentRules/details';
-import IssueEditor from 'app/views/alerts/issueRuleEditor';
+import * as Layout from 'sentry/components/layouts/thirds';
+import LoadingIndicator from 'sentry/components/loadingIndicator';
+import SentryDocumentTitle from 'sentry/components/sentryDocumentTitle';
+import {t} from 'sentry/locale';
+import useRouteAnalyticsEventNames from 'sentry/utils/routeAnalytics/useRouteAnalyticsEventNames';
+import useRouteAnalyticsParams from 'sentry/utils/routeAnalytics/useRouteAnalyticsParams';
+import {useLocation} from 'sentry/utils/useLocation';
+import useOrganization from 'sentry/utils/useOrganization';
+import {useParams} from 'sentry/utils/useParams';
+import useRouter from 'sentry/utils/useRouter';
+import {useRoutes} from 'sentry/utils/useRoutes';
+import {useUserTeams} from 'sentry/utils/useUserTeams';
+import BuilderBreadCrumbs from 'sentry/views/alerts/builder/builderBreadCrumbs';
+import {useAlertBuilderOutlet} from 'sentry/views/alerts/builder/projectProvider';
+
+import {CronRulesEdit} from './rules/crons/edit';
+import IssueEditor from './rules/issue';
+import {MetricRulesEdit} from './rules/metric/edit';
+import {UptimeRulesEdit} from './rules/uptime/edit';
+import {CombinedAlertType} from './types';
 
 type RouteParams = {
-  orgId: string;
   projectId: string;
   ruleId: string;
 };
 
-type Props = RouteComponentProps<RouteParams, {}> & {
-  organization: Organization;
-  project: Project;
-  hasMetricAlerts: boolean;
-};
+export default function ProjectAlertsEditor() {
+  const organization = useOrganization();
+  const location = useLocation();
+  const params = useParams<RouteParams>();
+  const router = useRouter();
+  const routes = useRoutes();
+  const {project, members} = useAlertBuilderOutlet();
 
-type State = {
-  ruleName: string;
-};
+  const [title, setTitle] = useState('');
 
-class ProjectAlertsEditor extends Component<Props, State> {
-  state: State = {
-    ruleName: '',
-  };
+  const alertTypeUrls = [
+    {url: '/alerts/metric-rules/', type: CombinedAlertType.METRIC},
+    {url: '/alerts/uptime-rules/', type: CombinedAlertType.UPTIME},
+    {url: '/alerts/crons-rules/', type: CombinedAlertType.CRONS},
+    {url: '/alerts/rules/', type: CombinedAlertType.ISSUE},
+  ] as const;
 
-  componentDidMount() {
-    const {organization, project} = this.props;
+  const alertType =
+    alertTypeUrls.find(({url}) => location.pathname.includes(url))?.type ??
+    CombinedAlertType.ISSUE;
 
-    trackAnalyticsEvent({
-      eventKey: 'edit_alert_rule.viewed',
-      eventName: 'Edit Alert Rule: Viewed',
-      organization_id: organization.id,
-      project_id: project.id,
-      alert_type: this.getAlertType(),
-    });
-  }
+  useRouteAnalyticsEventNames('edit_alert_rule.viewed', 'Edit Alert Rule: Viewed');
+  useRouteAnalyticsParams({
+    organization,
+    project_id: project.id,
+    alert_type: alertType,
+  });
 
-  handleChangeTitle = (ruleName: string) => {
-    this.setState({ruleName});
-  };
+  //  Used to hide specific fields like actions while migrating metric alert rules.
+  //  Currently used to help people add `is:unresolved` to their metric alert query.
+  const isMigration = location?.query?.migration === '1';
 
-  getTitle() {
-    const {ruleName} = this.state;
-    return `${ruleName}`;
-  }
+  const {teams, isLoading: teamsLoading} = useUserTeams();
 
-  getAlertType(): 'metric' | 'issue' {
-    return location.pathname.includes('/alerts/metric-rules/') ? 'metric' : 'issue';
-  }
-
-  render() {
-    const {hasMetricAlerts, location, organization, project, routes} = this.props;
-    const alertType = this.getAlertType();
-
-    return (
-      <Fragment>
-        <SentryDocumentTitle
-          title={this.getTitle()}
-          orgSlug={organization.slug}
-          projectSlug={project.slug}
-        />
-        <Layout.Header>
-          <Layout.HeaderContent>
-            <BuilderBreadCrumbs
-              orgSlug={organization.slug}
-              title={t('Edit Alert Rule')}
-              projectSlug={project.slug}
-              routes={routes}
-              location={location}
-            />
-            <Layout.Title>{this.getTitle()}</Layout.Title>
-          </Layout.HeaderContent>
-        </Layout.Header>
-        <EditConditionsBody>
-          <Layout.Main fullWidth>
-            {(!hasMetricAlerts || alertType === 'issue') && (
+  return (
+    <Fragment>
+      <SentryDocumentTitle
+        title={title}
+        orgSlug={organization.slug}
+        projectSlug={project.slug}
+      />
+      <Layout.Header>
+        <Layout.HeaderContent>
+          <BuilderBreadCrumbs
+            organization={organization}
+            title={isMigration ? t('Review Thresholds') : t('Edit Alert Rule')}
+            projectSlug={project.slug}
+          />
+          <Layout.Title>{title}</Layout.Title>
+        </Layout.HeaderContent>
+      </Layout.Header>
+      <Layout.Body>
+        {teamsLoading ? (
+          <LoadingIndicator />
+        ) : (
+          <Fragment>
+            {alertType === CombinedAlertType.ISSUE && (
               <IssueEditor
-                {...this.props}
+                location={location}
+                params={params}
+                router={router}
+                routes={routes}
+                route={{}}
+                routeParams={params}
                 project={project}
-                onChangeTitle={this.handleChangeTitle}
+                onChangeTitle={setTitle}
+                userTeamIds={teams.map(({id}) => id)}
+                members={members}
               />
             )}
-            {hasMetricAlerts && alertType === 'metric' && (
-              <IncidentRulesDetails
-                {...this.props}
+            {alertType === CombinedAlertType.METRIC && (
+              <MetricRulesEdit
+                location={location}
+                params={params}
+                router={router}
+                routes={routes}
+                route={{}}
+                routeParams={params}
+                organization={organization}
                 project={project}
-                onChangeTitle={this.handleChangeTitle}
+                onChangeTitle={setTitle}
+                userTeamIds={teams.map(({id}) => id)}
               />
             )}
-          </Layout.Main>
-        </EditConditionsBody>
-      </Fragment>
-    );
-  }
+            {alertType === CombinedAlertType.UPTIME && (
+              <UptimeRulesEdit
+                location={location}
+                params={params}
+                router={router}
+                routes={routes}
+                route={{}}
+                routeParams={params}
+                organization={organization}
+                onChangeTitle={setTitle}
+                userTeamIds={teams.map(({id}) => id)}
+              />
+            )}
+            {alertType === CombinedAlertType.CRONS && (
+              <CronRulesEdit
+                organization={organization}
+                project={project}
+                onChangeTitle={setTitle}
+              />
+            )}
+          </Fragment>
+        )}
+      </Layout.Body>
+    </Fragment>
+  );
 }
-
-const EditConditionsBody = styled(Layout.Body)`
-  margin-bottom: -${space(3)};
-
-  *:not(img) {
-    max-width: 1000px;
-  }
-`;
-
-export default ProjectAlertsEditor;

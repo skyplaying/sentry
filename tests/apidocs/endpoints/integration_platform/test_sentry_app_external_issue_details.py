@@ -1,20 +1,22 @@
 from django.test.client import RequestFactory
 from django.urls import reverse
 
-from sentry.models import SentryAppInstallation
-from tests.apidocs.util import APIDocsTestCase
+from fixtures.apidocs_test_case import APIDocsTestCase
+from sentry.testutils.silo import control_silo_test
 
 
-class SentryAppDetailsDocs(APIDocsTestCase):
-    def setUp(self):
+@control_silo_test
+class SentryAppDetailsDocsTest(APIDocsTestCase):
+    def setUp(self) -> None:
         self.org = self.create_organization(owner=self.user, name="Rowdy Tiger")
         self.project = self.create_project(organization=self.org)
         self.group = self.create_group(project=self.project)
         self.sentry_app = self.create_sentry_app(
-            name="Hellboy App", published=True, organization=self.org
+            name="Hellboy App", published=True, organization_id=self.org.id
         )
-        self.install = SentryAppInstallation(sentry_app=self.sentry_app, organization=self.org)
-        self.install.save()
+        self.install = self.create_sentry_app_installation(
+            organization=self.org, slug=self.sentry_app.slug
+        )
         self.external_issue = self.create_platform_external_issue(
             group=self.group,
             service_type=self.sentry_app.slug,
@@ -28,7 +30,7 @@ class SentryAppDetailsDocs(APIDocsTestCase):
 
         self.login_as(user=self.user)
 
-    def test_delete(self):
+    def test_delete(self) -> None:
         response = self.client.delete(self.url)
         request = RequestFactory().delete(self.url)
 

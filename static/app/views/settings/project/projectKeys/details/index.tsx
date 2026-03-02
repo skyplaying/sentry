@@ -1,59 +1,92 @@
-import {browserHistory, RouteComponentProps} from 'react-router';
+import {useTheme} from '@emotion/react';
 
-import {t} from 'app/locale';
-import AsyncView from 'app/views/asyncView';
-import SettingsPageHeader from 'app/views/settings/components/settingsPageHeader';
-import PermissionAlert from 'app/views/settings/project/permissionAlert';
-import KeySettings from 'app/views/settings/project/projectKeys/details/keySettings';
-import KeyStats from 'app/views/settings/project/projectKeys/details/keyStats';
-import {ProjectKey} from 'app/views/settings/project/projectKeys/types';
+import LoadingIndicator from 'sentry/components/loadingIndicator';
+import SentryDocumentTitle from 'sentry/components/sentryDocumentTitle';
+import {t} from 'sentry/locale';
+import type {ProjectKey} from 'sentry/types/project';
+import getApiUrl from 'sentry/utils/api/getApiUrl';
+import {browserHistory} from 'sentry/utils/browserHistory';
+import {setApiQueryData, useApiQuery, useQueryClient} from 'sentry/utils/queryClient';
+import normalizeUrl from 'sentry/utils/url/normalizeUrl';
+import useApi from 'sentry/utils/useApi';
+import useOrganization from 'sentry/utils/useOrganization';
+import {useParams} from 'sentry/utils/useParams';
+import RouteError from 'sentry/views/routeError';
+import SettingsPageHeader from 'sentry/views/settings/components/settingsPageHeader';
+import {KeySettings} from 'sentry/views/settings/project/projectKeys/details/keySettings';
+import KeyStats from 'sentry/views/settings/project/projectKeys/details/keyStats';
+import {ProjectPermissionAlert} from 'sentry/views/settings/project/projectPermissionAlert';
+import {useProjectSettingsOutlet} from 'sentry/views/settings/project/projectSettingsLayout';
 
-type Props = RouteComponentProps<
-  {
-    keyId: string;
-    orgId: string;
-    projectId: string;
-  },
-  {}
->;
+export default function ProjectKeyDetails() {
+  const organization = useOrganization();
+  const {project} = useProjectSettingsOutlet();
+  const params = useParams<{keyId: string; projectId: string}>();
+  const {keyId, projectId} = params;
+  const api = useApi();
+  const queryClient = useQueryClient();
+  const theme = useTheme();
 
-type State = {
-  data: ProjectKey;
-} & AsyncView['state'];
+  const {
+    data: projKeyData,
+    isError,
+    isPending,
+  } = useApiQuery<ProjectKey>(
+    [
+      getApiUrl(`/projects/$organizationIdOrSlug/$projectIdOrSlug/keys/$keyId/`, {
+        path: {
+          organizationIdOrSlug: organization.slug,
+          projectIdOrSlug: projectId,
+          keyId,
+        },
+      }),
+    ],
+    {staleTime: 0}
+  );
 
-export default class ProjectKeyDetails extends AsyncView<Props, State> {
-  getTitle() {
-    return t('Key Details');
-  }
-
-  getEndpoints(): ReturnType<AsyncView['getEndpoints']> {
-    const {keyId, orgId, projectId} = this.props.params;
-    return [['data', `/projects/${orgId}/${projectId}/keys/${keyId}/`]];
-  }
-
-  handleRemove = () => {
-    const {orgId, projectId} = this.props.params;
-    browserHistory.push(`/${orgId}/${projectId}/settings/keys/`);
-  };
-
-  renderBody() {
-    const {data} = this.state;
-    const {params} = this.props;
-
-    return (
-      <div data-test-id="key-details">
-        <SettingsPageHeader title={t('Key Details')} />
-        <PermissionAlert />
-
-        <KeyStats api={this.api} params={params} />
-
-        <KeySettings
-          api={this.api}
-          params={params}
-          data={data}
-          onRemove={this.handleRemove}
-        />
-      </div>
+  function onDataChange(data: ProjectKey) {
+    setApiQueryData<ProjectKey>(
+      queryClient,
+      [
+        getApiUrl(`/projects/$organizationIdOrSlug/$projectIdOrSlug/keys/$keyId/`, {
+          path: {
+            organizationIdOrSlug: organization.slug,
+            projectIdOrSlug: projectId,
+            keyId,
+          },
+        }),
+      ],
+      data
     );
   }
+
+  const handleRemove = () => {
+    browserHistory.push(
+      normalizeUrl(`/settings/${organization.slug}/projects/${projectId}/keys/`)
+    );
+  };
+
+  if (isError) {
+    return <RouteError />;
+  }
+
+  if (isPending) {
+    return <LoadingIndicator />;
+  }
+
+  return (
+    <SentryDocumentTitle title={t('Key Details')}>
+      <SettingsPageHeader title={t('Key Details')} data-test-id="key-details" />
+      <ProjectPermissionAlert project={project} />
+      <KeyStats api={api} organization={organization} params={params} theme={theme} />
+      <KeySettings
+        data={projKeyData}
+        updateData={onDataChange}
+        onRemove={handleRemove}
+        organization={organization}
+        project={project}
+        params={params}
+      />
+    </SentryDocumentTitle>
+  );
 }

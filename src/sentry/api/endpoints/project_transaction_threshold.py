@@ -1,8 +1,11 @@
-from django.db import transaction
 from rest_framework import serializers, status
+from rest_framework.request import Request
 from rest_framework.response import Response
 
 from sentry import features
+from sentry.api.api_owners import ApiOwner
+from sentry.api.api_publish_status import ApiPublishStatus
+from sentry.api.base import region_silo_endpoint
 from sentry.api.bases.project import ProjectEndpoint, ProjectSettingPermission
 from sentry.api.serializers import serialize
 from sentry.models.transaction_threshold import (
@@ -37,7 +40,14 @@ class ProjectTransactionThresholdSerializer(serializers.Serializer):
         return threshold
 
 
+@region_silo_endpoint
 class ProjectTransactionThresholdEndpoint(ProjectEndpoint):
+    owner = ApiOwner.DATA_BROWSING
+    publish_status = {
+        "DELETE": ApiPublishStatus.PRIVATE,
+        "GET": ApiPublishStatus.PRIVATE,
+        "POST": ApiPublishStatus.PRIVATE,
+    }
     permission_classes = (ProjectSettingPermission,)
 
     def has_feature(self, project, request):
@@ -45,7 +55,7 @@ class ProjectTransactionThresholdEndpoint(ProjectEndpoint):
             "organizations:performance-view", project.organization, actor=request.user
         )
 
-    def get(self, request, project):
+    def get(self, request: Request, project) -> Response:
         if not self.has_feature(project, request):
             return self.respond(status=status.HTTP_404_NOT_FOUND)
 
@@ -68,7 +78,7 @@ class ProjectTransactionThresholdEndpoint(ProjectEndpoint):
             status.HTTP_200_OK,
         )
 
-    def post(self, request, project):
+    def post(self, request: Request, project) -> Response:
         if not self.has_feature(project, request):
             return self.respond(status=status.HTTP_404_NOT_FOUND)
 
@@ -79,29 +89,22 @@ class ProjectTransactionThresholdEndpoint(ProjectEndpoint):
 
         data = serializer.validated_data
 
-        with transaction.atomic():
-            try:
-                project_threshold = ProjectTransactionThreshold.objects.get(
-                    project=project,
-                    organization=project.organization,
-                )
-                project_threshold.threshold = data.get("threshold") or project_threshold.threshold
-                project_threshold.metric = data.get("metric") or project_threshold.metric
-                project_threshold.edited_by = request.user
-                project_threshold.save()
+        defaults = {"edited_by_id": request.user.id}
+        if data.get("threshold") is not None:
+            defaults["threshold"] = data.get("threshold")
+        if data.get("metric") is not None:
+            defaults["metric"] = data.get("metric")
 
-                created = False
-
-            except ProjectTransactionThreshold.DoesNotExist:
-                project_threshold = ProjectTransactionThreshold.objects.create(
-                    project=project,
-                    organization=project.organization,
-                    threshold=data.get("threshold", 300),
-                    metric=data.get("metric", TransactionMetric.DURATION.value),
-                    edited_by=request.user,
-                )
-
-                created = True
+        project_threshold, created = ProjectTransactionThreshold.objects.update_or_create(
+            project=project,
+            organization=project.organization,
+            create_defaults={
+                "threshold": data.get("threshold", 300),
+                "metric": data.get("metric", TransactionMetric.DURATION.value),
+                "edited_by_id": request.user.id,
+            },
+            defaults=defaults,
+        )
 
         return Response(
             serialize(
@@ -111,7 +114,7 @@ class ProjectTransactionThresholdEndpoint(ProjectEndpoint):
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
 
-    def delete(self, request, project):
+    def delete(self, request: Request, project) -> Response:
         if not self.has_feature(project, request):
             return self.respond(status=status.HTTP_404_NOT_FOUND)
 

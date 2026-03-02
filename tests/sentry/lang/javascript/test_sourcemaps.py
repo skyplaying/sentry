@@ -1,8 +1,7 @@
 from unittest import TestCase
 
-from symbolic import SourceMapTokenMatch, SourceMapView
-
-from sentry.utils import json
+import orjson
+from symbolic.sourcemap import SourceMapTokenMatch, SourceMapView
 
 sourcemap = b"""{
     "version":3,
@@ -13,7 +12,7 @@ sourcemap = b"""{
     "sourceRoot": "foo"
 }"""
 
-indexed_sourcemap_example = json.dumps(
+indexed_sourcemap_example = orjson.dumps(
     {
         "version": 3,
         "file": "min.js",
@@ -48,11 +47,11 @@ indexed_sourcemap_example = json.dumps(
             },
         ],
     }
-).encode("utf-8")
+)
 
 
 class FindSourceTest(TestCase):
-    def test_simple(self):
+    def test_simple(self) -> None:
         smap_view = SourceMapView.from_json_bytes(sourcemap)
 
         result = smap_view.lookup(0, 56)
@@ -92,32 +91,35 @@ class FindSourceTest(TestCase):
 
 
 class IterSourcesTest(TestCase):
-    def test_basic(self):
+    def test_basic(self) -> None:
         smap_view = SourceMapView.from_json_bytes(sourcemap)
         assert list(smap_view.iter_sources()) == [(0, "foo/file1.js"), (1, "foo/file2.js")]
 
 
 class GetSourceContentsTest(TestCase):
-    def test_no_inline(self):
+    def test_no_inline(self) -> None:
         # basic sourcemap fixture has no inlined sources, so expect None
         smap_view = SourceMapView.from_json_bytes(sourcemap)
 
         source = smap_view.get_sourceview(0)
         assert source is None
 
-    def test_indexed_inline(self):
+    def test_indexed_inline(self) -> None:
         smap_view = SourceMapView.from_json_bytes(indexed_sourcemap_example)
-
-        assert smap_view.get_sourceview(0).get_source() == (
+        sview_0 = smap_view.get_sourceview(0)
+        assert sview_0 is not None
+        assert sview_0.get_source() == (
             " ONE.foo = function (bar) {\n" + "   return baz(bar);\n" + " };"
         )
-        assert smap_view.get_sourceview(1).get_source() == (
+        sview_1 = smap_view.get_sourceview(1)
+        assert sview_1 is not None
+        assert sview_1.get_source() == (
             " TWO.inc = function (n) {\n" + "   return n + 1;\n" + " };"
         )
 
 
 class ParseSourcemapTest(TestCase):
-    def test_basic(self):
+    def test_basic(self) -> None:
         index = SourceMapView.from_json_bytes(sourcemap)
 
         assert list(index) == [
@@ -442,7 +444,7 @@ class ParseSourcemapTest(TestCase):
 class ParseIndexedSourcemapTest(TestCase):
     # Tests lookups that fall exactly on source map token boundaries
     # https://github.com/mozilla/source-map/blob/master/test/test-source-map-consumer.js#138
-    def test_exact_mappings(self):
+    def test_exact_mappings(self) -> None:
         smap_view = SourceMapView.from_json_bytes(indexed_sourcemap_example)
 
         # one.js
@@ -505,7 +507,7 @@ class ParseIndexedSourcemapTest(TestCase):
 
     # Tests lookups that fall inside source map token boundaries
     # https://github.com/mozilla/source-map/blob/master/test/test-source-map-consumer.js#181
-    def test_fuzzy_mapping(self):
+    def test_fuzzy_mapping(self) -> None:
         smap_view = SourceMapView.from_json_bytes(indexed_sourcemap_example)
 
         # one.js

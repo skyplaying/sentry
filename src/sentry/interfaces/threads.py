@@ -12,7 +12,7 @@ def get_stacktrace(value, path, **kwargs):
     # badly.
     subvalue = get_path(value, *path)
     if subvalue and subvalue.get("frames"):
-        return Stacktrace.to_python_subpath(value, path, **kwargs)
+        return Stacktrace.to_python(subvalue, **kwargs)
 
 
 class Threads(Interface):
@@ -38,6 +38,8 @@ class Threads(Interface):
                     "crashed": bool(thread.get("crashed")),
                     "current": bool(thread.get("current")),
                     "name": trim(thread.get("name"), 200),
+                    "state": trim(thread.get("state", None)),
+                    "held_locks": thread.get("held_locks", None),
                 }
             )
 
@@ -53,6 +55,8 @@ class Threads(Interface):
                 "current": data["current"],
                 "crashed": data["crashed"],
                 "name": data["name"],
+                "state": data.get("state"),
+                "held_locks": data.get("held_locks"),
                 "stacktrace": None,
             }
             if data["stacktrace"]:
@@ -70,6 +74,8 @@ class Threads(Interface):
                 "current": data["current"],
                 "crashed": data["crashed"],
                 "name": data["name"],
+                "state": data.get("state"),
+                "heldLocks": data.get("held_locks"),
                 "stacktrace": None,
                 "rawStacktrace": None,
             }

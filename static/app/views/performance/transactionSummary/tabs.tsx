@@ -1,9 +1,9 @@
 enum Tab {
-  TransactionSummary,
-  WebVitals,
-  Tags,
-  Events,
-  Spans,
+  TRANSACTION_SUMMARY = 'summary',
+  TAGS = 'tags',
+  EVENTS = 'events',
+  REPLAYS = 'replays',
+  PROFILING = 'profiling',
 }
 
 export default Tab;

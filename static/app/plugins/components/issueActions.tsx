@@ -1,25 +1,33 @@
-import * as React from 'react';
+import {Fragment} from 'react';
 
-import GroupActions from 'app/actions/groupActions';
-import PluginComponentBase from 'app/components/bases/pluginComponentBase';
-import {Form, FormState} from 'app/components/forms';
-import LoadingError from 'app/components/loadingError';
-import LoadingIndicator from 'app/components/loadingIndicator';
-import {t} from 'app/locale';
-import {Group, Organization, Plugin, Project} from 'app/types';
+import {Alert} from '@sentry/scraps/alert';
+import {Button, LinkButton} from '@sentry/scraps/button';
+
+import Form from 'sentry/components/deprecatedforms/form';
+import FormState from 'sentry/components/forms/state';
+import LoadingError from 'sentry/components/loadingError';
+import LoadingIndicator from 'sentry/components/loadingIndicator';
+import {t} from 'sentry/locale';
+import PluginComponentBase from 'sentry/plugins/pluginComponentBase';
+import GroupStore from 'sentry/stores/groupStore';
+import type {Group} from 'sentry/types/group';
+import type {Plugin} from 'sentry/types/integrations';
+import type {Organization} from 'sentry/types/organization';
+import type {Project} from 'sentry/types/project';
+import {trackAnalytics} from 'sentry/utils/analytics';
+import {getAnalyticsDataForGroup} from 'sentry/utils/events';
 
 type Field = {
-  has_autocomplete?: boolean;
   depends?: string[];
+  has_autocomplete?: boolean;
 } & Parameters<typeof PluginComponentBase.prototype.renderField>[0]['config'];
 
 type ActionType = 'link' | 'create' | 'unlink';
-type FieldStateValue = typeof FormState[keyof typeof FormState];
+type FieldStateValue = (typeof FormState)[keyof typeof FormState];
 
 type Props = {
   actionType: ActionType;
   group: Group;
-  project: Project;
   organization: Organization;
   plugin: Plugin & {
     issue?: {
@@ -28,32 +36,33 @@ type Props = {
       url: string;
     };
   };
-  onSuccess?: (data: any) => void;
+  project: Project;
   onError?: (data: any) => void;
+  onSuccess?: (data: any) => void;
 };
 
 type State = {
   createFormData: Record<string, any>;
+  dependentFieldState: Record<string, FieldStateValue>;
   linkFormData: Record<string, any>;
   unlinkFormData: Record<string, any>;
   createFieldList?: Field[];
-  linkFieldList?: Field[];
-  unlinkFieldList?: Field[];
-  dependentFieldState: Record<string, FieldStateValue>;
   error?: {
     message: string;
-    error_type?: string;
     auth_url?: string;
+    error_type?: string;
+    errors?: Record<string, string>;
     has_auth_configured?: boolean;
     required_auth_settings?: string[];
-    errors?: Record<string, string>;
   };
+  linkFieldList?: Field[];
   loading?: boolean;
+  unlinkFieldList?: Field[];
 } & PluginComponentBase['state'];
 
 class IssueActions extends PluginComponentBase<Props, State> {
-  constructor(props: Props, context) {
-    super(props, context);
+  constructor(props: Props) {
+    super(props);
 
     this.createIssue = this.onSave.bind(this, this.createIssue.bind(this));
     this.linkIssue = this.onSave.bind(this, this.linkIssue.bind(this));
@@ -146,12 +155,12 @@ class IssueActions extends PluginComponentBase<Props, State> {
     );
   }
 
-  setDependentFieldState(fieldName, state) {
+  setDependentFieldState(fieldName: any, state: any) {
     const dependentFieldState = {...this.state.dependentFieldState, [fieldName]: state};
     this.setState({dependentFieldState});
   }
 
-  loadOptionsForDependentField = async field => {
+  loadOptionsForDependentField = async (field: any) => {
     const formData = this.getFormData();
 
     const groupId = this.getGroup().id;
@@ -160,7 +169,7 @@ class IssueActions extends PluginComponentBase<Props, State> {
 
     // find the fields that this field is dependent on
     const dependentFormValues = Object.fromEntries(
-      field.depends.map(fieldKey => [fieldKey, formData[fieldKey]])
+      field.depends.map((fieldKey: any) => [fieldKey, formData[fieldKey]])
     );
     const query = {
       option_field: field.name,
@@ -226,8 +235,8 @@ class IssueActions extends PluginComponentBase<Props, State> {
     return props;
   }
 
-  setError(error, defaultMessage: string) {
-    let errorBody;
+  setError(error: any, defaultMessage: string) {
+    let errorBody: any;
     if (error.status === 400 && error.responseJSON) {
       errorBody = error.responseJSON;
     } else {
@@ -236,7 +245,7 @@ class IssueActions extends PluginComponentBase<Props, State> {
     this.setState({error: errorBody});
   }
 
-  errorHandler(error) {
+  errorHandler(error: any) {
     const state: Pick<State, 'loading' | 'error'> = {
       loading: false,
     };
@@ -265,7 +274,8 @@ class IssueActions extends PluginComponentBase<Props, State> {
       this.api.request(this.getPluginCreateEndpoint(), {
         success: data => {
           const createFormData = {};
-          data.forEach(field => {
+          data.forEach((field: any) => {
+            // @ts-expect-error TS(7053): Element implicitly has an 'any' type because expre... Remove this comment to see the full error message
             createFormData[field.name] = field.default;
           });
           this.setState(
@@ -284,7 +294,8 @@ class IssueActions extends PluginComponentBase<Props, State> {
       this.api.request(this.getPluginLinkEndpoint(), {
         success: data => {
           const linkFormData = {};
-          data.forEach(field => {
+          data.forEach((field: any) => {
+            // @ts-expect-error TS(7053): Element implicitly has an 'any' type because expre... Remove this comment to see the full error message
             linkFormData[field.name] = field.default;
           });
           this.setState(
@@ -302,16 +313,27 @@ class IssueActions extends PluginComponentBase<Props, State> {
     }
   }
 
-  onSuccess(data) {
-    GroupActions.updateSuccess(null, [this.getGroup().id], {stale: true});
-    this.props.onSuccess && this.props.onSuccess(data);
+  onSuccess(data: any) {
+    // TODO(ts): This needs a better approach. We splice in this attribute to trigger
+    // a refetch in GroupDetails
+    type StaleGroup = Group & {stale?: boolean};
+
+    trackAnalytics('issue_details.external_issue_created', {
+      organization: this.props.organization,
+      ...getAnalyticsDataForGroup(this.props.group),
+      external_issue_provider: this.props.plugin.slug,
+      external_issue_type: 'plugin',
+    });
+
+    GroupStore.onUpdateSuccess('', [this.getGroup().id], {stale: true} as StaleGroup);
+    this.props.onSuccess?.(data);
   }
 
   createIssue() {
     this.api.request(this.getPluginCreateEndpoint(), {
       data: this.state.createFormData,
       success: this.onSuccess,
-      error: this.onSaveError.bind(this, error => {
+      error: this.onSaveError.bind(this, (error: any) => {
         this.setError(error, t('There was an error creating the issue.'));
       }),
       complete: this.onSaveComplete,
@@ -322,7 +344,7 @@ class IssueActions extends PluginComponentBase<Props, State> {
     this.api.request(this.getPluginLinkEndpoint(), {
       data: this.state.linkFormData,
       success: this.onSuccess,
-      error: this.onSaveError.bind(this, error => {
+      error: this.onSaveError.bind(this, (error: any) => {
         this.setError(error, t('There was an error linking the issue.'));
       }),
       complete: this.onSaveComplete,
@@ -332,7 +354,7 @@ class IssueActions extends PluginComponentBase<Props, State> {
   unlinkIssue() {
     this.api.request(this.getPluginUnlinkEndpoint(), {
       success: this.onSuccess,
-      error: this.onSaveError.bind(this, error => {
+      error: this.onSaveError.bind(this, (error: any) => {
         this.setError(error, t('There was an error unlinking the issue.'));
       }),
       complete: this.onSaveComplete,
@@ -352,7 +374,7 @@ class IssueActions extends PluginComponentBase<Props, State> {
 
     // only works with one impacted field
     const impactedField = fieldList.find(({depends}) => {
-      if (!depends || !depends.length) {
+      if (!depends?.length) {
         return false;
       }
       // must be dependent on the field we just set
@@ -361,11 +383,11 @@ class IssueActions extends PluginComponentBase<Props, State> {
 
     if (impactedField) {
       // if every dependent field is set, then search
-      if (!impactedField.depends?.some(dependentField => !formData[dependentField])) {
-        callback = () => this.loadOptionsForDependentField(impactedField);
-      } else {
+      if (impactedField.depends?.some(dependentField => !formData[dependentField])) {
         // otherwise reset the options
         callback = () => this.resetOptionsOfDependentField(impactedField);
+      } else {
+        callback = () => this.loadOptionsForDependentField(impactedField);
       }
     }
     this.setState(prevState => ({...prevState, [formDataKey]: formData}), callback);
@@ -445,9 +467,9 @@ class IssueActions extends PluginComponentBase<Props, State> {
         return (
           <div>
             <p>{t('Are you sure you want to unlink this issue?')}</p>
-            <button onClick={this.unlinkIssue} className="btn btn-danger">
+            <Button onClick={this.unlinkIssue} priority="danger">
               {t('Unlink Issue')}
-            </button>
+            </Button>
           </div>
         );
       default:
@@ -476,21 +498,28 @@ class IssueActions extends PluginComponentBase<Props, State> {
         authUrl += '&next=' + encodeURIComponent(document.location.pathname);
       }
       return (
-        <div>
-          <div className="alert alert-warning m-b-1">
-            {'You need to associate an identity with ' +
-              this.props.plugin.name +
-              ' before you can create issues with this service.'}
-          </div>
-          <a className="btn btn-primary" href={authUrl}>
-            Associate Identity
-          </a>
-        </div>
+        <Fragment>
+          <Alert.Container>
+            <Alert variant="info" showIcon={false}>
+              {'You need to associate an identity with ' +
+                this.props.plugin.name +
+                ' before you can create issues with this service.'}
+            </Alert>
+          </Alert.Container>
+          <LinkButton href={authUrl ?? '#'}>{t('Associate Identity')}</LinkButton>
+        </Fragment>
       );
-    } else if (error.error_type === 'config') {
+    }
+    if (error.error_type === 'config') {
       return (
-        <div className="alert alert-block">
-          {!error.has_auth_configured ? (
+        <Alert variant="info" showIcon={false}>
+          {error.has_auth_configured ? (
+            <Fragment>
+              You still need to{' '}
+              <a href={this.getPluginConfigureUrl()}>configure this plugin</a> before you
+              can use it.
+            </Fragment>
+          ) : (
             <div>
               <p>
                 {'Your server administrator will need to configure authentication with '}
@@ -506,26 +535,26 @@ class IssueActions extends PluginComponentBase<Props, State> {
                 ))}
               </ul>
             </div>
-          ) : (
-            <p>
-              You still need to{' '}
-              <a href={this.getPluginConfigureUrl()}>configure this plugin</a> before you
-              can use it.
-            </p>
           )}
-        </div>
+        </Alert>
       );
-    } else if (error.error_type === 'validation') {
+    }
+    if (error.error_type === 'validation') {
       const errors: React.ReactElement[] = [];
       for (const name in error.errors) {
         errors.push(<p key={name}>{error.errors[name]}</p>);
       }
-      return <div className="alert alert-error alert-block">{errors}</div>;
-    } else if (error.message) {
       return (
-        <div className="alert alert-error alert-block">
-          <p>{error.message}</p>
-        </div>
+        <Alert variant="danger" showIcon={false}>
+          {errors}
+        </Alert>
+      );
+    }
+    if (error.message) {
+      return (
+        <Alert variant="danger" showIcon={false}>
+          {error.message}
+        </Alert>
       );
     }
     return <LoadingError />;

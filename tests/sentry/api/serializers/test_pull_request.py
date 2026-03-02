@@ -2,13 +2,16 @@ from uuid import uuid4
 
 from sentry.api.serializers import serialize
 from sentry.integrations.github.repository import GitHubRepositoryProvider
-from sentry.models import CommitAuthor, PullRequest, Release, Repository
+from sentry.models.commitauthor import CommitAuthor
+from sentry.models.pullrequest import PullRequest
+from sentry.models.release import Release
+from sentry.models.repository import Repository
 from sentry.plugins.base import bindings
-from sentry.testutils import TestCase
+from sentry.testutils.cases import TestCase
 
 
 class PullRequestSerializerTest(TestCase):
-    def test_simple(self):
+    def test_simple(self) -> None:
         user = self.create_user()
         project = self.create_project()
         release = Release.objects.create(
@@ -37,7 +40,7 @@ class PullRequestSerializerTest(TestCase):
         assert result["repository"]["name"] == "test/test"
         assert result["author"] == {"name": "stebe", "email": "stebe@sentry.io"}
 
-    def test_no_author(self):
+    def test_no_author(self) -> None:
         user = self.create_user()
         project = self.create_project()
         release = Release.objects.create(
@@ -58,7 +61,7 @@ class PullRequestSerializerTest(TestCase):
 
         assert result["author"] == {}
 
-    def test_integration_repository(self):
+    def test_integration_repository(self) -> None:
         # Add binding in case they aren't set.
         bindings.add(
             "integration-repository.provider", GitHubRepositoryProvider, id="integrations:github"
@@ -96,7 +99,7 @@ class PullRequestSerializerTest(TestCase):
         assert result["repository"]["name"] == "test/test"
         assert result["author"] == {"name": "stebe", "email": "stebe@sentry.io"}
 
-    def test_deleted_repository(self):
+    def test_deleted_repository(self) -> None:
         commit_author = CommitAuthor.objects.create(
             name="stebe", email="stebe@sentry.io", organization_id=self.project.organization_id
         )

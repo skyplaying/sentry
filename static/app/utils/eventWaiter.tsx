@@ -1,48 +1,60 @@
-import * as React from 'react';
+import {Component} from 'react';
 import * as Sentry from '@sentry/react';
 
-import {Client} from 'app/api';
-import {Group, Organization, Project} from 'app/types';
-import {analytics} from 'app/utils/analytics';
-import withApi from 'app/utils/withApi';
+import type {Client} from 'sentry/api';
+import type {Group} from 'sentry/types/group';
+import type {Organization} from 'sentry/types/organization';
+import type {Project} from 'sentry/types/project';
+import withApi from 'sentry/utils/withApi';
 
 const DEFAULT_POLL_INTERVAL = 5000;
 
-const recordAnalyticsFirstEvent = ({key, organization, project}) =>
-  analytics(`onboarding_v2.${key}`, {
-    org_id: parseInt(organization.id, 10),
-    project: parseInt(project.id, 10),
-  });
-
 /**
- * Should no issue object be available (the first issue has expired) then it
- * will simply be boolean true. When no event has been received this will be
- * null. Otherwise it will be the group
+ * When no event has been received this will be set to null or false.
+ * Otherwise it will be the Group of the issue that was received.
+ * Or in the case of transactions & replay the value will be set to true.
+ * The `group.id` value is used to generate links directly into the event.
  */
-type FirstIssue = null | true | Group;
+type FirstIssue = null | boolean | Group;
 
-type Props = {
+interface EventWaiterProps {
   api: Client;
+  children: (props: {firstIssue: FirstIssue}) => React.ReactNode;
+  eventType: 'error' | 'transaction' | 'replay' | 'profile' | 'log';
   organization: Organization;
   project: Project;
-  eventType: 'error' | 'transaction';
   disabled?: boolean;
-  pollInterval?: number;
   onIssueReceived?: (props: {firstIssue: FirstIssue}) => void;
-  onTransactionReceived?: (props: {firstIssue: FirstIssue}) => void;
-  children: (props: {firstIssue: FirstIssue}) => React.ReactNode;
-};
+  pollInterval?: number;
+}
 
-type State = {
+type EventWaiterState = {
   firstIssue: FirstIssue;
 };
+
+function getFirstEvent(eventType: EventWaiterProps['eventType'], resp: Project) {
+  switch (eventType) {
+    case 'error':
+      return resp.firstEvent;
+    case 'transaction':
+      return resp.firstTransactionEvent;
+    case 'replay':
+      return resp.hasReplays;
+    case 'profile':
+      return resp.hasProfiles;
+    case 'log':
+      return resp.hasLogs;
+    default:
+      return null;
+  }
+}
 
 /**
  * This is a render prop component that can be used to wait for the first event
  * of a project to be received via polling.
  */
-class EventWaiter extends React.Component<Props, State> {
-  state: State = {
+class EventWaiter extends Component<EventWaiterProps, EventWaiterState> {
+  state: EventWaiterState = {
     firstIssue: null,
   };
 
@@ -60,19 +72,19 @@ class EventWaiter extends React.Component<Props, State> {
     this.stopPolling();
   }
 
-  intervalId: number | null = null;
+  pollingInterval: number | null = null;
 
   pollHandler = async () => {
     const {api, organization, project, eventType, onIssueReceived} = this.props;
-    let firstEvent = null;
+    let firstEvent: string | boolean | null = null;
     let firstIssue: Group | boolean | null = null;
 
     try {
       const resp = await api.requestPromise(
         `/projects/${organization.slug}/${project.slug}/`
       );
-      firstEvent = eventType === 'error' ? resp.firstEvent : resp.firstTransactionEvent;
-    } catch (resp) {
+      firstEvent = getFirstEvent(eventType, resp);
+    } catch (resp: any) {
       if (!resp) {
         return;
       }
@@ -107,21 +119,14 @@ class EventWaiter extends React.Component<Props, State> {
 
       // The event may have expired, default to true
       firstIssue = issues.find((issue: Group) => issue.firstSeen === firstEvent) || true;
-
-      // noinspection SpellCheckingInspection
-      recordAnalyticsFirstEvent({
-        key: 'first_event_recieved',
-        organization,
-        project,
-      });
-    } else {
-      firstIssue = firstEvent;
-      // noinspection SpellCheckingInspection
-      recordAnalyticsFirstEvent({
-        key: 'first_transaction_recieved',
-        organization,
-        project,
-      });
+    } else if (eventType === 'transaction') {
+      firstIssue = Boolean(firstEvent);
+    } else if (eventType === 'replay') {
+      firstIssue = Boolean(firstEvent);
+    } else if (eventType === 'profile') {
+      firstIssue = Boolean(firstEvent);
+    } else if (eventType === 'log') {
+      firstIssue = Boolean(firstEvent);
     }
 
     if (onIssueReceived) {
@@ -139,15 +144,20 @@ class EventWaiter extends React.Component<Props, State> {
       return;
     }
 
-    this.intervalId = window.setInterval(
+    // Proactively clear interval just in case stopPolling was not called
+    if (this.pollingInterval) {
+      window.clearInterval(this.pollingInterval);
+    }
+
+    this.pollingInterval = window.setInterval(
       this.pollHandler,
       this.props.pollInterval || DEFAULT_POLL_INTERVAL
     );
   }
 
   stopPolling() {
-    if (this.intervalId) {
-      clearInterval(this.intervalId);
+    if (this.pollingInterval) {
+      clearInterval(this.pollingInterval);
     }
   }
 

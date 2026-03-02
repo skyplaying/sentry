@@ -2,17 +2,17 @@ from datetime import timedelta
 
 from django.utils import timezone
 
-from sentry.models import GroupInbox, GroupStatus
-from sentry.models.groupinbox import GroupInboxReason, add_group_to_inbox
+from sentry.models.group import GroupStatus
+from sentry.models.groupinbox import GroupInbox, GroupInboxReason, add_group_to_inbox
 from sentry.tasks.auto_remove_inbox import auto_remove_inbox
-from sentry.testutils import TestCase
+from sentry.testutils.cases import TestCase
 
 
 class ClearExpiredSnoozesTest(TestCase):
-    def test_task_persistent_name(self):
+    def test_task_persistent_name(self) -> None:
         assert auto_remove_inbox.name == "sentry.tasks.auto_remove_inbox"
 
-    def test_old_group_inbox_is_removed(self):
+    def test_old_group_inbox_is_removed(self) -> None:
         project = self.create_project()
         group1 = self.create_group(status=GroupStatus.UNRESOLVED, project=project)
         add_group_to_inbox(group1, GroupInboxReason.NEW)

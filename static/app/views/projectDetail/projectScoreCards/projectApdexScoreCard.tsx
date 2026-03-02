@@ -1,206 +1,185 @@
-import * as React from 'react';
-import round from 'lodash/round';
+import {Button} from '@sentry/scraps/button';
 
-import AsyncComponent from 'app/components/asyncComponent';
-import Count from 'app/components/count';
-import {getParams} from 'app/components/organizations/globalSelectionHeader/getParams';
-import {parseStatsPeriod} from 'app/components/organizations/timeRangeSelector/utils';
-import ScoreCard from 'app/components/scoreCard';
-import {IconArrow} from 'app/icons';
-import {t} from 'app/locale';
-import {GlobalSelection, Organization} from 'app/types';
-import {defined} from 'app/utils';
-import {TableData} from 'app/utils/discover/discoverQuery';
-import {getAggregateAlias} from 'app/utils/discover/fields';
-import {getPeriod} from 'app/utils/getPeriod';
-import {getTermHelp, PERFORMANCE_TERM} from 'app/views/performance/data';
+import {shouldFetchPreviousPeriod} from 'sentry/components/charts/utils';
+import {normalizeDateTimeParams} from 'sentry/components/pageFilters/parse';
+import {parseStatsPeriod} from 'sentry/components/timeRangeSelector/utils';
+import {t} from 'sentry/locale';
+import type {PageFilters} from 'sentry/types/core';
+import type {Organization} from 'sentry/types/organization';
+import {defined} from 'sentry/utils';
+import getApiUrl from 'sentry/utils/api/getApiUrl';
+import type {TableData} from 'sentry/utils/discover/discoverQuery';
+import {getPeriod} from 'sentry/utils/duration/getPeriod';
+import {useApiQuery} from 'sentry/utils/queryClient';
+import {BigNumberWidgetVisualization} from 'sentry/views/dashboards/widgets/bigNumberWidget/bigNumberWidgetVisualization';
+import {Widget} from 'sentry/views/dashboards/widgets/widget/widget';
+import {getTermHelp, PerformanceTerm} from 'sentry/views/performance/data';
+import MissingPerformanceButtons from 'sentry/views/projectDetail/missingFeatureButtons/missingPerformanceButtons';
 
-import MissingPerformanceButtons from '../missingFeatureButtons/missingPerformanceButtons';
-import {shouldFetchPreviousPeriod} from '../utils';
+import {ActionWrapper} from './actionWrapper';
 
-type Props = AsyncComponent['props'] & {
-  organization: Organization;
-  selection: GlobalSelection;
+type Props = {
   isProjectStabilized: boolean;
+  organization: Organization;
+  selection: PageFilters;
   hasTransactions?: boolean;
   query?: string;
 };
 
-type State = AsyncComponent['state'] & {
-  currentApdex: TableData | null;
-  previousApdex: TableData | null;
+const useApdex = (props: Props) => {
+  const {organization, selection, isProjectStabilized, hasTransactions, query} = props;
+
+  const isEnabled = !!(
+    organization.features.includes('performance-view') &&
+    isProjectStabilized &&
+    hasTransactions
+  );
+  const {projects, environments: environments, datetime} = selection;
+  const {period} = datetime;
+
+  const {start: previousStart} = parseStatsPeriod(
+    getPeriod({period, start: undefined, end: undefined}, {shouldDoublePeriod: true})
+      .statsPeriod!
+  );
+
+  const {start: previousEnd} = parseStatsPeriod(
+    getPeriod({period, start: undefined, end: undefined}, {shouldDoublePeriod: false})
+      .statsPeriod!
+  );
+
+  const commonQuery = {
+    environment: environments,
+    project: projects.map(proj => String(proj)),
+    field: ['apdex()'],
+    query: ['event.type:transaction count():>0', query].join(' ').trim(),
+  };
+
+  const currentQuery = useApiQuery<TableData>(
+    [
+      getApiUrl(`/organizations/$organizationIdOrSlug/events/`, {
+        path: {organizationIdOrSlug: organization.slug},
+      }),
+      {
+        query: {
+          ...commonQuery,
+          ...normalizeDateTimeParams(datetime),
+        },
+      },
+    ],
+    {staleTime: Infinity, enabled: isEnabled}
+  );
+
+  const isPreviousPeriodEnabled = shouldFetchPreviousPeriod({
+    start: datetime.start,
+    end: datetime.end,
+    period: datetime.period,
+  });
+
+  const previousQuery = useApiQuery<TableData>(
+    [
+      getApiUrl(`/organizations/$organizationIdOrSlug/events/`, {
+        path: {organizationIdOrSlug: organization.slug},
+      }),
+      {
+        query: {
+          ...commonQuery,
+          start: previousStart,
+          end: previousEnd,
+        },
+      },
+    ],
+    {
+      staleTime: Infinity,
+      enabled: isEnabled && isPreviousPeriodEnabled,
+    }
+  );
+
+  return {
+    data: currentQuery.data,
+    previousData: previousQuery.data,
+    isLoading:
+      currentQuery.isPending || (previousQuery.isPending && isPreviousPeriodEnabled),
+    error: currentQuery.error || previousQuery.error,
+    refetch: () => {
+      currentQuery.refetch();
+      previousQuery.refetch();
+    },
+  };
 };
 
-class ProjectApdexScoreCard extends AsyncComponent<Props, State> {
-  shouldRenderBadRequests = true;
+function ProjectApdexScoreCard(props: Props) {
+  const {organization, hasTransactions} = props;
 
-  getDefaultState() {
-    return {
-      ...super.getDefaultState(),
-      currentApdex: null,
-      previousApdex: null,
-    };
-  }
+  const {data, previousData, isLoading, error, refetch} = useApdex(props);
 
-  getEndpoints() {
-    const {organization, selection, isProjectStabilized, hasTransactions, query} =
-      this.props;
+  const apdex = Number(data?.data?.[0]?.['apdex()']) || undefined;
 
-    if (!this.hasFeature() || !isProjectStabilized || !hasTransactions) {
-      return [];
-    }
+  const previousApdex = Number(previousData?.data?.[0]?.['apdex()']) || undefined;
 
-    const {projects, environments, datetime} = selection;
-    const {period} = datetime;
-    const commonQuery = {
-      environment: environments,
-      project: projects.map(proj => String(proj)),
-      field: ['apdex()'],
-      query: ['event.type:transaction count():>0', query].join(' ').trim(),
-    };
-    const endpoints: ReturnType<AsyncComponent['getEndpoints']> = [
-      [
-        'currentApdex',
-        `/organizations/${organization.slug}/eventsv2/`,
-        {query: {...commonQuery, ...getParams(datetime)}},
-      ],
-    ];
+  const cardTitle = t('Apdex');
 
-    if (shouldFetchPreviousPeriod(datetime)) {
-      const {start: previousStart} = parseStatsPeriod(
-        getPeriod({period, start: undefined, end: undefined}, {shouldDoublePeriod: true})
-          .statsPeriod!
-      );
+  const cardHelp = getTermHelp(organization, PerformanceTerm.APDEX);
 
-      const {start: previousEnd} = parseStatsPeriod(
-        getPeriod({period, start: undefined, end: undefined}, {shouldDoublePeriod: false})
-          .statsPeriod!
-      );
+  const Title = <Widget.WidgetTitle title={cardTitle} />;
 
-      endpoints.push([
-        'previousApdex',
-        `/organizations/${organization.slug}/eventsv2/`,
-        {query: {...commonQuery, start: previousStart, end: previousEnd}},
-      ]);
-    }
-
-    return endpoints;
-  }
-
-  componentDidUpdate(prevProps: Props) {
-    const {selection, isProjectStabilized, hasTransactions, query} = this.props;
-
-    if (
-      prevProps.selection !== selection ||
-      prevProps.hasTransactions !== hasTransactions ||
-      prevProps.isProjectStabilized !== isProjectStabilized ||
-      prevProps.query !== query
-    ) {
-      this.remountComponent();
-    }
-  }
-
-  hasFeature() {
-    return this.props.organization.features.includes('performance-view');
-  }
-
-  get cardTitle() {
-    return t('Apdex');
-  }
-
-  get cardHelp() {
-    const {organization} = this.props;
-    const baseHelp = getTermHelp(organization, PERFORMANCE_TERM.APDEX_NEW);
-
-    if (this.trend) {
-      return baseHelp + t(' This shows how it has changed since the last period.');
-    }
-
-    return baseHelp;
-  }
-
-  get currentApdex() {
-    const {currentApdex} = this.state;
-
-    const apdex = currentApdex?.data[0]?.[getAggregateAlias('apdex()')];
-
-    return typeof apdex === 'undefined' ? undefined : Number(apdex);
-  }
-
-  get previousApdex() {
-    const {previousApdex} = this.state;
-
-    const apdex = previousApdex?.data[0]?.[getAggregateAlias('apdex()')];
-
-    return typeof apdex === 'undefined' ? undefined : Number(apdex);
-  }
-
-  get trend() {
-    if (this.currentApdex && this.previousApdex) {
-      return round(this.currentApdex - this.previousApdex, 3);
-    }
-
-    return null;
-  }
-
-  get trendStatus(): React.ComponentProps<typeof ScoreCard>['trendStatus'] {
-    if (!this.trend) {
-      return undefined;
-    }
-
-    return this.trend > 0 ? 'good' : 'bad';
-  }
-
-  renderLoading() {
-    return this.renderBody();
-  }
-
-  renderMissingFeatureCard() {
-    const {organization} = this.props;
+  if (!hasTransactions || !organization.features.includes('performance-view')) {
     return (
-      <ScoreCard
-        title={this.cardTitle}
-        help={this.cardHelp}
-        score={<MissingPerformanceButtons organization={organization} />}
+      <Widget
+        Title={Title}
+        Visualization={
+          <ActionWrapper>
+            <MissingPerformanceButtons organization={organization} />
+          </ActionWrapper>
+        }
       />
     );
   }
 
-  renderScore() {
-    return defined(this.currentApdex) ? <Count value={this.currentApdex} /> : '\u2014';
-  }
-
-  renderTrend() {
-    // we want to show trend only after currentApdex has loaded to prevent jumping
-    return defined(this.currentApdex) && defined(this.trend) ? (
-      <React.Fragment>
-        {this.trend >= 0 ? (
-          <IconArrow direction="up" size="xs" />
-        ) : (
-          <IconArrow direction="down" size="xs" />
-        )}
-        <Count value={Math.abs(this.trend)} />
-      </React.Fragment>
-    ) : null;
-  }
-
-  renderBody() {
-    const {hasTransactions} = this.props;
-
-    if (!this.hasFeature() || hasTransactions === false) {
-      return this.renderMissingFeatureCard();
-    }
-
+  if (isLoading || !defined(apdex)) {
     return (
-      <ScoreCard
-        title={this.cardTitle}
-        help={this.cardHelp}
-        score={this.renderScore()}
-        trend={this.renderTrend()}
-        trendStatus={this.trendStatus}
+      <Widget
+        Title={Title}
+        Visualization={<BigNumberWidgetVisualization.LoadingPlaceholder />}
       />
     );
   }
+
+  if (error) {
+    return (
+      <Widget
+        Title={Title}
+        Actions={
+          <Widget.WidgetToolbar>
+            <Button size="xs" onClick={refetch}>
+              {t('Retry')}
+            </Button>
+          </Widget.WidgetToolbar>
+        }
+        Visualization={<Widget.WidgetError error={error} />}
+      />
+    );
+  }
+
+  return (
+    <Widget
+      Title={Title}
+      Actions={
+        <Widget.WidgetToolbar>
+          <Widget.WidgetDescription description={cardHelp} />
+        </Widget.WidgetToolbar>
+      }
+      Visualization={
+        <BigNumberWidgetVisualization
+          value={apdex}
+          previousPeriodValue={previousApdex}
+          field="apdex()"
+          type="number"
+          unit={null}
+          preferredPolarity="+"
+        />
+      }
+    />
+  );
 }
 
 export default ProjectApdexScoreCard;

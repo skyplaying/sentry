@@ -1,64 +1,112 @@
+import {lazy} from 'react';
 import styled from '@emotion/styled';
 
-import AsyncComponent from 'app/components/asyncComponent';
-import EventDataSection from 'app/components/events/eventDataSection';
-import LazyLoad from 'app/components/lazyLoad';
-import {t} from 'app/locale';
-import space from 'app/styles/space';
-import {IssueAttachment, Organization, Project} from 'app/types';
-import {Event} from 'app/types/event';
+import LazyLoad from 'sentry/components/lazyLoad';
+import LoadingError from 'sentry/components/loadingError';
+import {t} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {Event} from 'sentry/types/event';
+import type {IssueAttachment} from 'sentry/types/group';
+import type {Organization} from 'sentry/types/organization';
+import type {Project} from 'sentry/types/project';
+import getApiUrl from 'sentry/utils/api/getApiUrl';
+import {useApiQuery} from 'sentry/utils/queryClient';
+import useOrganization from 'sentry/utils/useOrganization';
+import {SectionKey} from 'sentry/views/issueDetails/streamline/context';
+import {InterimSection} from 'sentry/views/issueDetails/streamline/interimSection';
 
 type Props = {
   event: Event;
   orgId: Organization['id'];
-  projectId: Project['id'];
-} & AsyncComponent['props'];
+  projectSlug: Project['slug'];
+  disableCollapsePersistence?: boolean;
+};
 
-type State = {
-  attachmentList: Array<IssueAttachment> | null;
-} & AsyncComponent['state'];
+const LazyReplayer = lazy(() => import('./rrwebReplayer'));
 
-class RRWebIntegration extends AsyncComponent<Props, State> {
-  getEndpoints(): ReturnType<AsyncComponent['getEndpoints']> {
-    const {orgId, projectId, event} = this.props;
-    return [
-      [
-        'attachmentList',
-        `/projects/${orgId}/${projectId}/events/${event.id}/attachments/`,
-        {query: {query: 'rrweb.json'}},
-      ],
-    ];
+function EventRRWebIntegrationContent({
+  orgId,
+  projectSlug,
+  event,
+  disableCollapsePersistence,
+}: Props) {
+  const {
+    data: attachmentList,
+    isPending,
+    isError,
+    refetch,
+  } = useApiQuery<IssueAttachment[]>(
+    [
+      getApiUrl(
+        '/projects/$organizationIdOrSlug/$projectIdOrSlug/events/$eventId/attachments/',
+        {
+          path: {
+            organizationIdOrSlug: orgId,
+            projectIdOrSlug: projectSlug,
+            eventId: event.id,
+          },
+        }
+      ),
+      // This was changed from `rrweb.json`, so that we can instead
+      // support incremental rrweb events as attachments. This is to avoid
+      // having clients uploading a single, large sized replay.
+      //
+      // Note: This will include all attachments that contain `rrweb`
+      // anywhere its name. We need to maintain compatibility with existing
+      // rrweb plugin users (single replay), but also support incremental
+      // replays as well. I can't think of a reason why someone would have
+      // a non-rrweb replay containing the string `rrweb`, but people have
+      // surprised me before.
+      {query: {query: 'rrweb'}},
+    ],
+    {staleTime: 0}
+  );
+
+  if (isError) {
+    return <LoadingError onRetry={refetch} />;
   }
 
-  renderLoading() {
+  if (isPending) {
     // hide loading indicator
     return null;
   }
 
-  renderBody() {
-    const {attachmentList} = this.state;
-
-    if (!attachmentList?.length) {
-      return null;
-    }
-
-    const attachment = attachmentList[0];
-    const {orgId, projectId, event} = this.props;
-
-    return (
-      <StyledEventDataSection type="context-replay" title={t('Replay')}>
-        <LazyLoad
-          component={() => import('./rrwebReplayer')}
-          url={`/api/0/projects/${orgId}/${projectId}/events/${event.id}/attachments/${attachment.id}/?download`}
-        />
-      </StyledEventDataSection>
-    );
+  if (!attachmentList?.length) {
+    return null;
   }
+
+  const createAttachmentUrl = (attachment: IssueAttachment) =>
+    `/api/0/projects/${orgId}/${projectSlug}/events/${event.id}/attachments/${attachment.id}/?download`;
+
+  return (
+    <StyledReplayEventDataSection
+      type={SectionKey.RRWEB}
+      title={t('Replay')}
+      disableCollapsePersistence={disableCollapsePersistence}
+    >
+      <LazyLoad
+        LazyComponent={LazyReplayer}
+        urls={attachmentList.map(createAttachmentUrl)}
+      />
+    </StyledReplayEventDataSection>
+  );
 }
 
-const StyledEventDataSection = styled(EventDataSection)`
+export function EventRRWebIntegration(props: Props) {
+  const organization = useOrganization();
+  const hasReplay = Boolean(
+    props.event?.tags?.find(({key}) => key === 'replayId')?.value
+  );
+  const hasEventAttachmentsFeature = organization.features.includes('event-attachments');
+
+  if (hasReplay || !hasEventAttachmentsFeature) {
+    return null;
+  }
+
+  return <EventRRWebIntegrationContent {...props} />;
+}
+
+const StyledReplayEventDataSection = styled(InterimSection)`
   overflow: hidden;
   margin-bottom: ${space(3)};
 `;
-
-export default RRWebIntegration;

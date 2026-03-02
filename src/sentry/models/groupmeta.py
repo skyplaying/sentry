@@ -1,17 +1,21 @@
 import threading
+from typing import ClassVar
 
-from celery.signals import task_postrun
 from django.core.signals import request_finished
 from django.db import models
 
-from sentry.db.models import FlexibleForeignKey, Model, sane_repr
-from sentry.db.models.manager import BaseManager
-from sentry.exceptions import CacheNotPopulated
+from sentry.backup.scopes import RelocationScope
+from sentry.db.models import FlexibleForeignKey, Model, region_silo_model, sane_repr
+from sentry.db.models.manager.base import BaseManager
 
-ERR_CACHE_MISISNG = "Cache not populated for instance id=%s"
+ERR_CACHE_MISSING = "Cache not populated for instance id=%s"
 
 
-class GroupMetaManager(BaseManager):
+class GroupMetaCacheNotPopulated(Exception):
+    pass
+
+
+class GroupMetaManager(BaseManager["GroupMeta"]):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.__local_cache = threading.local()
@@ -36,9 +40,7 @@ class GroupMetaManager(BaseManager):
     __cache = property(_get_cache, _set_cache)
 
     def contribute_to_class(self, model, name):
-        model.CacheNotPopulated = CacheNotPopulated
         super().contribute_to_class(model, name)
-        task_postrun.connect(self.clear_local_cache)
         request_finished.connect(self.clear_local_cache)
 
     def clear_local_cache(self, **kwargs):
@@ -58,7 +60,7 @@ class GroupMetaManager(BaseManager):
             try:
                 inst_cache = self.__cache[instance.id]
             except KeyError:
-                raise self.model.CacheNotPopulated(ERR_CACHE_MISISNG % (instance.id,))
+                raise GroupMetaCacheNotPopulated(ERR_CACHE_MISSING % (instance.id,))
             results[instance] = inst_cache.get(key, default)
         return results
 
@@ -66,7 +68,7 @@ class GroupMetaManager(BaseManager):
         try:
             inst_cache = self.__cache[instance.id]
         except KeyError:
-            raise self.model.CacheNotPopulated(ERR_CACHE_MISISNG % (instance.id,))
+            raise GroupMetaCacheNotPopulated(ERR_CACHE_MISSING % (instance.id,))
         return inst_cache.get(key, default)
 
     def unset_value(self, instance, key):
@@ -82,6 +84,7 @@ class GroupMetaManager(BaseManager):
         self.__cache[instance.id][key] = value
 
 
+@region_silo_model
 class GroupMeta(Model):
     """
     Arbitrary key/value store for Groups.
@@ -90,13 +93,13 @@ class GroupMeta(Model):
     provided by plugins.
     """
 
-    __include_in_export__ = False
+    __relocation_scope__ = RelocationScope.Excluded
 
     group = FlexibleForeignKey("sentry.Group")
     key = models.CharField(max_length=64)
     value = models.TextField()
 
-    objects = GroupMetaManager()
+    objects: ClassVar[GroupMetaManager] = GroupMetaManager()
 
     class Meta:
         app_label = "sentry"

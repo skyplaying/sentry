@@ -1,60 +1,64 @@
-import React, {useRef, useState} from 'react';
-import ReactDOM from 'react-dom';
-import {Popper} from 'react-popper';
-import {withTheme} from '@emotion/react';
+import {Fragment, useRef, useState} from 'react';
+import {createPortal} from 'react-dom';
+import {usePopper} from 'react-popper';
+import {useTheme} from '@emotion/react';
 import styled from '@emotion/styled';
-import {truncate} from '@sentry/utils';
-import classNames from 'classnames';
-import {EChartOption} from 'echarts';
-import {Location} from 'history';
+import {useOverlay} from '@react-aria/overlays';
+import {useOverlayTriggerState} from '@react-stately/overlays';
+import {truncate} from '@sentry/core';
+import type {VisualMapComponentOption} from 'echarts';
+import type {Location, LocationDescriptor} from 'history';
 import memoize from 'lodash/memoize';
 
-import HeatMapChart from 'app/components/charts/heatMapChart';
-import {HeaderTitleLegend} from 'app/components/charts/styles';
-import TransitionChart from 'app/components/charts/transitionChart';
-import TransparentLoadingMask from 'app/components/charts/transparentLoadingMask';
-import {Content} from 'app/components/dropdownControl';
-import DropdownMenu from 'app/components/dropdownMenu';
-import LoadingIndicator from 'app/components/loadingIndicator';
-import {Panel} from 'app/components/panels';
-import Placeholder from 'app/components/placeholder';
-import QuestionTooltip from 'app/components/questionTooltip';
-import {
-  DropdownContainer,
-  DropdownItem,
-  SectionSubtext,
-} from 'app/components/quickTrace/styles';
-import Truncate from 'app/components/truncate';
-import {t} from 'app/locale';
-import space from 'app/styles/space';
-import {Organization, Project} from 'app/types';
-import {ReactEchartsRef, Series} from 'app/types/echarts';
-import {axisLabelFormatter} from 'app/utils/discover/charts';
-import EventView from 'app/utils/discover/eventView';
-import {formatAbbreviatedNumber} from 'app/utils/formatters';
-import getDynamicText from 'app/utils/getDynamicText';
-import {TableData as TagTableData} from 'app/utils/performance/segmentExplorer/tagKeyHistogramQuery';
-import TagTransactionsQuery from 'app/utils/performance/segmentExplorer/tagTransactionsQuery';
-import {decodeScalar} from 'app/utils/queryString';
-import {Theme} from 'app/utils/theme';
+import {Flex} from '@sentry/scraps/layout';
 
-import {getPerformanceDuration, PerformanceDuration} from '../../utils';
-import {eventsRouteWithQuery} from '../transactionEvents/utils';
-import {generateTransactionLink} from '../utils';
+import HeatMapChart from 'sentry/components/charts/heatMapChart';
+import {HeaderTitleLegend} from 'sentry/components/charts/styles';
+import TransitionChart from 'sentry/components/charts/transitionChart';
+import TransparentLoadingMask from 'sentry/components/charts/transparentLoadingMask';
+import LoadingIndicator from 'sentry/components/loadingIndicator';
+import MenuItem from 'sentry/components/menuItem';
+import {Overlay, PositionWrapper} from 'sentry/components/overlay';
+import Panel from 'sentry/components/panels/panel';
+import PerformanceDuration from 'sentry/components/performanceDuration';
+import Placeholder from 'sentry/components/placeholder';
+import QuestionTooltip from 'sentry/components/questionTooltip';
+import Truncate from 'sentry/components/truncate';
+import {t} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {ReactEchartsRef, Series} from 'sentry/types/echarts';
+import type {Organization} from 'sentry/types/organization';
+import type {Project} from 'sentry/types/project';
+import {axisLabelFormatter} from 'sentry/utils/discover/charts';
+import type EventView from 'sentry/utils/discover/eventView';
+import {generateLinkToEventInTraceView} from 'sentry/utils/discover/urls';
+import {formatAbbreviatedNumber} from 'sentry/utils/formatters';
+import getDynamicText from 'sentry/utils/getDynamicText';
+import type {
+  TableDataRow,
+  TableData as TagTableData,
+} from 'sentry/utils/performance/segmentExplorer/tagKeyHistogramQuery';
+import TagTransactionsQuery from 'sentry/utils/performance/segmentExplorer/tagTransactionsQuery';
+import {decodeScalar} from 'sentry/utils/queryString';
+import {useDomainViewFilters} from 'sentry/views/insights/pages/useFilters';
+import {TraceViewSources} from 'sentry/views/performance/newTraceDetails/traceHeader/breadcrumbs';
+import Tab from 'sentry/views/performance/transactionSummary/tabs';
+import {eventsRouteWithQuery} from 'sentry/views/performance/transactionSummary/transactionEvents/utils';
+import {getPerformanceDuration} from 'sentry/views/performance/utils/getPerformanceDuration';
 
 import {parseHistogramBucketInfo, trackTagPageInteraction} from './utils';
 
 type Props = {
+  aggregateColumn: string;
   eventView: EventView;
   location: Location;
-  aggregateColumn: string;
   organization: Organization;
   projects: Project[];
   transactionName: string;
   tagKey?: string;
 };
 
-const findRowKey = row => {
+const findRowKey = (row: TableDataRow) => {
   return Object.keys(row).find(key => key.includes('histogram'));
 };
 
@@ -64,6 +68,7 @@ class VirtualReference {
   constructor(element: HTMLElement) {
     this.boundingRect = element.getBoundingClientRect();
   }
+
   getBoundingClientRect() {
     return this.boundingRect;
   }
@@ -76,23 +81,27 @@ class VirtualReference {
     return this.getBoundingClientRect().height;
   }
 }
+
 const getPortal = memoize((): HTMLElement => {
   let portal = document.getElementById('heatmap-portal');
-  if (!portal) {
-    portal = document.createElement('div');
-    portal.setAttribute('id', 'heatmap-portal');
-    document.body.appendChild(portal);
+
+  if (portal) {
+    return portal;
   }
+
+  portal = document.createElement('div');
+  portal.setAttribute('id', 'heatmap-portal');
+  document.body.appendChild(portal);
+
   return portal;
 });
 
-const TagsHeatMap = (
+function TagsHeatMap(
   props: Props & {
-    theme: Theme;
-    tableData: TagTableData | null;
     isLoading: boolean;
+    tableData: TagTableData | null;
   }
-) => {
+) {
   const {
     tableData,
     isLoading,
@@ -104,29 +113,28 @@ const TagsHeatMap = (
     aggregateColumn,
   } = props;
 
+  const {view} = useDomainViewFilters();
   const chartRef = useRef<ReactEchartsRef>(null);
   const [chartElement, setChartElement] = useState<VirtualReference | undefined>();
+  const [overlayElement, setOverlayElement] = useState<HTMLElement | null>(null);
+  const [overlayArrowElement, setOverlayArrowElement] = useState<HTMLElement | null>(
+    null
+  );
   const [transactionEventView, setTransactionEventView] = useState<
     EventView | undefined
   >();
-  const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
 
   // TODO(k-fish): Replace with actual theme colors.
   const purples = ['#D1BAFC', '#9282F3', '#6056BA', '#313087', '#021156'];
 
-  const xValues = new Set();
+  const xValues = new Set<string>();
 
-  const histogramData =
-    tableData &&
-    tableData.histogram &&
-    tableData.histogram.data &&
-    tableData.histogram.data.length
-      ? tableData.histogram.data
-      : undefined;
-  const tagData =
-    tableData && tableData.tags && tableData.tags.data ? tableData.tags.data : undefined;
+  const histogramData = tableData?.histogram?.data?.length
+    ? tableData.histogram.data
+    : undefined;
+  const tagData = tableData?.tags?.data ? tableData.tags.data : undefined;
 
-  const rowKey = histogramData && findRowKey(histogramData[0]);
+  const rowKey = histogramData && findRowKey(histogramData[0]!);
 
   // Reverse since e-charts takes the axis labels in the opposite order.
   const columnNames = tagData ? tagData.map(tag => tag.tags_value).reverse() : [];
@@ -147,13 +155,10 @@ const TagsHeatMap = (
         })
       : null;
 
-  _data &&
-    _data.sort((a, b) => {
-      if (a[0] === b[0]) {
-        return b[1] - a[1];
-      }
-      return b[0] - a[0];
-    });
+  _data?.sort((a, b) => {
+    const i = b[0] === a[0] ? 1 : 0;
+    return b[i]! - a[i]!;
+  });
 
   // TODO(k-fish): Cleanup options
   const chartOptions = {
@@ -170,9 +175,8 @@ const TagsHeatMap = (
       axisLabel: {
         formatter: (value: string) => truncate(value, 30),
       },
-    } as any, // TODO(k-fish): Expand typing to allow data option
+    },
     xAxis: {
-      boundaryGap: true,
       type: 'category' as const,
       splitArea: {
         show: true,
@@ -182,7 +186,8 @@ const TagsHeatMap = (
         show: true,
         showMinLabel: true,
         showMaxLabel: true,
-        formatter: (value: number) => axisLabelFormatter(value, 'Count'),
+        formatter: (value: string | number) =>
+          axisLabelFormatter(value as number, 'number'),
       },
       axisLine: {},
       axisPointer: {
@@ -193,7 +198,7 @@ const TagsHeatMap = (
         interval: 0,
         alignWithLabel: true,
       },
-    } as any, // TODO(k-fish): Expand typing to allow data option
+    },
 
     grid: {
       left: space(3),
@@ -203,7 +208,7 @@ const TagsHeatMap = (
     },
   };
 
-  const visualMaps = [
+  const visualMaps: VisualMapComponentOption[] = [
     {
       min: 0,
       max: maxCount,
@@ -213,7 +218,7 @@ const TagsHeatMap = (
       inRange: {
         color: purples,
       },
-    } as EChartOption.VisualMap,
+    },
   ];
 
   const series: Series[] = [];
@@ -224,7 +229,7 @@ const TagsHeatMap = (
       dataArray: _data,
       label: {
         show: true,
-        formatter: data => formatAbbreviatedNumber(data.value[2]),
+        formatter: (data: any) => formatAbbreviatedNumber(data.value[2]),
       },
       emphasis: {
         itemStyle: {
@@ -235,23 +240,172 @@ const TagsHeatMap = (
     } as any); // TODO(k-fish): Fix heatmap data typing
   }
 
-  const onOpenMenu = () => {
-    setIsMenuOpen(true);
-  };
+  const onChartClick = (bucket: any) => {
+    const htmlEvent = bucket.event.event;
+    // Make a copy of the dims because echarts can remove elements after this click happens.
+    // TODO(k-fish): Look at improving this to respond properly to resize events.
+    const virtualRef = new VirtualReference(htmlEvent.target);
+    setChartElement(virtualRef);
 
-  const onCloseMenu = () => {
-    setIsMenuOpen(false);
-  };
+    const newTransactionEventView = eventView.clone();
 
-  const shouldIgnoreMenuClose = e => {
-    if (chartRef.current?.getEchartsInstance().getDom().contains(e.target)) {
-      // Ignore the menu being closed if the echart is being clicked.
-      return true;
+    // We need the traceSlug here to navigate to the transaction in the trace view.
+    newTransactionEventView.fields = [{field: aggregateColumn}, {field: 'trace'}];
+    const [_, tagValue] = bucket.value;
+
+    if (histogramBucketInfo && histogramData) {
+      const row = histogramData[bucket.dataIndex];
+      const currentBucketStart = parseInt(
+        `${row![histogramBucketInfo.histogramField]}`,
+        10
+      );
+      const currentBucketEnd = currentBucketStart + histogramBucketInfo.bucketSize;
+
+      newTransactionEventView.additionalConditions.setFilterValues(aggregateColumn, [
+        `>=${currentBucketStart}`,
+        `<${currentBucketEnd}`,
+      ]);
     }
-    return false;
+
+    if (tagKey) {
+      newTransactionEventView.additionalConditions.setFilterValues(tagKey, [tagValue]);
+    }
+
+    setTransactionEventView(newTransactionEventView);
+    trackTagPageInteraction(organization);
+
+    if (!overlayState.isOpen) {
+      overlayState.open();
+    }
   };
 
-  const histogramBucketInfo = histogramData && parseHistogramBucketInfo(histogramData[0]);
+  const overlayState = useOverlayTriggerState({});
+  const {overlayProps} = useOverlay(
+    {
+      isOpen: overlayState.isOpen,
+      onClose: overlayState.close,
+      isDismissable: true,
+      shouldCloseOnBlur: true,
+      // Ignore the menu being closed if the echart is being clicked.
+      shouldCloseOnInteractOutside: el =>
+        !chartRef.current?.getEchartsInstance().getDom().contains(el),
+    },
+    {current: overlayElement ?? null}
+  );
+
+  const {styles: popperStyles, state: popperState} = usePopper(
+    chartElement,
+    overlayElement,
+    {
+      placement: 'bottom',
+      strategy: 'absolute',
+      modifiers: [
+        {name: 'computeStyles', options: {gpuAcceleration: false}},
+        {name: 'offset', options: {offset: [0, 8]}},
+        {name: 'arrow', options: {element: overlayArrowElement, padding: 4}},
+        {name: 'preventOverflow', enabled: true, options: {padding: 12, altAxis: true}},
+      ],
+    }
+  );
+
+  const theme = useTheme();
+  const portaledContent =
+    !chartElement || !overlayState.isOpen ? null : (
+      <PositionWrapper
+        ref={setOverlayElement}
+        zIndex={theme.zIndex.dropdown}
+        style={popperStyles.popper}
+        {...overlayProps}
+      >
+        <Overlay
+          arrowProps={{
+            ref: setOverlayArrowElement,
+            style: popperStyles.arrow,
+            placement: popperState?.placement,
+          }}
+        >
+          {transactionEventView && (
+            <TagTransactionsQuery
+              query={transactionEventView.getQueryWithAdditionalConditions()}
+              location={location}
+              eventView={transactionEventView}
+              orgSlug={organization.slug}
+              limit={4}
+              referrer="api.insights.tag-page"
+            >
+              {({isLoading: isTransactionsLoading, tableData: transactionTableData}) => {
+                if (isTransactionsLoading) {
+                  return (
+                    <Flex justify="center" align="center" width="200px" height="100px">
+                      <LoadingIndicator size={40} />
+                    </Flex>
+                  );
+                }
+
+                const moreEventsTarget = eventsRouteWithQuery({
+                  organization,
+                  transaction: transactionName,
+                  projectID: decodeScalar(location.query.project),
+                  query: {
+                    ...transactionEventView.generateQueryStringObject(),
+                    query: transactionEventView.getQueryWithAdditionalConditions(),
+                  },
+                });
+
+                return (
+                  <div>
+                    {transactionTableData?.data.length ? null : <Placeholder />}
+                    {[...(transactionTableData?.data ?? [])].slice(0, 3).map(row => {
+                      const target = generateLinkToEventInTraceView({
+                        eventId: row.id,
+                        traceSlug: row.trace?.toString()!,
+                        timestamp: row.timestamp!,
+                        location: {
+                          ...location,
+                          query: {
+                            ...location.query,
+                            tab: Tab.TAGS,
+                          },
+                        },
+                        organization,
+                        source: TraceViewSources.PERFORMANCE_TRANSACTION_SUMMARY,
+                        view,
+                      });
+
+                      return (
+                        <DropdownItem width="small" key={row.id} to={target}>
+                          <Flex justify="between" width="100%">
+                            <Truncate value={row.id} maxLength={12} />
+                            <SectionSubtext>
+                              <PerformanceDuration
+                                milliseconds={Number(row[aggregateColumn])}
+                                abbreviation
+                              />
+                            </SectionSubtext>
+                          </Flex>
+                        </DropdownItem>
+                      );
+                    })}
+                    {moreEventsTarget &&
+                    transactionTableData &&
+                    transactionTableData.data.length > 3 ? (
+                      <DropdownItem width="small" to={moreEventsTarget}>
+                        <Flex justify="between" width="100%">
+                          {t('View all events')}
+                        </Flex>
+                      </DropdownItem>
+                    ) : null}
+                  </div>
+                );
+              }}
+            </TagTransactionsQuery>
+          )}
+        </Overlay>
+      </PositionWrapper>
+    );
+
+  const histogramBucketInfo =
+    histogramData && parseHistogramBucketInfo(histogramData[0]!);
 
   return (
     <StyledPanel>
@@ -268,215 +422,25 @@ const TagsHeatMap = (
 
       <TransitionChart loading={isLoading} reloading={isLoading}>
         <TransparentLoadingMask visible={isLoading} />
-        <DropdownMenu
-          onOpen={onOpenMenu}
-          onClose={onCloseMenu}
-          shouldIgnoreClickOutside={shouldIgnoreMenuClose}
-        >
-          {({isOpen, getMenuProps, actions}) => {
-            const onChartClick = bucket => {
-              const htmlEvent = bucket.event.event;
-              // Make a copy of the dims because echarts can remove elements after this click happens.
-              // TODO(k-fish): Look at improving this to respond properly to resize events.
-              const virtualRef = new VirtualReference(htmlEvent.target);
-              setChartElement(virtualRef);
-
-              const newTransactionEventView = eventView.clone();
-
-              newTransactionEventView.fields = [{field: aggregateColumn}];
-              const [_, tagValue] = bucket.value;
-
-              if (histogramBucketInfo && histogramData) {
-                const row = histogramData[bucket.dataIndex];
-                const currentBucketStart = parseInt(
-                  `${row[histogramBucketInfo.histogramField]}`,
-                  10
-                );
-                const currentBucketEnd =
-                  currentBucketStart + histogramBucketInfo.bucketSize;
-
-                newTransactionEventView.additionalConditions.setFilterValues(
-                  aggregateColumn,
-                  [`>=${currentBucketStart}`, `<${currentBucketEnd}`]
-                );
-              }
-
-              if (tagKey) {
-                newTransactionEventView.additionalConditions.setFilterValues(tagKey, [
-                  tagValue,
-                ]);
-              }
-
-              setTransactionEventView(newTransactionEventView);
-              trackTagPageInteraction(organization);
-
-              if (!isMenuOpen) {
-                actions.open();
-              }
-            };
-
-            return (
-              <React.Fragment>
-                {ReactDOM.createPortal(
-                  <div>
-                    {chartElement ? (
-                      <Popper referenceElement={chartElement} placement="bottom">
-                        {({ref, style, placement}) => (
-                          <StyledDropdownContainer
-                            ref={ref}
-                            style={style}
-                            className="anchor-middle"
-                            data-placement={placement}
-                          >
-                            <StyledDropdownContent
-                              {...getMenuProps({
-                                className: classNames('dropdown-menu'),
-                              })}
-                              isOpen={isOpen}
-                              alignMenu="right"
-                              blendCorner={false}
-                            >
-                              {transactionEventView ? (
-                                <TagTransactionsQuery
-                                  query={transactionEventView.getQueryWithAdditionalConditions()}
-                                  location={location}
-                                  eventView={transactionEventView}
-                                  orgSlug={organization.slug}
-                                  limit={4}
-                                  referrer="api.performance.tag-page"
-                                >
-                                  {({
-                                    isLoading: isTransactionsLoading,
-                                    tableData: transactionTableData,
-                                  }) => {
-                                    const moreEventsTarget = isTransactionsLoading
-                                      ? null
-                                      : eventsRouteWithQuery({
-                                          orgSlug: organization.slug,
-                                          transaction: transactionName,
-                                          projectID: decodeScalar(location.query.project),
-                                          query: {
-                                            ...transactionEventView.generateQueryStringObject(),
-                                            query:
-                                              transactionEventView.getQueryWithAdditionalConditions(),
-                                          },
-                                        });
-                                    return (
-                                      <React.Fragment>
-                                        {isTransactionsLoading ? (
-                                          <LoadingContainer>
-                                            <LoadingIndicator size={40} hideMessage />
-                                          </LoadingContainer>
-                                        ) : (
-                                          <div>
-                                            {!transactionTableData.data.length ? (
-                                              <Placeholder />
-                                            ) : null}
-                                            {[...transactionTableData.data]
-                                              .slice(0, 3)
-                                              .map(row => {
-                                                const target = generateTransactionLink(
-                                                  transactionName
-                                                )(organization, row, location.query);
-
-                                                return (
-                                                  <DropdownItem
-                                                    width="small"
-                                                    key={row.id}
-                                                    to={target}
-                                                  >
-                                                    <DropdownItemContainer>
-                                                      <Truncate
-                                                        value={row.id}
-                                                        maxLength={12}
-                                                      />
-                                                      <SectionSubtext>
-                                                        <PerformanceDuration
-                                                          milliseconds={
-                                                            row[aggregateColumn]
-                                                          }
-                                                          abbreviation
-                                                        />
-                                                      </SectionSubtext>
-                                                    </DropdownItemContainer>
-                                                  </DropdownItem>
-                                                );
-                                              })}
-                                            {moreEventsTarget &&
-                                            transactionTableData.data.length > 3 ? (
-                                              <DropdownItem
-                                                width="small"
-                                                to={moreEventsTarget}
-                                              >
-                                                <DropdownItemContainer>
-                                                  {t('View all events')}
-                                                </DropdownItemContainer>
-                                              </DropdownItem>
-                                            ) : null}
-                                          </div>
-                                        )}
-                                      </React.Fragment>
-                                    );
-                                  }}
-                                </TagTransactionsQuery>
-                              ) : null}
-                            </StyledDropdownContent>
-                          </StyledDropdownContainer>
-                        )}
-                      </Popper>
-                    ) : null}
-                  </div>,
-                  getPortal()
-                )}
-
-                {getDynamicText({
-                  value: (
-                    <HeatMapChart
-                      ref={chartRef}
-                      visualMaps={visualMaps}
-                      series={series}
-                      onClick={onChartClick}
-                      {...chartOptions}
-                    />
-                  ),
-                  fixed: <Placeholder height="290px" testId="skeleton-ui" />,
-                })}
-              </React.Fragment>
-            );
-          }}
-        </DropdownMenu>
+        <Fragment>
+          {createPortal(<div>{portaledContent}</div>, getPortal())}
+          {getDynamicText({
+            value: (
+              <HeatMapChart
+                ref={chartRef}
+                visualMaps={visualMaps}
+                series={series}
+                onClick={onChartClick}
+                {...chartOptions}
+              />
+            ),
+            fixed: <Placeholder height="290px" testId="skeleton-ui" />,
+          })}
+        </Fragment>
       </TransitionChart>
     </StyledPanel>
   );
-};
-
-const LoadingContainer = styled('div')`
-  width: 200px;
-  height: 100px;
-
-  display: flex;
-  align-items: center;
-  justify-content: center;
-`;
-
-const DropdownItemContainer = styled('div')`
-  width: 100%;
-  display: flex;
-  flex-direction: row;
-
-  justify-content: space-between;
-`;
-
-const StyledDropdownContainer = styled(DropdownContainer)`
-  z-index: ${p => p.theme.zIndex.dropdown};
-`;
-
-const StyledDropdownContent = styled(Content)`
-  right: auto;
-  transform: translate(-50%);
-
-  overflow: visible;
-`;
+}
 
 const StyledPanel = styled(Panel)`
   padding: ${space(3)} ${space(3)} 0 ${space(3)};
@@ -488,4 +452,47 @@ const StyledPanel = styled(Panel)`
 
 const StyledHeaderTitleLegend = styled(HeaderTitleLegend)``;
 
-export default withTheme(TagsHeatMap);
+const SectionSubtext = styled('div')`
+  color: ${p => p.theme.tokens.content.secondary};
+  font-size: ${p => p.theme.font.size.md};
+`;
+
+const StyledMenuItem = styled(MenuItem)<{width: 'small' | 'large'}>`
+  width: ${p => (p.width === 'large' ? '350px' : '200px')};
+
+  &:not(:last-child) {
+    border-bottom: 1px solid ${p => p.theme.tokens.border.secondary};
+  }
+`;
+
+type DropdownItemProps = {
+  children: React.ReactNode;
+  allowDefaultEvent?: boolean;
+  onSelect?: (eventKey: any) => void;
+  to?: LocationDescriptor;
+  width?: 'small' | 'large';
+};
+
+function DropdownItem({
+  children,
+  onSelect,
+  allowDefaultEvent,
+  to,
+  width = 'large',
+}: DropdownItemProps) {
+  return (
+    <StyledMenuItem
+      data-test-id="dropdown-item"
+      to={to}
+      onSelect={onSelect}
+      width={width}
+      allowDefaultEvent={allowDefaultEvent}
+    >
+      <Flex justify="between" width="100%">
+        {children}
+      </Flex>
+    </StyledMenuItem>
+  );
+}
+
+export default TagsHeatMap;

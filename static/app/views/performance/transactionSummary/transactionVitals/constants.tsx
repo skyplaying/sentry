@@ -1,9 +1,7 @@
-import {WebVital} from 'app/utils/discover/fields';
-import {WEB_VITAL_DETAILS} from 'app/utils/performance/vitals/constants';
-import {VitalGroup} from 'app/utils/performance/vitals/types';
-import theme from 'app/utils/theme';
+import type {Theme} from '@emotion/react';
 
-export const NUM_BUCKETS = 100;
+import {WebVital} from 'sentry/utils/fields';
+import type {VitalGroup} from 'sentry/utils/performance/vitals/types';
 
 export const PERCENTILE = 0.75;
 
@@ -29,22 +27,17 @@ const _VITAL_GROUPS = [
   },
 ];
 
-const _COLORS = [
-  ...theme.charts.getColorPalette(
-    _VITAL_GROUPS.reduce((count, {vitals}) => count + vitals.length, 0) - 1
-  ),
-].reverse();
+const makeColors = (theme: Theme) =>
+  [
+    ...theme.chart
+      .getColorPalette(
+        _VITAL_GROUPS.reduce((count, {vitals}) => count + vitals.length, 0) - 1
+      )
+      .slice(),
+  ].reverse();
 
-export const VITAL_GROUPS: VitalGroup[] = _VITAL_GROUPS.map(group => ({
-  ...group,
-  colors: _COLORS.splice(0, group.vitals.length),
-}));
-
-export const ZOOM_KEYS = _VITAL_GROUPS.reduce((keys: string[], {vitals}) => {
-  vitals.forEach(vital => {
-    const vitalSlug = WEB_VITAL_DETAILS[vital].slug;
-    keys.push(`${vitalSlug}Start`);
-    keys.push(`${vitalSlug}End`);
-  });
-  return keys;
-}, []);
+export const makeVitalGroups = (theme: Theme): VitalGroup[] =>
+  _VITAL_GROUPS.map(group => ({
+    ...group,
+    colors: makeColors(theme).splice(0, group.vitals.length),
+  }));

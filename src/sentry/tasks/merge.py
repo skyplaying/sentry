@@ -1,50 +1,51 @@
 import logging
+from collections.abc import Mapping
+from typing import Any
 
+import sentry_sdk
 from django.db import DataError, IntegrityError, router, transaction
 from django.db.models import F
 
-from sentry import eventstream, similarity
-from sentry.app import tsdb
+from sentry import eventstream, similarity, tsdb
+from sentry.silo.base import SiloMode
 from sentry.tasks.base import instrumented_task, track_group_async_operation
+from sentry.tasks.post_process import fetch_buffered_group_stats
+from sentry.taskworker.namespaces import issues_tasks
+from sentry.taskworker.retry import Retry
+from sentry.tsdb.base import TSDBModel
 
 logger = logging.getLogger("sentry.merge")
 delete_logger = logging.getLogger("sentry.deletions.async")
 
 
-EXTRA_MERGE_MODELS = []
-
-
 @instrumented_task(
     name="sentry.tasks.merge.merge_groups",
-    queue="merge",
-    default_retry_delay=60 * 5,
-    max_retries=None,
+    namespace=issues_tasks,
+    retry=Retry(delay=60 * 5),
+    silo_mode=SiloMode.REGION,
 )
 @track_group_async_operation
 def merge_groups(
-    from_object_ids=None,
-    to_object_id=None,
-    transaction_id=None,
-    recursed=False,
-    eventstream_state=None,
+    from_object_ids: list[int] | None = None,
+    to_object_id: list[int] | None = None,
+    transaction_id: int | None = None,
+    recursed: bool = False,
+    eventstream_state: Mapping[str, Any] | None = None,
     **kwargs,
 ):
     # TODO(mattrobenolt): Write tests for all of this
-    from sentry.models import (
-        Activity,
-        Environment,
-        EventAttachment,
-        Group,
-        GroupAssignee,
-        GroupEnvironment,
-        GroupHash,
-        GroupMeta,
-        GroupRedirect,
-        GroupRuleStatus,
-        GroupSubscription,
-        UserReport,
-        get_group_with_redirect,
-    )
+    from sentry.models.activity import Activity
+    from sentry.models.environment import Environment
+    from sentry.models.eventattachment import EventAttachment
+    from sentry.models.group import Group, get_group_with_redirect
+    from sentry.models.groupassignee import GroupAssignee
+    from sentry.models.groupenvironment import GroupEnvironment
+    from sentry.models.grouphash import GroupHash
+    from sentry.models.groupmeta import GroupMeta
+    from sentry.models.groupredirect import GroupRedirect
+    from sentry.models.grouprulestatus import GroupRuleStatus
+    from sentry.models.groupsubscription import GroupSubscription
+    from sentry.models.userreport import UserReport
 
     if not (from_object_ids and to_object_id):
         logger.error("group.malformed.missing_params", extra={"transaction_id": transaction_id})
@@ -88,7 +89,7 @@ def merge_groups(
             extra={"transaction_id": transaction_id, "old_object_id": from_object_id},
         )
     else:
-        model_list = tuple(EXTRA_MERGE_MODELS) + (
+        model_list = (
             Activity,
             GroupAssignee,
             GroupEnvironment,
@@ -111,48 +112,58 @@ def merge_groups(
             # work for this group.
             from_object_ids.remove(from_object_id)
 
-            similarity.merge(group.project, new_group, [group], allow_unsafe=True)
+            # Don't do MinHash work if we use embeddings-based similarity.
+            if not group.project.get_option("sentry:similarity_backfill_completed"):
+                similarity.merge(group.project, new_group, [group], allow_unsafe=True)
 
             environment_ids = list(
                 Environment.objects.filter(projects=group.project).values_list("id", flat=True)
             )
 
-            for model in [tsdb.models.group]:
-                tsdb.merge(
+            for model in [TSDBModel.group]:
+                tsdb.backend.merge(
                     model,
                     new_group.id,
                     [group.id],
-                    environment_ids=environment_ids
-                    if model in tsdb.models_with_environment_support
-                    else None,
+                    environment_ids=(
+                        environment_ids
+                        if model in tsdb.backend.models_with_environment_support
+                        else None
+                    ),
                 )
 
-            for model in [tsdb.models.users_affected_by_group]:
-                tsdb.merge_distinct_counts(
+            for model in [TSDBModel.users_affected_by_group]:
+                tsdb.backend.merge_distinct_counts(
                     model,
                     new_group.id,
                     [group.id],
-                    environment_ids=environment_ids
-                    if model in tsdb.models_with_environment_support
-                    else None,
+                    environment_ids=(
+                        environment_ids
+                        if model in tsdb.backend.models_with_environment_support
+                        else None
+                    ),
                 )
 
             for model in [
-                tsdb.models.frequent_releases_by_group,
-                tsdb.models.frequent_environments_by_group,
+                TSDBModel.frequent_releases_by_group,
+                TSDBModel.frequent_environments_by_group,
             ]:
-                tsdb.merge_frequencies(
+                tsdb.backend.merge_frequencies(
                     model,
                     new_group.id,
                     [group.id],
-                    environment_ids=environment_ids
-                    if model in tsdb.models_with_environment_support
-                    else None,
+                    environment_ids=(
+                        environment_ids
+                        if model in tsdb.backend.models_with_environment_support
+                        else None
+                    ),
                 )
 
-            previous_group_id = group.id
+            # Fetch buffered stats before deleting the group
+            fetch_buffered_group_stats(group)
 
-            with transaction.atomic():
+            previous_group_id = group.id
+            with transaction.atomic(router.db_for_write(GroupRedirect)):
                 GroupRedirect.create_for_group(group, new_group)
                 group.delete()
             delete_logger.info(
@@ -172,11 +183,14 @@ def merge_groups(
             try:
                 # it's possible to hit an out of range value for counters
                 new_group.update(
-                    times_seen=F("times_seen") + group.times_seen,
+                    times_seen=F("times_seen") + group.times_seen_with_pending,
                     num_comments=F("num_comments") + group.num_comments,
                 )
-            except DataError:
-                pass
+            except DataError as e:
+                with sentry_sdk.push_scope() as scope:
+                    scope.set_extra("new_group_id", new_group.id)
+                    scope.set_extra("old_group_id", group.id)
+                    sentry_sdk.capture_exception(e, level="warning")
 
     if from_object_ids:
         # This task is recursed until `from_object_ids` is empty and all
@@ -190,29 +204,7 @@ def merge_groups(
         )
     elif eventstream_state:
         # All `from_object_ids` have been merged!
-        eventstream.end_merge(eventstream_state)
-
-
-def _get_event_environment(event, project, cache):
-    from sentry.models import Environment
-
-    environment_name = event.get_tag("environment")
-
-    if environment_name not in cache:
-        try:
-            environment = Environment.get_for_organization_id(
-                project.organization_id, environment_name
-            )
-        except Environment.DoesNotExist:
-            logger.warning(
-                "event.environment.does_not_exist",
-                extra={"project_id": project.id, "environment_name": environment_name},
-            )
-            environment = Environment.get_or_create(project, environment_name)
-
-        cache[environment_name] = environment
-
-    return cache[environment_name]
+        eventstream.backend.end_merge(eventstream_state)
 
 
 def merge_objects(models, group, new_group, limit=1000, logger=None, transaction_id=None):

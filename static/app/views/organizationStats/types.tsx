@@ -1,29 +1,22 @@
-import {SeriesApi} from 'app/types';
-
-export enum Outcome {
-  ACCEPTED = 'accepted',
-  FILTERED = 'filtered',
-  INVALID = 'invalid',
-  DROPPED = 'dropped',
-  RATE_LIMITED = 'rate_limited',
-  CLIENT_DISCARD = 'client_discard',
-}
+import type {SeriesApi} from 'sentry/types/organization';
 
 /**
  * Raw response from API endpoint
  */
-export type UsageSeries = SeriesApi & {
-  start: string;
+export interface UsageSeries extends SeriesApi {
+  // index signature is present because we often send this
+  // data to sentry as part of the event context.
   end: string;
-};
+  start: string;
+}
 
 export type UsageStat = {
-  date: string;
-  total: number;
   accepted: number;
+  accepted_stored: number;
+  clientDiscard: number;
+  date: string;
   filtered: number;
-  dropped: {
-    total: number;
-    other?: number;
-  };
+  invalid: number;
+  rateLimited: number;
+  total: number;
 };

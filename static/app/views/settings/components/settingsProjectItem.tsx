@@ -1,58 +1,34 @@
-import {Component} from 'react';
 import styled from '@emotion/styled';
 
-import ProjectBadge from 'app/components/idBadge/projectBadge';
-import BookmarkStar from 'app/components/projects/bookmarkStar';
-import space from 'app/styles/space';
-import {Organization, Project} from 'app/types';
+import ProjectBadge from 'sentry/components/idBadge/projectBadge';
+import {BookmarkStar} from 'sentry/components/projects/bookmarkStar';
+import {space} from 'sentry/styles/space';
+import type {Organization} from 'sentry/types/organization';
+import type {Project} from 'sentry/types/project';
 
 type Props = {
-  project: Project;
   organization: Organization;
+  project: Project;
 };
 
-type State = {
-  isBookmarked: boolean;
-};
-
-class ProjectItem extends Component<Props, State> {
-  state: State = {
-    isBookmarked: this.props.project.isBookmarked,
-  };
-
-  handleToggleBookmark = (isBookmarked: State['isBookmarked']) => {
-    this.setState({isBookmarked});
-  };
-
-  render() {
-    const {project, organization} = this.props;
-
-    return (
-      <Wrapper>
-        <BookmarkLink
-          organization={organization}
-          project={project}
-          isBookmarked={this.state.isBookmarked}
-          onToggle={this.handleToggleBookmark}
-        />
-        <ProjectBadge
-          to={`/settings/${organization.slug}/projects/${project.slug}/`}
-          avatarSize={18}
-          project={project}
-        />
-      </Wrapper>
-    );
-  }
+function ProjectItem({project, organization}: Props) {
+  return (
+    <Wrapper>
+      <BookmarkStar organization={organization} project={project} />
+      <ProjectBadge
+        to={`/settings/${organization.slug}/projects/${project.slug}/`}
+        avatarSize={18}
+        project={project}
+      />
+    </Wrapper>
+  );
 }
 
 const Wrapper = styled('div')`
-  display: flex;
+  display: grid;
+  grid-template-columns: max-content 1fr;
   align-items: center;
-`;
-
-const BookmarkLink = styled(BookmarkStar)`
-  margin-right: ${space(1)};
-  margin-top: -${space(0.25)};
+  gap: ${space(1.5)};
 `;
 
 export default ProjectItem;

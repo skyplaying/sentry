@@ -1,27 +1,16 @@
 import 'echarts/lib/chart/bar';
 
-import {EChartOption} from 'echarts';
+import type {BarSeriesOption, LineSeriesOption} from 'echarts';
 
 /**
- * TODO(ts): Bar chart can accept multiple values with an object, currently defined types are incorrect
- * See https://echarts.apache.org/en/option.html#series-bar.data
+ * The return type can be BarSeriesOption or LineSeriesOption so that we can add
+ * custom lines on top of the event bar chart in `eventGraph.tsx`.
  */
-type BarChartDataObject = Omit<EChartOption.SeriesBar.DataObject, 'value'> & {
-  value: (string | number) | (string | number)[];
-};
-
-export default function barSeries(
-  props: Omit<EChartOption.SeriesBar, 'data'> & {
-    data?:
-      | (string | number | void | BarChartDataObject | (string | number)[])[]
-      | (string | number | void | BarChartDataObject)[][]
-      | undefined;
-  } = {}
-): EChartOption.SeriesBar {
-  const {data, ...rest} = props;
+function barSeries(props: BarSeriesOption): BarSeriesOption | LineSeriesOption {
   return {
-    ...rest,
-    data: data as EChartOption.SeriesBar['data'],
-    type: 'bar',
+    ...props,
+    type: props.type ?? 'bar',
   };
 }
+
+export default barSeries;

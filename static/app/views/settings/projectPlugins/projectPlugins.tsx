@@ -1,89 +1,92 @@
-import {Component} from 'react';
-import * as React from 'react';
-import {RouteComponentProps} from 'react-router';
+import {Link} from '@sentry/scraps/link';
 
-import Access from 'app/components/acl/access';
-import Link from 'app/components/links/link';
-import LoadingIndicator from 'app/components/loadingIndicator';
-import {
-  Panel,
-  PanelAlert,
-  PanelBody,
-  PanelHeader,
-  PanelItem,
-} from 'app/components/panels';
-import {t, tct} from 'app/locale';
-import {Plugin, Project} from 'app/types';
-import RouteError from 'app/views/routeError';
+import Access from 'sentry/components/acl/access';
+import LoadingIndicator from 'sentry/components/loadingIndicator';
+import Panel from 'sentry/components/panels/panel';
+import PanelAlert from 'sentry/components/panels/panelAlert';
+import PanelBody from 'sentry/components/panels/panelBody';
+import PanelHeader from 'sentry/components/panels/panelHeader';
+import PanelItem from 'sentry/components/panels/panelItem';
+import {t, tct} from 'sentry/locale';
+import type {Plugin} from 'sentry/types/integrations';
+import type {Organization} from 'sentry/types/organization';
+import type {Project} from 'sentry/types/project';
+import {useRoutes} from 'sentry/utils/useRoutes';
+import RouteError from 'sentry/views/routeError';
 
 import ProjectPluginRow from './projectPluginRow';
 
 type Props = {
-  plugins: Plugin[];
-  loading: boolean;
   error: React.ComponentProps<typeof RouteError>['error'];
+  loading: boolean;
   onChange: React.ComponentProps<typeof ProjectPluginRow>['onChange'];
+  organization: Organization;
+  plugins: Plugin[];
   project: Project;
-} & RouteComponentProps<{orgId: string}, {}>;
+};
 
-class ProjectPlugins extends Component<Props> {
-  render() {
-    const {plugins, loading, error, onChange, routes, params, project} = this.props;
-    const {orgId} = this.props.params;
-    const hasError = error;
-    const isLoading = !hasError && loading;
+export default function ProjectPlugins({
+  plugins,
+  loading,
+  error,
+  onChange,
+  organization,
+  project,
+}: Props) {
+  const routes = useRoutes();
 
-    if (hasError) {
-      return <RouteError error={error} />;
-    }
+  const hasError = error;
+  const isLoading = !hasError && loading;
 
-    if (isLoading) {
-      return <LoadingIndicator />;
-    }
-
-    return (
-      <Panel>
-        <PanelHeader>
-          <div>{t('Legacy Integration')}</div>
-          <div>{t('Enabled')}</div>
-        </PanelHeader>
-        <PanelBody>
-          <PanelAlert type="warning">
-            <Access access={['org:integrations']}>
-              {({hasAccess}) =>
-                hasAccess
-                  ? tct(
-                      "Legacy Integrations must be configured per-project. It's recommended to prefer organization integrations over the legacy project integrations when available. Visit the [link:organization integrations] settings to manage them.",
-                      {
-                        link: <Link to={`/settings/${orgId}/integrations`} />,
-                      }
-                    )
-                  : t(
-                      "Legacy Integrations must be configured per-project. It's recommended to prefer organization integrations over the legacy project integrations when available."
-                    )
-              }
-            </Access>
-          </PanelAlert>
-
-          {plugins
-            .filter(p => {
-              return !p.isHidden;
-            })
-            .map(plugin => (
-              <PanelItem key={plugin.id}>
-                <ProjectPluginRow
-                  params={params}
-                  routes={routes}
-                  project={project}
-                  {...plugin}
-                  onChange={onChange}
-                />
-              </PanelItem>
-            ))}
-        </PanelBody>
-      </Panel>
-    );
+  if (hasError) {
+    return <RouteError error={error} />;
   }
-}
 
-export default ProjectPlugins;
+  if (isLoading) {
+    return <LoadingIndicator />;
+  }
+  const params = {orgId: organization.slug, projectId: project.slug};
+
+  return (
+    <Access access={['org:integrations']} project={project}>
+      {({hasAccess}) => (
+        <Panel>
+          <PanelHeader>
+            <div>{t('Legacy Integration')}</div>
+            <div />
+          </PanelHeader>
+          <PanelBody>
+            <PanelAlert variant="warning">
+              {hasAccess
+                ? tct(
+                    "Legacy Integrations must be configured per-project. It's recommended to prefer organization integrations over the legacy project integrations when available. Visit the [link:organization integrations] settings to manage them.",
+                    {
+                      link: <Link to={`/settings/${organization.slug}/integrations/`} />,
+                    }
+                  )
+                : t(
+                    "Legacy Integrations must be configured per-project. It's recommended to prefer organization integrations over the legacy project integrations when available."
+                  )}
+            </PanelAlert>
+
+            {plugins
+              .filter(p => {
+                return !p.isHidden;
+              })
+              .map(plugin => (
+                <PanelItem key={plugin.id}>
+                  <ProjectPluginRow
+                    params={params}
+                    routes={routes}
+                    project={project}
+                    {...plugin}
+                    onChange={onChange}
+                  />
+                </PanelItem>
+              ))}
+          </PanelBody>
+        </Panel>
+      )}
+    </Access>
+  );
+}

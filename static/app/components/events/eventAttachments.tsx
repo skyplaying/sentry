@@ -1,192 +1,217 @@
-import * as React from 'react';
+import {Fragment, useState} from 'react';
 import styled from '@emotion/styled';
-import {Location} from 'history';
 
-import {Client} from 'app/api';
-import ImageViewer from 'app/components/events/attachmentViewers/imageViewer';
-import JsonViewer from 'app/components/events/attachmentViewers/jsonViewer';
-import LogFileViewer from 'app/components/events/attachmentViewers/logFileViewer';
-import RRWebJsonViewer from 'app/components/events/attachmentViewers/rrwebJsonViewer';
-import EventAttachmentActions from 'app/components/events/eventAttachmentActions';
-import EventDataSection from 'app/components/events/eventDataSection';
-import FileSize from 'app/components/fileSize';
-import {PanelTable} from 'app/components/panels';
-import {t} from 'app/locale';
-import overflowEllipsis from 'app/styles/overflowEllipsis';
-import {IssueAttachment} from 'app/types';
-import {Event} from 'app/types/event';
-import AttachmentUrl from 'app/utils/attachmentUrl';
-import withApi from 'app/utils/withApi';
+import {LinkButton} from '@sentry/scraps/button';
+import {Flex} from '@sentry/scraps/layout';
+
+import {
+  useDeleteEventAttachmentOptimistic,
+  useFetchEventAttachments,
+} from 'sentry/actionCreators/events';
+import EventAttachmentActions from 'sentry/components/events/eventAttachmentActions';
+import FileSize from 'sentry/components/fileSize';
+import LoadingError from 'sentry/components/loadingError';
+import {PanelTable} from 'sentry/components/panels/panelTable';
+import {t} from 'sentry/locale';
+import type {Event} from 'sentry/types/event';
+import type {Group, IssueAttachment} from 'sentry/types/group';
+import type {Project} from 'sentry/types/project';
+import {useLocation} from 'sentry/utils/useLocation';
+import useOrganization from 'sentry/utils/useOrganization';
+import {InlineEventAttachment} from 'sentry/views/issueDetails/groupEventAttachments/inlineEventAttachment';
+import {SectionKey} from 'sentry/views/issueDetails/streamline/context';
+import {InterimSection} from 'sentry/views/issueDetails/streamline/interimSection';
+import {Tab, TabPaths} from 'sentry/views/issueDetails/types';
+import {useGroupDetailsRoute} from 'sentry/views/issueDetails/useGroupDetailsRoute';
+import {useHasStreamlinedUI} from 'sentry/views/issueDetails/utils';
 
 import EventAttachmentsCrashReportsNotice from './eventAttachmentsCrashReportsNotice';
 
-type Props = {
-  api: Client;
+type EventAttachmentsProps = {
   event: Event;
-  orgId: string;
-  projectId: string;
-  location: Location;
-  attachments: IssueAttachment[];
-  onDeleteAttachment: (attachmentId: IssueAttachment['id']) => void;
+  /**
+   * Group is not available everywhere this component is used
+   */
+  group: Group | undefined;
+  project: Project;
+  disableCollapsePersistence?: boolean;
 };
 
-type State = {
-  attachmentPreviews: Record<string, boolean>;
-  expanded: boolean;
+type AttachmentPreviewOpenMap = Record<string, boolean>;
+
+const attachmentPreviewIsOpen = (
+  attachmentPreviews: Record<string, boolean>,
+  attachment: IssueAttachment
+) => {
+  return attachmentPreviews[attachment.id] === true;
 };
 
-class EventAttachments extends React.Component<Props, State> {
-  state: State = {
-    expanded: false,
-    attachmentPreviews: {},
-  };
+function ViewAllGroupAttachmentsButton() {
+  const {baseUrl} = useGroupDetailsRoute();
+  const location = useLocation();
 
-  getInlineAttachmentRenderer(attachment: IssueAttachment) {
-    switch (attachment.mimetype) {
-      case 'text/plain':
-        return attachment.size > 0 ? LogFileViewer : undefined;
-      case 'text/json':
-      case 'text/x-json':
-      case 'application/json':
-        if (attachment.name === 'rrweb.json') {
-          return RRWebJsonViewer;
-        }
-        return JsonViewer;
-      case 'image/jpeg':
-      case 'image/png':
-      case 'image/gif':
-        return ImageViewer;
-      default:
-        return undefined;
-    }
-  }
-
-  hasInlineAttachmentRenderer(attachment: IssueAttachment): boolean {
-    return !!this.getInlineAttachmentRenderer(attachment);
-  }
-
-  attachmentPreviewIsOpen = (attachment: IssueAttachment) => {
-    return !!this.state.attachmentPreviews[attachment.id];
-  };
-
-  renderInlineAttachment(attachment: IssueAttachment) {
-    const Component = this.getInlineAttachmentRenderer(attachment);
-    if (!Component || !this.attachmentPreviewIsOpen(attachment)) {
-      return null;
-    }
-    return (
-      <AttachmentPreviewWrapper>
-        <Component
-          orgId={this.props.orgId}
-          projectId={this.props.projectId}
-          event={this.props.event}
-          attachment={attachment}
-        />
-      </AttachmentPreviewWrapper>
-    );
-  }
-
-  togglePreview(attachment: IssueAttachment) {
-    this.setState(({attachmentPreviews}) => ({
-      attachmentPreviews: {
-        ...attachmentPreviews,
-        [attachment.id]: !attachmentPreviews[attachment.id],
-      },
-    }));
-  }
-
-  render() {
-    const {event, projectId, orgId, location, attachments, onDeleteAttachment} =
-      this.props;
-    const crashFileStripped = event.metadata.stripped_crash;
-
-    if (!attachments.length && !crashFileStripped) {
-      return null;
-    }
-
-    const title = t('Attachments (%s)', attachments.length);
-
-    const lastAttachmentPreviewed =
-      attachments.length > 0 &&
-      this.attachmentPreviewIsOpen(attachments[attachments.length - 1]);
-
-    return (
-      <EventDataSection type="attachments" title={title}>
-        {crashFileStripped && (
-          <EventAttachmentsCrashReportsNotice
-            orgSlug={orgId}
-            projectSlug={projectId}
-            groupId={event.groupID!}
-            location={location}
-          />
-        )}
-
-        {attachments.length > 0 && (
-          <StyledPanelTable
-            headers={[
-              <Name key="name">{t('File Name')}</Name>,
-              <Size key="size">{t('Size')}</Size>,
-              t('Actions'),
-            ]}
-          >
-            {attachments.map(attachment => (
-              <React.Fragment key={attachment.id}>
-                <Name>{attachment.name}</Name>
-                <Size>
-                  <FileSize bytes={attachment.size} />
-                </Size>
-                <AttachmentUrl
-                  projectId={projectId}
-                  eventId={event.id}
-                  attachment={attachment}
-                >
-                  {url => (
-                    <div>
-                      <EventAttachmentActions
-                        url={url}
-                        onDelete={onDeleteAttachment}
-                        onPreview={_attachmentId => this.togglePreview(attachment)}
-                        withPreviewButton
-                        previewIsOpen={this.attachmentPreviewIsOpen(attachment)}
-                        hasPreview={this.hasInlineAttachmentRenderer(attachment)}
-                        attachmentId={attachment.id}
-                      />
-                    </div>
-                  )}
-                </AttachmentUrl>
-                {this.renderInlineAttachment(attachment)}
-                {/* XXX: hack to deal with table grid borders */}
-                {lastAttachmentPreviewed && (
-                  <React.Fragment>
-                    <div style={{display: 'none'}} />
-                    <div style={{display: 'none'}} />
-                  </React.Fragment>
-                )}
-              </React.Fragment>
-            ))}
-          </StyledPanelTable>
-        )}
-      </EventDataSection>
-    );
-  }
+  return (
+    <LinkButton
+      size="xs"
+      to={{
+        pathname: `${baseUrl}${TabPaths[Tab.ATTACHMENTS]}`,
+        query: location.query,
+      }}
+    >
+      {t('View All Attachments')}
+    </LinkButton>
+  );
 }
 
-export default withApi<Props>(EventAttachments);
+function EventAttachmentsContent({
+  event,
+  project,
+  group,
+  disableCollapsePersistence,
+}: EventAttachmentsProps) {
+  const organization = useOrganization();
+  const {
+    data: attachments = [],
+    isError,
+    refetch,
+  } = useFetchEventAttachments({
+    orgSlug: organization.slug,
+    projectSlug: project.slug,
+    eventId: event.id,
+  });
+  const {mutate: deleteAttachment} = useDeleteEventAttachmentOptimistic();
+  const [attachmentPreviews, setAttachmentPreviews] = useState<AttachmentPreviewOpenMap>(
+    {}
+  );
+  const hasStreamlinedUI = useHasStreamlinedUI();
+  const crashFileStripped = event.metadata.stripped_crash;
+
+  if (isError) {
+    return (
+      <InterimSection type={SectionKey.ATTACHMENTS} title={t('Attachments')}>
+        <LoadingError
+          onRetry={refetch}
+          message={t('An error occurred while fetching attachments')}
+        />
+      </InterimSection>
+    );
+  }
+
+  if (!attachments.length && !crashFileStripped) {
+    return null;
+  }
+
+  const title = t('Attachments (%s)', attachments.length);
+
+  const lastAttachment = attachments.at(-1);
+  const lastAttachmentPreviewed =
+    lastAttachment && attachmentPreviewIsOpen(attachmentPreviews, lastAttachment);
+
+  const togglePreview = (attachment: IssueAttachment) => {
+    setAttachmentPreviews(previewsMap => ({
+      ...previewsMap,
+      [attachment.id]: !previewsMap[attachment.id],
+    }));
+  };
+
+  return (
+    <InterimSection
+      type={SectionKey.ATTACHMENTS}
+      title={title}
+      actions={
+        hasStreamlinedUI && project && group ? <ViewAllGroupAttachmentsButton /> : null
+      }
+      disableCollapsePersistence={disableCollapsePersistence}
+    >
+      {crashFileStripped && (
+        <EventAttachmentsCrashReportsNotice
+          orgSlug={organization.slug}
+          projectSlug={project.slug}
+          groupId={event.groupID!}
+        />
+      )}
+
+      {attachments.length > 0 && (
+        <StyledPanelTable
+          headers={[
+            <Name key="name">{t('File Name')}</Name>,
+            <Size key="size">{t('Size')}</Size>,
+            t('Actions'),
+          ]}
+        >
+          {attachments.map(attachment => (
+            <Fragment key={attachment.id}>
+              <Flex align="center">
+                <Name>{attachment.name}</Name>
+              </Flex>
+
+              <Size>
+                <FileSize bytes={attachment.size} />
+              </Size>
+              <div>
+                <EventAttachmentActions
+                  withPreviewButton
+                  attachment={attachment}
+                  projectSlug={project.slug}
+                  onDelete={() =>
+                    deleteAttachment({
+                      orgSlug: organization.slug,
+                      projectSlug: project.slug,
+                      eventId: event.id,
+                      attachmentId: attachment.id,
+                    })
+                  }
+                  onPreviewClick={() => togglePreview(attachment)}
+                  previewIsOpen={attachmentPreviewIsOpen(attachmentPreviews, attachment)}
+                />
+              </div>
+              {attachmentPreviewIsOpen(attachmentPreviews, attachment) ? (
+                <InlineEventAttachment
+                  attachment={attachment}
+                  eventId={event.id}
+                  projectSlug={project.slug}
+                />
+              ) : null}
+              {/* XXX: hack to deal with table grid borders */}
+              {lastAttachmentPreviewed && (
+                <Fragment>
+                  <div style={{display: 'none'}} />
+                  <div style={{display: 'none'}} />
+                </Fragment>
+              )}
+            </Fragment>
+          ))}
+        </StyledPanelTable>
+      )}
+    </InterimSection>
+  );
+}
+
+export function EventAttachments(props: EventAttachmentsProps) {
+  const organization = useOrganization();
+
+  if (!organization.features.includes('event-attachments')) {
+    return null;
+  }
+
+  return <EventAttachmentsContent {...props} />;
+}
 
 const StyledPanelTable = styled(PanelTable)`
   grid-template-columns: 1fr auto auto;
 `;
 
 const Name = styled('div')`
-  ${overflowEllipsis};
+  display: block;
+  width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 `;
 
 const Size = styled('div')`
-  text-align: right;
-`;
-
-const AttachmentPreviewWrapper = styled('div')`
-  grid-column: auto / span 3;
-  border: none;
-  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  white-space: nowrap;
 `;

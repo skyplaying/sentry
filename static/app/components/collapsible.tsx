@@ -1,40 +1,42 @@
-import * as React from 'react';
+import {Children, Fragment, useState} from 'react';
 
-import Button from 'app/components/button';
-import {t, tn} from 'app/locale';
+import {Button} from '@sentry/scraps/button';
+
+import {t, tn} from 'sentry/locale';
 
 type CollapseButtonRenderProps = {
   onCollapse: () => void;
 };
 
 type ExpandButtonRenderProps = {
-  onExpand: () => void;
   numberOfHiddenItems: number;
+  onExpand: () => void;
 };
 
 type Props = {
-  maxVisibleItems?: number;
+  children: React.ReactNode;
   collapseButton?: (props: CollapseButtonRenderProps) => React.ReactNode;
   expandButton?: (props: ExpandButtonRenderProps) => React.ReactNode;
+  maxVisibleItems?: number;
 };
 
 /**
  * This component is used to show first X items and collapse the rest
  */
-const Collapsible: React.FC<Props> = ({
+function Collapsible({
   collapseButton,
   expandButton,
   maxVisibleItems = 5,
   children,
-}) => {
-  const [isCollapsed, setCollapsed] = React.useState(true);
+}: Props) {
+  const [isCollapsed, setCollapsed] = useState(true);
   const handleCollapseToggle = () => setCollapsed(!isCollapsed);
 
-  const items = React.Children.toArray(children);
+  const items = Children.toArray(children);
   const canCollapse = items.length > maxVisibleItems;
 
   if (!canCollapse) {
-    return <React.Fragment>{children}</React.Fragment>;
+    return <Fragment>{children}</Fragment>;
   }
 
   const visibleItems = isCollapsed ? items.slice(0, maxVisibleItems) : items;
@@ -45,7 +47,7 @@ const Collapsible: React.FC<Props> = ({
     (numberOfHiddenItems === 0 && !collapseButton);
 
   return (
-    <React.Fragment>
+    <Fragment>
       {visibleItems}
 
       {showDefault && (
@@ -59,8 +61,8 @@ const Collapsible: React.FC<Props> = ({
       {numberOfHiddenItems > 0 &&
         expandButton?.({onExpand: handleCollapseToggle, numberOfHiddenItems})}
       {numberOfHiddenItems === 0 && collapseButton?.({onCollapse: handleCollapseToggle})}
-    </React.Fragment>
+    </Fragment>
   );
-};
+}
 
 export default Collapsible;

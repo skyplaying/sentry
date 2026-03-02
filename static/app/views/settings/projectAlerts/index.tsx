@@ -1,32 +1,33 @@
-import * as React from 'react';
-import {RouteComponentProps} from 'react-router';
+import {Fragment} from 'react';
+import {Outlet, useOutletContext} from 'react-router-dom';
 
-import Access from 'app/components/acl/access';
-import Feature from 'app/components/acl/feature';
-import {Organization} from 'app/types';
+import Access from 'sentry/components/acl/access';
+import type {Project} from 'sentry/types/project';
+import {useProjectSettingsOutlet} from 'sentry/views/settings/project/projectSettingsLayout';
 
-type Props = {
-  organization: Organization;
-  children: React.ReactNode;
-} & RouteComponentProps<{organizationId: string; projectId: string}, {}>;
+type ProjectAlertsOutletContext = {
+  canEditRule: boolean;
+  project: Project;
+};
 
-const ProjectAlerts = ({children, organization}: Props) => (
-  <Access organization={organization} access={['project:write']}>
-    {({hasAccess}) => (
-      <Feature organization={organization} features={['incidents']}>
-        {({hasFeature: hasMetricAlerts}) => (
-          <React.Fragment>
-            {React.isValidElement(children) &&
-              React.cloneElement(children, {
-                organization,
-                canEditRule: hasAccess,
-                hasMetricAlerts,
-              })}
-          </React.Fragment>
-        )}
-      </Feature>
-    )}
-  </Access>
-);
+function ProjectAlertsOutlet(props: ProjectAlertsOutletContext) {
+  return <Outlet context={props} />;
+}
 
-export default ProjectAlerts;
+export function useProjectAlertsOutlet() {
+  return useOutletContext<ProjectAlertsOutletContext>();
+}
+
+export default function ProjectAlerts() {
+  const {project} = useProjectSettingsOutlet();
+
+  return (
+    <Access access={['project:write']} project={project}>
+      {({hasAccess}) => (
+        <Fragment>
+          <ProjectAlertsOutlet canEditRule={hasAccess} project={project} />
+        </Fragment>
+      )}
+    </Access>
+  );
+}

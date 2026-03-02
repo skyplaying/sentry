@@ -1,19 +1,20 @@
-import * as React from 'react';
+import {Fragment} from 'react';
 
-import {ModalRenderProps} from 'app/actionCreators/modal';
-import Button from 'app/components/button';
-import ButtonBar from 'app/components/buttonBar';
-import {t} from 'app/locale';
+import {Button} from '@sentry/scraps/button';
+import {Grid} from '@sentry/scraps/layout';
+
+import type {ModalRenderProps} from 'sentry/actionCreators/modal';
+import {t} from 'sentry/locale';
 
 type Props = {
-  onSave: () => void;
-  title: string;
   content: React.ReactElement;
   disabled: boolean;
+  onSave: () => void;
+  title: string;
   btnSaveLabel?: string;
 } & ModalRenderProps;
 
-const Modal = ({
+function Modal({
   title,
   onSave,
   content,
@@ -23,28 +24,30 @@ const Modal = ({
   Footer,
   closeModal,
   btnSaveLabel = t('Save'),
-}: Props) => (
-  <React.Fragment>
-    <Header closeButton>{title}</Header>
-    <Body>{content}</Body>
-    <Footer>
-      <ButtonBar gap={1.5}>
-        <Button onClick={closeModal}>{t('Cancel')}</Button>
-        <Button
-          onClick={event => {
-            event.preventDefault();
-            onSave();
-          }}
-          disabled={disabled}
-          type="submit"
-          priority="primary"
-          form="relay-form"
-        >
-          {btnSaveLabel}
-        </Button>
-      </ButtonBar>
-    </Footer>
-  </React.Fragment>
-);
+}: Props) {
+  return (
+    <Fragment>
+      <Header closeButton>{title}</Header>
+      <Body>{content}</Body>
+      <Footer>
+        <Grid flow="column" align="center" gap="lg">
+          <Button onClick={closeModal}>{t('Cancel')}</Button>
+          <Button
+            onClick={event => {
+              event.preventDefault();
+              onSave();
+            }}
+            disabled={disabled}
+            type="submit"
+            priority="primary"
+            form="relay-form"
+          >
+            {btnSaveLabel}
+          </Button>
+        </Grid>
+      </Footer>
+    </Fragment>
+  );
+}
 
 export default Modal;

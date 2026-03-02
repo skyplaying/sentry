@@ -1,64 +1,63 @@
-import {browserHistory, RouteComponentProps} from 'react-router';
+import {TeamAvatar} from '@sentry/scraps/avatar';
 
-import IdBadge from 'app/components/idBadge';
-import {Team} from 'app/types';
-import recreateRoute from 'app/utils/recreateRoute';
-import withTeams from 'app/utils/withTeams';
-import BreadcrumbDropdown from 'app/views/settings/components/settingsBreadcrumb/breadcrumbDropdown';
-import MenuItem from 'app/views/settings/components/settingsBreadcrumb/menuItem';
+import IdBadge from 'sentry/components/idBadge';
+import {t} from 'sentry/locale';
+import {trackAnalytics} from 'sentry/utils/analytics';
+import recreateRoute from 'sentry/utils/recreateRoute';
+import {useNavigate} from 'sentry/utils/useNavigate';
+import {useParams} from 'sentry/utils/useParams';
+import {useTeams} from 'sentry/utils/useTeams';
+import type {SettingsBreadcrumbProps} from 'sentry/views/settings/components/settingsBreadcrumb/types';
 
-import {RouteWithName} from './types';
+import BreadcrumbDropdown from './breadcrumbDropdown';
 import {CrumbLink} from '.';
 
-type Props = RouteComponentProps<{teamId: string}, {}> & {
-  teams: Team[];
-  routes: RouteWithName[];
-  route?: RouteWithName;
-};
+function TeamCrumb({routes, route, ...props}: SettingsBreadcrumbProps) {
+  const navigate = useNavigate();
+  const {teams, onSearch, fetching} = useTeams();
+  const params = useParams();
 
-const TeamCrumb = ({teams, params, routes, route, ...props}: Props) => {
   const team = teams.find(({slug}) => slug === params.teamId);
   const hasMenu = teams.length > 1;
 
   if (!team) {
     return null;
   }
+  const teamUrl = `/settings/${params.orgId}/teams/${team.slug}/`;
 
   return (
     <BreadcrumbDropdown
       name={
-        <CrumbLink
-          to={recreateRoute(route, {
-            routes,
-            params: {...params, teamId: team.slug},
-          })}
-        >
+        <CrumbLink to={teamUrl}>
           <IdBadge avatarSize={18} team={team} />
         </CrumbLink>
       }
-      onSelect={item => {
-        browserHistory.push(
+      onCrumbSelect={teamSlug => {
+        navigate(
           recreateRoute('', {
             routes,
-            params: {...params, teamId: item.value},
+            params: {...params, teamId: teamSlug},
           })
         );
       }}
+      onOpenChange={open => {
+        if (open) {
+          trackAnalytics('breadcrumbs.menu.opened', {organization: null});
+        }
+      }}
       hasMenu={hasMenu}
       route={route}
-      items={teams.map((teamItem, index) => ({
-        index,
+      value={team.slug}
+      search={{placeholder: t('Search Teams'), onChange: onSearch}}
+      options={teams.map(teamItem => ({
         value: teamItem.slug,
-        label: (
-          <MenuItem>
-            <IdBadge team={teamItem} />
-          </MenuItem>
-        ),
+        leadingItems: <TeamAvatar team={teamItem} size={16} />,
+        label: `#${teamItem.slug}`,
       }))}
+      loading={fetching}
       {...props}
     />
   );
-};
+}
 
-export {TeamCrumb};
-export default withTeams(TeamCrumb);
+export default TeamCrumb;

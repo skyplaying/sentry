@@ -1,19 +1,21 @@
-import * as React from 'react';
+import {Alert, type AlertProps} from '@sentry/scraps/alert';
 
-import Alert from 'app/components/alert';
-import {IconLab} from 'app/icons';
-import {t} from 'app/locale';
+import {t} from 'sentry/locale';
 
 type Props = {
-  type?: React.ComponentProps<typeof Alert>['type'];
+  variant?: AlertProps['variant'];
 };
 
-const PreviewFeature = ({type = 'info'}: Props) => (
-  <Alert type={type} icon={<IconLab size="sm" />}>
-    {t(
-      'This feature is a preview and may change in the future. Thanks for being an early adopter!'
-    )}
-  </Alert>
-);
+function PreviewFeature({variant = 'info'}: Props) {
+  return (
+    <Alert.Container>
+      <Alert variant={variant}>
+        {t(
+          'This feature is a preview and may change in the future. Thanks for being an early adopter!'
+        )}
+      </Alert>
+    </Alert.Container>
+  );
+}
 
 export default PreviewFeature;

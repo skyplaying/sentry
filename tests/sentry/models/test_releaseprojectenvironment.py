@@ -2,12 +2,14 @@ from datetime import timedelta
 
 from django.utils import timezone
 
-from sentry.models import Environment, Release, ReleaseProjectEnvironment
-from sentry.testutils import TestCase
+from sentry.models.environment import Environment
+from sentry.models.release import Release
+from sentry.models.releaseprojectenvironment import ReleaseProjectEnvironment
+from sentry.testutils.cases import TestCase
 
 
 class GetOrCreateTest(TestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         self.project = self.create_project(name="foo")
         self.datetime_now = timezone.now()
 
@@ -16,10 +18,10 @@ class GetOrCreateTest(TestCase):
         )
         self.release.add_project(self.project)
         self.environment = Environment.objects.create(
-            project_id=self.project.id, organization_id=self.project.organization_id, name="prod"
+            organization_id=self.project.organization_id, name="prod"
         )
 
-    def test_create(self):
+    def test_create(self) -> None:
         release_project_env = ReleaseProjectEnvironment.get_or_create(
             project=self.project,
             release=self.release,
@@ -34,7 +36,7 @@ class GetOrCreateTest(TestCase):
         assert release_project_env.last_seen == self.datetime_now
         assert release_project_env.new_issues_count == 0
 
-    def test_updates_last_seen(self):
+    def test_updates_last_seen(self) -> None:
         release_project_env = ReleaseProjectEnvironment.get_or_create(
             project=self.project,
             release=self.release,
@@ -56,7 +58,7 @@ class GetOrCreateTest(TestCase):
         assert release_project_env.first_seen == self.datetime_now
         assert release_project_env.last_seen == datetime_next
 
-    def test_no_update_too_close(self):
+    def test_no_update_too_close(self) -> None:
         """
         Test ensures that ReleaseProjectEnvironment's last_seen is not updated if the next time
         it is seen is too close to the last time it was seen.

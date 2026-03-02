@@ -1,46 +1,54 @@
-import Reflux from 'reflux';
+import {createStore} from 'reflux';
 
-import ProjectActions from 'app/actions/projectActions';
-import {Project} from 'app/types';
+import type {Project} from 'sentry/types/project';
 
-type ProjectsStatsStoreInterface = {
-  itemsBySlug: Record<string, Project>;
+import type {StrictStoreDefinition} from './types';
 
-  getInitialState(): ProjectsStatsStoreInterface['itemsBySlug'];
-  reset(): void;
+type SlugStatsMapping = Record<string, Project>;
+type State = SlugStatsMapping;
+
+interface ProjectsStatsStoreDefinition extends StrictStoreDefinition<State> {
+  getAll(): SlugStatsMapping;
   getBySlug(slug: string): Project;
-  getAll(): ProjectsStatsStoreInterface['itemsBySlug'];
-};
+  getInitialState(): SlugStatsMapping;
+  onStatsLoadSuccess(projects: Project[]): void;
+  onUpdate(projectSlug: string, data: Partial<Project>): void;
+  onUpdateError(err: Error, projectSlug: string): void;
+  onUpdateSuccess(data: Project): void;
+  reset(): void;
+  updatingItems: Map<string, Project>;
+}
 
 /**
  * This is a store specifically used by the dashboard, so that we can
  * clear the store when the Dashboard unmounts
  * (as to not disrupt ProjectsStore which a lot more components use)
  */
-const projectsStatsStore: Reflux.StoreDefinition & ProjectsStatsStoreInterface = {
-  itemsBySlug: {},
+const storeConfig: ProjectsStatsStoreDefinition = {
+  state: {},
+  updatingItems: new Map(),
 
   init() {
+    // XXX: Do not use `this.listenTo` in this store. We avoid usage of reflux
+    // listeners due to their leaky nature in tests.
+
     this.reset();
-    this.listenTo(ProjectActions.loadStatsForProjectSuccess, this.onStatsLoadSuccess);
-    this.listenTo(ProjectActions.update, this.onUpdate);
-    this.listenTo(ProjectActions.updateError, this.onUpdateError);
   },
 
   getInitialState() {
-    return this.itemsBySlug;
+    return this.state;
   },
 
   reset() {
-    this.itemsBySlug = {};
-    this.updatingItems = new Map();
+    this.state = {};
+    this.updatingItems.clear();
   },
 
-  onStatsLoadSuccess(projects: Project[]) {
+  onStatsLoadSuccess(projects) {
     projects.forEach(project => {
-      this.itemsBySlug[project.slug] = project;
+      this.state = {...this.state, [project.slug]: project};
     });
-    this.trigger(this.itemsBySlug);
+    this.trigger(this.state);
   },
 
   /**
@@ -48,7 +56,7 @@ const projectsStatsStore: Reflux.StoreDefinition & ProjectsStatsStoreInterface =
    * @param projectSlug Project slug
    * @param data Project data
    */
-  onUpdate(projectSlug: string, data: Project) {
+  onUpdate(projectSlug, data) {
     const project = this.getBySlug(projectSlug);
     this.updatingItems.set(projectSlug, project);
     if (!project) {
@@ -60,11 +68,11 @@ const projectsStatsStore: Reflux.StoreDefinition & ProjectsStatsStoreInterface =
       ...data,
     };
 
-    this.itemsBySlug = {
-      ...this.itemsBySlug,
+    this.state = {
+      ...this.state,
       [project.slug]: newProject,
     };
-    this.trigger(this.itemsBySlug);
+    this.trigger(this.state);
   },
 
   onUpdateSuccess(data: Project) {
@@ -77,7 +85,7 @@ const projectsStatsStore: Reflux.StoreDefinition & ProjectsStatsStoreInterface =
    * @param err Error object
    * @param data Previous project data
    */
-  onUpdateError(_err: Error, projectSlug: string) {
+  onUpdateError(_err, projectSlug) {
     const project = this.updatingItems.get(projectSlug);
     if (!project) {
       return;
@@ -85,23 +93,25 @@ const projectsStatsStore: Reflux.StoreDefinition & ProjectsStatsStoreInterface =
 
     this.updatingItems.delete(projectSlug);
     // Restore old project
-    this.itemsBySlug = {
-      ...this.itemsBySlug,
+    this.state = {
+      ...this.state,
       [project.slug]: {...project},
     };
-    this.trigger(this.itemsBySlug);
+    this.trigger(this.state);
   },
 
   getAll() {
-    return this.itemsBySlug;
+    return this.state;
+  },
+
+  getState() {
+    return this.state;
   },
 
   getBySlug(slug) {
-    return this.itemsBySlug[slug];
+    return this.state[slug]!;
   },
 };
 
-const ProjectsStatsStore = Reflux.createStore(projectsStatsStore) as Reflux.Store &
-  ProjectsStatsStoreInterface;
-
+const ProjectsStatsStore = createStore(storeConfig);
 export default ProjectsStatsStore;

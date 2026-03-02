@@ -1,57 +1,55 @@
-import {Component} from 'react';
-import {browserHistory} from 'react-router';
-import {Location} from 'history';
+import styled from '@emotion/styled';
+import type {Location} from 'history';
 
-import OptionSelector from 'app/components/charts/optionSelector';
+import OptionSelector from 'sentry/components/charts/optionSelector';
 import {
   ChartContainer,
   ChartControls,
   InlineContainer,
-  SectionHeading,
-  SectionValue,
-} from 'app/components/charts/styles';
-import {Panel} from 'app/components/panels';
-import Placeholder from 'app/components/placeholder';
-import {t} from 'app/locale';
-import {OrganizationSummary, SelectValue} from 'app/types';
-import EventView from 'app/utils/discover/eventView';
-import {removeHistogramQueryStrings} from 'app/utils/performance/histogram';
-import {decodeScalar} from 'app/utils/queryString';
-import {TransactionsListOption} from 'app/views/releases/detail/overview';
-import {YAxis} from 'app/views/releases/detail/overview/chart/releaseChartControls';
-
-import {TrendColumnField, TrendFunctionField} from '../../trends/types';
+} from 'sentry/components/charts/styles';
+import Panel from 'sentry/components/panels/panel';
+import {t} from 'sentry/locale';
+import type {SelectValue} from 'sentry/types/core';
+import type {Organization} from 'sentry/types/organization';
+import type {Project} from 'sentry/types/project';
+import {trackAnalytics} from 'sentry/utils/analytics';
+import type EventView from 'sentry/utils/discover/eventView';
+import {useMetricsCardinalityContext} from 'sentry/utils/performance/contexts/metricsCardinality';
+import {useMEPSettingContext} from 'sentry/utils/performance/contexts/metricsEnhancedSetting';
+import {removeHistogramQueryStrings} from 'sentry/utils/performance/histogram';
+import {decodeScalar} from 'sentry/utils/queryString';
+import {useNavigate} from 'sentry/utils/useNavigate';
+import {SpanOperationBreakdownFilter} from 'sentry/views/performance/transactionSummary/filter';
+import {getTransactionMEPParamsIfApplicable} from 'sentry/views/performance/transactionSummary/transactionOverview/utils';
+import {DisplayModes} from 'sentry/views/performance/transactionSummary/utils';
 import {
-  generateTrendFunctionAsString,
-  TRENDS_FUNCTIONS,
-  TRENDS_PARAMETERS,
-} from '../../trends/utils';
-import {SpanOperationBreakdownFilter} from '../filter';
+  TrendFunctionField,
+  TrendParameterColumn,
+  TrendParameterLabel,
+} from 'sentry/views/performance/trends/types';
+import {TRENDS_FUNCTIONS, TRENDS_PARAMETERS} from 'sentry/views/performance/trends/utils';
+import {TransactionsListOption} from 'sentry/views/releases/detail/overview';
 
+import LatencyChartControls from './latencyChart/chartControls';
+import {ZOOM_END, ZOOM_START} from './latencyChart/utils';
 import DurationChart from './durationChart';
 import DurationPercentileChart from './durationPercentileChart';
-import LatencyChart, {LatencyChartControls, ZOOM_END, ZOOM_START} from './latencyChart';
+import LatencyChart from './latencyChart';
 import TrendChart from './trendChart';
+import UserMiseryChart from './userMiseryChart';
 import VitalsChart from './vitalsChart';
-
-export enum DisplayModes {
-  DURATION_PERCENTILE = 'durationpercentile',
-  DURATION = 'duration',
-  LATENCY = 'latency',
-  TREND = 'trend',
-  VITALS = 'vitals',
-}
 
 function generateDisplayOptions(
   currentFilter: SpanOperationBreakdownFilter
-): SelectValue<string>[] {
-  if (currentFilter === SpanOperationBreakdownFilter.None) {
+): Array<SelectValue<string>> {
+  if (currentFilter === SpanOperationBreakdownFilter.NONE) {
     return [
       {value: DisplayModes.DURATION, label: t('Duration Breakdown')},
       {value: DisplayModes.DURATION_PERCENTILE, label: t('Duration Percentiles')},
       {value: DisplayModes.LATENCY, label: t('Duration Distribution')},
       {value: DisplayModes.TREND, label: t('Trends')},
       {value: DisplayModes.VITALS, label: t('Web Vitals')},
+      {value: DisplayModes.USER_MISERY, label: t('User Misery')},
     ];
   }
 
@@ -66,7 +64,7 @@ function generateDisplayOptions(
   ];
 }
 
-const TREND_FUNCTIONS_OPTIONS: SelectValue<string>[] = TRENDS_FUNCTIONS.map(
+const TREND_FUNCTIONS_OPTIONS: Array<SelectValue<string>> = TRENDS_FUNCTIONS.map(
   ({field, label}) => ({
     value: field,
     label,
@@ -74,203 +72,235 @@ const TREND_FUNCTIONS_OPTIONS: SelectValue<string>[] = TRENDS_FUNCTIONS.map(
 );
 
 type Props = {
-  organization: OrganizationSummary;
-  location: Location;
-  eventView: EventView;
-  totalValues: number | null;
   currentFilter: SpanOperationBreakdownFilter;
-  withoutZerofill: boolean;
+  eventView: EventView;
+  location: Location;
+  organization: Organization;
+  totalValue: number | null;
+  project?: Project;
 };
 
-class TransactionSummaryCharts extends Component<Props> {
-  handleDisplayChange = (value: string) => {
-    const {location} = this.props;
-    browserHistory.push({
+function TransactionSummaryCharts({
+  totalValue,
+  eventView,
+  organization,
+  location,
+  currentFilter,
+  project,
+}: Props) {
+  const navigate = useNavigate();
+
+  function handleDisplayChange(value: string) {
+    const display = decodeScalar(location.query.display, DisplayModes.DURATION);
+    trackAnalytics('performance_views.transaction_summary.change_chart_display', {
+      organization,
+      from_chart: display,
+      to_chart: value,
+    });
+
+    navigate({
       pathname: location.pathname,
       query: {
         ...removeHistogramQueryStrings(location, [ZOOM_START, ZOOM_END]),
         display: value,
       },
     });
-  };
+  }
 
-  handleTrendDisplayChange = (value: string) => {
-    const {location} = this.props;
-    browserHistory.push({
+  function handleTrendDisplayChange(value: string) {
+    navigate({
       pathname: location.pathname,
       query: {...location.query, trendFunction: value},
     });
-  };
+  }
 
-  handleTrendColumnChange = (value: string) => {
-    const {location} = this.props;
-    browserHistory.push({
+  function handleTrendColumnChange(value: string) {
+    navigate({
       pathname: location.pathname,
-      query: {...location.query, trendColumn: value},
+      query: {
+        ...location.query,
+        trendParameter: value,
+      },
     });
-  };
+  }
 
-  render() {
-    const {
-      totalValues,
-      eventView,
-      organization,
-      location,
-      currentFilter,
-      withoutZerofill,
-    } = this.props;
+  const TREND_PARAMETERS_OPTIONS: Array<SelectValue<string>> = TRENDS_PARAMETERS.map(
+    ({label}) => ({
+      value: label,
+      label,
+    })
+  );
 
-    const TREND_PARAMETERS_OPTIONS: SelectValue<string>[] = TRENDS_PARAMETERS.map(
-      ({column, label}) => ({
-        value: column,
-        label,
-      })
-    );
+  let display = decodeScalar(location.query.display, DisplayModes.DURATION);
+  let trendFunction = decodeScalar(
+    location.query.trendFunction,
+    TREND_FUNCTIONS_OPTIONS[0]!.value
+  ) as TrendFunctionField;
+  let trendParameter = decodeScalar(
+    location.query.trendParameter,
+    TREND_PARAMETERS_OPTIONS[0]!.value
+  );
 
-    let display = decodeScalar(location.query.display, DisplayModes.DURATION);
-    let trendFunction = decodeScalar(
-      location.query.trendFunction,
-      TREND_FUNCTIONS_OPTIONS[0].value
-    ) as TrendFunctionField;
-    let trendColumn = decodeScalar(
-      location.query.trendColumn,
-      TREND_PARAMETERS_OPTIONS[0].value
-    );
+  if (!Object.values(DisplayModes).includes(display as DisplayModes)) {
+    display = DisplayModes.DURATION;
+  }
+  if (!Object.values(TrendFunctionField).includes(trendFunction)) {
+    trendFunction = TrendFunctionField.P50;
+  }
+  if (
+    !Object.values(TrendParameterLabel).includes(trendParameter as TrendParameterLabel)
+  ) {
+    trendParameter = TrendParameterLabel.DURATION;
+  }
 
-    if (!Object.values(DisplayModes).includes(display as DisplayModes)) {
-      display = DisplayModes.DURATION;
-    }
-    if (!Object.values(TrendFunctionField).includes(trendFunction)) {
-      trendFunction = TrendFunctionField.P50;
-    }
-    if (!Object.values(TrendColumnField).includes(trendColumn as TrendColumnField)) {
-      trendColumn = TrendColumnField.DURATION;
-    }
+  const trendColumn =
+    TRENDS_PARAMETERS.find(parameter => parameter.label === trendParameter)?.column ||
+    TrendParameterColumn.DURATION;
 
-    const releaseQueryExtra = {
-      yAxis: display === DisplayModes.VITALS ? YAxis.COUNT_VITAL : YAxis.COUNT_DURATION,
-      showTransactions:
-        display === DisplayModes.VITALS
-          ? TransactionsListOption.SLOW_LCP
-          : display === DisplayModes.DURATION
+  const releaseQueryExtra = {
+    yAxis: display === DisplayModes.VITALS ? 'countVital' : 'countDuration',
+    showTransactions:
+      display === DisplayModes.VITALS
+        ? TransactionsListOption.SLOW_LCP
+        : display === DisplayModes.DURATION
           ? TransactionsListOption.SLOW
           : undefined,
-    };
+  };
 
-    return (
-      <Panel>
-        <ChartContainer>
-          {display === DisplayModes.LATENCY && (
-            <LatencyChart
-              organization={organization}
-              location={location}
-              query={eventView.query}
-              project={eventView.project}
-              environment={eventView.environment}
-              start={eventView.start}
-              end={eventView.end}
-              statsPeriod={eventView.statsPeriod}
-              currentFilter={currentFilter}
-            />
-          )}
-          {display === DisplayModes.DURATION && (
-            <DurationChart
-              organization={organization}
-              query={eventView.query}
-              queryExtra={releaseQueryExtra}
-              project={eventView.project}
-              environment={eventView.environment}
-              start={eventView.start}
-              end={eventView.end}
-              statsPeriod={eventView.statsPeriod}
-              currentFilter={currentFilter}
-              withoutZerofill={withoutZerofill}
-            />
-          )}
-          {display === DisplayModes.DURATION_PERCENTILE && (
-            <DurationPercentileChart
-              organization={organization}
-              location={location}
-              query={eventView.query}
-              project={eventView.project}
-              environment={eventView.environment}
-              start={eventView.start}
-              end={eventView.end}
-              statsPeriod={eventView.statsPeriod}
-              currentFilter={currentFilter}
+  const mepSetting = useMEPSettingContext();
+  const mepCardinalityContext = useMetricsCardinalityContext();
+  const queryExtras = getTransactionMEPParamsIfApplicable(
+    mepSetting,
+    mepCardinalityContext,
+    organization
+  );
+
+  const displayOptions = generateDisplayOptions(currentFilter);
+
+  return (
+    <Panel>
+      <ChartContainer data-test-id="transaction-summary-charts">
+        {display === DisplayModes.LATENCY && (
+          <LatencyChart
+            organization={organization}
+            location={location}
+            query={eventView.query}
+            project={eventView.project}
+            environment={eventView.environment}
+            start={eventView.start}
+            end={eventView.end}
+            statsPeriod={eventView.statsPeriod}
+            currentFilter={currentFilter}
+            totalCount={totalValue}
+          />
+        )}
+        {display === DisplayModes.DURATION && (
+          <DurationChart
+            organization={organization}
+            query={eventView.query}
+            queryExtra={releaseQueryExtra}
+            project={eventView.project}
+            environment={eventView.environment}
+            start={eventView.start}
+            end={eventView.end}
+            statsPeriod={eventView.statsPeriod}
+            currentFilter={currentFilter}
+            queryExtras={queryExtras}
+          />
+        )}
+        {display === DisplayModes.DURATION_PERCENTILE && (
+          <DurationPercentileChart
+            organization={organization}
+            location={location}
+            query={eventView.query}
+            project={eventView.project}
+            environment={eventView.environment}
+            start={eventView.start}
+            end={eventView.end}
+            statsPeriod={eventView.statsPeriod}
+            currentFilter={currentFilter}
+            queryExtras={queryExtras}
+          />
+        )}
+        {display === DisplayModes.TREND && (
+          <TrendChart
+            eventView={eventView}
+            trendFunction={trendFunction}
+            trendParameter={trendColumn}
+            organization={organization}
+            query={eventView.query}
+            queryExtra={releaseQueryExtra}
+            project={eventView.project}
+            environment={eventView.environment}
+            start={eventView.start}
+            end={eventView.end}
+            statsPeriod={eventView.statsPeriod}
+            projects={project ? [project] : []}
+            withBreakpoint={organization.features.includes('performance-new-trends')}
+          />
+        )}
+        {display === DisplayModes.VITALS && (
+          <VitalsChart
+            organization={organization}
+            query={eventView.query}
+            queryExtra={releaseQueryExtra}
+            project={eventView.project}
+            environment={eventView.environment}
+            start={eventView.start}
+            end={eventView.end}
+            statsPeriod={eventView.statsPeriod}
+            queryExtras={queryExtras}
+          />
+        )}
+        {display === DisplayModes.USER_MISERY && (
+          <UserMiseryChart
+            organization={organization}
+            query={eventView.query}
+            queryExtra={releaseQueryExtra}
+            project={eventView.project}
+            environment={eventView.environment}
+            start={eventView.start}
+            end={eventView.end}
+            statsPeriod={eventView.statsPeriod}
+          />
+        )}
+      </ChartContainer>
+
+      <ReversedChartControls>
+        <InlineContainer>
+          {display === DisplayModes.TREND && (
+            <OptionSelector
+              title={t('Percentile')}
+              selected={trendFunction}
+              options={TREND_FUNCTIONS_OPTIONS}
+              onChange={handleTrendDisplayChange}
             />
           )}
           {display === DisplayModes.TREND && (
-            <TrendChart
-              trendDisplay={generateTrendFunctionAsString(trendFunction, trendColumn)}
-              organization={organization}
-              query={eventView.query}
-              queryExtra={releaseQueryExtra}
-              project={eventView.project}
-              environment={eventView.environment}
-              start={eventView.start}
-              end={eventView.end}
-              statsPeriod={eventView.statsPeriod}
-              withoutZerofill={withoutZerofill}
-            />
-          )}
-          {display === DisplayModes.VITALS && (
-            <VitalsChart
-              organization={organization}
-              query={eventView.query}
-              queryExtra={releaseQueryExtra}
-              project={eventView.project}
-              environment={eventView.environment}
-              start={eventView.start}
-              end={eventView.end}
-              statsPeriod={eventView.statsPeriod}
-              withoutZerofill={withoutZerofill}
-            />
-          )}
-        </ChartContainer>
-
-        <ChartControls>
-          <InlineContainer>
-            <SectionHeading key="total-heading">{t('Total Transactions')}</SectionHeading>
-            <SectionValue key="total-value">
-              {totalValues === null ? (
-                <Placeholder height="24px" />
-              ) : (
-                totalValues.toLocaleString()
-              )}
-            </SectionValue>
-          </InlineContainer>
-          <InlineContainer>
-            {display === DisplayModes.TREND && (
-              <OptionSelector
-                title={t('Percentile')}
-                selected={trendFunction}
-                options={TREND_FUNCTIONS_OPTIONS}
-                onChange={this.handleTrendDisplayChange}
-              />
-            )}
-            {display === DisplayModes.TREND && (
-              <OptionSelector
-                title={t('Parameter')}
-                selected={trendColumn}
-                options={TREND_PARAMETERS_OPTIONS}
-                onChange={this.handleTrendColumnChange}
-              />
-            )}
-            {display === DisplayModes.LATENCY && (
-              <LatencyChartControls location={location} />
-            )}
             <OptionSelector
-              title={t('Display')}
-              selected={display}
-              options={generateDisplayOptions(currentFilter)}
-              onChange={this.handleDisplayChange}
+              title={t('Parameter')}
+              selected={trendParameter}
+              options={TREND_PARAMETERS_OPTIONS}
+              onChange={handleTrendColumnChange}
             />
-          </InlineContainer>
-        </ChartControls>
-      </Panel>
-    );
-  }
+          )}
+          {display === DisplayModes.LATENCY && (
+            <LatencyChartControls location={location} />
+          )}
+          <OptionSelector
+            title={t('Display')}
+            selected={display}
+            options={displayOptions}
+            onChange={handleDisplayChange}
+          />
+        </InlineContainer>
+      </ReversedChartControls>
+    </Panel>
+  );
 }
+
+const ReversedChartControls = styled(ChartControls)`
+  flex-direction: row-reverse;
+`;
 
 export default TransactionSummaryCharts;

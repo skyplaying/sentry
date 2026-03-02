@@ -2,19 +2,22 @@ import {Component, Fragment} from 'react';
 import styled from '@emotion/styled';
 import reduce from 'lodash/reduce';
 import {computed, makeObservable} from 'mobx';
-import {Observer} from 'mobx-react';
+import {Observer} from 'mobx-react-lite';
 
-import List from 'app/components/list';
-import ListItem from 'app/components/list/listItem';
-import LoadingIndicator from 'app/components/loadingIndicator';
-import {PanelHeader} from 'app/components/panels';
-import Switch from 'app/components/switchButton';
-import Tooltip from 'app/components/tooltip';
-import {t, tn} from 'app/locale';
-import Form from 'app/views/settings/components/forms/form';
-import JsonForm from 'app/views/settings/components/forms/jsonForm';
-import FormModel from 'app/views/settings/components/forms/model';
-import {JsonFormObject} from 'app/views/settings/components/forms/type';
+import {Flex} from '@sentry/scraps/layout';
+import {Switch} from '@sentry/scraps/switch';
+import {Tooltip} from '@sentry/scraps/tooltip';
+
+import type {FormProps} from 'sentry/components/forms/form';
+import Form from 'sentry/components/forms/form';
+import JsonForm from 'sentry/components/forms/jsonForm';
+import FormModel from 'sentry/components/forms/model';
+import type {JsonFormObject} from 'sentry/components/forms/types';
+import List from 'sentry/components/list';
+import ListItem from 'sentry/components/list/listItem';
+import LoadingIndicator from 'sentry/components/loadingIndicator';
+import PanelHeader from 'sentry/components/panels/panelHeader';
+import {t, tn} from 'sentry/locale';
 
 import FooterWithButtons from './components/footerWithButtons';
 import HeaderWithHelp from './components/headerWithHelp';
@@ -24,8 +27,8 @@ const LAMBDA_COUNT_THRESHOLD = 10;
 type LambdaFunction = {FunctionName: string; Runtime: string};
 
 type Props = {
-  lambdaFunctions: LambdaFunction[];
   initialStepNumber: number;
+  lambdaFunctions: LambdaFunction[];
 };
 
 type State = {
@@ -39,16 +42,16 @@ export default class AwsLambdaFunctionSelect extends Component<Props, State> {
     super(props);
     makeObservable(this, {allStatesToggled: computed});
   }
-
   state: State = {
     submitting: false,
   };
 
-  model = new FormModel({apiOptions: {baseUrl: window.location.origin}});
+  model = new FormModel();
 
   get initialData() {
     const {lambdaFunctions} = this.props;
     const initialData = lambdaFunctions.reduce((accum, func) => {
+      // @ts-expect-error TS(7053): Element implicitly has an 'any' type because expre... Remove this comment to see the full error message
       accum[func.FunctionName] = true;
       return accum;
     }, {});
@@ -72,8 +75,12 @@ export default class AwsLambdaFunctionSelect extends Component<Props, State> {
     return Object.values(this.model.getData()).every(val => val);
   }
 
+  get formFields() {
+    const data = this.model.getTransformedData();
+    return Object.entries(data).map(([name, value]) => ({name, value}));
+  }
+
   handleSubmit = () => {
-    this.model.saveForm();
     this.setState({submitting: true});
   };
 
@@ -118,7 +125,7 @@ export default class AwsLambdaFunctionSelect extends Component<Props, State> {
     const FormHeader = (
       <StyledPanelHeader>
         {t('Lambda Functions')}
-        <SwitchHolder>
+        <Flex>
           <Observer>
             {() => (
               <Tooltip
@@ -128,13 +135,13 @@ export default class AwsLambdaFunctionSelect extends Component<Props, State> {
                 <StyledSwitch
                   size="lg"
                   name="toggleAll"
-                  toggle={this.handleToggle}
-                  isActive={this.allStatesToggled}
+                  onChange={this.handleToggle}
+                  checked={this.allStatesToggled}
                 />
               </Tooltip>
             )}
           </Observer>
-        </SwitchHolder>
+        </Flex>
       </StyledPanelHeader>
     );
 
@@ -155,10 +162,10 @@ export default class AwsLambdaFunctionSelect extends Component<Props, State> {
           {t('Decide which functions you would like to enable for Sentry monitoring')}
           <StyledForm
             initialData={this.initialData}
-            skipPreventDefault
             model={this.model}
             apiEndpoint="/extensions/aws_lambda/setup/"
             hideFooter
+            preventFormResetOnUnmount
           >
             <JsonForm renderHeader={() => FormHeader} forms={[formFields]} />
           </StyledForm>
@@ -178,9 +185,16 @@ export default class AwsLambdaFunctionSelect extends Component<Props, State> {
         <Observer>
           {() => (
             <FooterWithButtons
+              formProps={{
+                action: '/extensions/aws_lambda/setup/',
+                method: 'post',
+                onSubmit: this.handleSubmit,
+              }}
+              formFields={this.formFields}
               buttonText={t('Finish Setup')}
-              onClick={this.handleSubmit}
-              disabled={this.model.isError || this.model.isSaving}
+              disabled={
+                this.model.isError || this.model.isSaving || this.state.submitting
+              }
             />
           )}
         </Observer>
@@ -194,7 +208,7 @@ const Wrapper = styled('div')`
 `;
 
 // TODO(ts): Understand why styled is not correctly inheriting props here
-const StyledForm = styled(Form)<Form['props']>`
+const StyledForm = styled(Form)<FormProps>`
   margin-top: 10px;
 `;
 
@@ -210,10 +224,6 @@ const LoadingWrapper = styled('div')`
 
 const StyledLoadingIndicator = styled(LoadingIndicator)`
   margin: 0;
-`;
-
-const SwitchHolder = styled('div')`
-  display: flex;
 `;
 
 const StyledSwitch = styled(Switch)`

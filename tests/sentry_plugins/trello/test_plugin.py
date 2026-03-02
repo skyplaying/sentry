@@ -1,32 +1,26 @@
+from functools import cached_property
 from urllib.parse import parse_qsl, urlparse
 
+import orjson
 import responses
-from django.test import RequestFactory
-from exam import fixture
 
-from sentry.testutils import PluginTestCase
-from sentry.utils import json
+from sentry.testutils.cases import PluginTestCase
+from sentry.testutils.requests import drf_request_from_request
 from sentry_plugins.trello.plugin import TrelloPlugin
 
 
-class TrelloPluginTestBase(PluginTestCase):
-    @fixture
-    def plugin(self):
-        return TrelloPlugin()
+def test_conf_key() -> None:
+    assert TrelloPlugin().conf_key == "trello"
 
-    @fixture
-    def request(self):
-        return RequestFactory()
+
+class TrelloPluginTestBase(PluginTestCase):
+    @cached_property
+    def plugin(self) -> TrelloPlugin:
+        return TrelloPlugin()
 
 
 class TrelloPluginTest(TrelloPluginTestBase):
-    def test_conf_key(self):
-        assert self.plugin.conf_key == "trello"
-
-    def test_entry_point(self):
-        self.assertPluginInstalled("trello", self.plugin)
-
-    def test_get_issue_label(self):
+    def test_get_issue_label(self) -> None:
         group = self.create_group(message="Hello world", culprit="foo.bar")
         # test new and old format
         assert self.plugin.get_issue_label(group, "rPPDb") == "Trello-rPPDb"
@@ -35,26 +29,24 @@ class TrelloPluginTest(TrelloPluginTestBase):
             == "Trello-5dafd"
         )
 
-    def test_get_issue_url(self):
+    def test_get_issue_url(self) -> None:
         group = self.create_group(message="Hello world", culprit="foo.bar")
-        # test new and old format
         assert self.plugin.get_issue_url(group, "rPPDb") == "https://trello.com/c/rPPDb"
-        assert self.plugin.get_issue_url(group, {"id": "rPPDb"}) == "https://trello.com/c/rPPDb"
         assert (
             self.plugin.get_issue_url(group, "5dafd/https://trello.com/c/rPPDb/75-title")
             == "https://trello.com/c/rPPDb/75-title"
         )
 
-    def test_is_configured(self):
-        assert self.plugin.is_configured(None, self.project) is False
+    def test_is_configured(self) -> None:
+        assert self.plugin.is_configured(self.project) is False
         self.plugin.set_option("token", "7c8951d1", self.project)
-        assert self.plugin.is_configured(None, self.project) is False
+        assert self.plugin.is_configured(self.project) is False
         self.plugin.set_option("key", "39g", self.project)
-        assert self.plugin.is_configured(None, self.project) is True
+        assert self.plugin.is_configured(self.project) is True
 
 
 class TrelloPluginApiTests(TrelloPluginTestBase):
-    def setUp(self):
+    def setUp(self) -> None:
         self.group = self.create_group(message="Hello world", culprit="foo.bar")
         self.plugin.set_option("token", "7c8951d1", self.project)
         self.plugin.set_option("key", "39g", self.project)
@@ -62,7 +54,7 @@ class TrelloPluginApiTests(TrelloPluginTestBase):
 
         self.login_as(self.user)
 
-    def test_get_config_no_org(self):
+    def test_get_config_no_org(self) -> None:
         self.plugin.unset_option("organization", self.project)
         out = self.plugin.get_config(self.project)
         assert out == [
@@ -85,7 +77,7 @@ class TrelloPluginApiTests(TrelloPluginTestBase):
         ]
 
     @responses.activate
-    def test_get_config_include_additional(self):
+    def test_get_config_include_additional(self) -> None:
         self.plugin.unset_option("organization", self.project)
 
         responses.add(
@@ -93,7 +85,7 @@ class TrelloPluginApiTests(TrelloPluginTestBase):
             "https://api.trello.com/1/members/me/organizations",
             json=[{"name": "team 1", "id": "2d8e"}, {"name": "team 2", "id": "d0cc"}],
         )
-        out = self.plugin.get_config(self.project, add_additial_fields=True)
+        out = self.plugin.get_config(self.project, add_additional_fields=True)
         assert out == [
             {
                 "default": "39g",
@@ -122,7 +114,7 @@ class TrelloPluginApiTests(TrelloPluginTestBase):
         ]
 
     @responses.activate
-    def test_create_issue(self):
+    def test_create_issue(self) -> None:
         responses.add(responses.POST, "https://api.trello.com/1/cards", json={"shortLink": "rds43"})
 
         form_data = {
@@ -131,16 +123,16 @@ class TrelloPluginApiTests(TrelloPluginTestBase):
             "board": "ads23f",
             "list": "23tds",
         }
-        request = self.make_request(user=self.user, method="POST")
+        request = drf_request_from_request(self.make_request(user=self.user, method="POST"))
 
         assert self.plugin.create_issue(request, self.group, form_data) == "rds43"
-        request = responses.calls[0].request
-        assert request.url == "https://api.trello.com/1/cards?token=7c8951d1&key=39g"
-        payload = json.loads(request.body)
+        responses_request = responses.calls[0].request
+        assert responses_request.url == "https://api.trello.com/1/cards?token=7c8951d1&key=39g"
+        payload = orjson.loads(responses_request.body)
         assert payload == {"name": "Hello", "desc": "Fix this.", "idList": "23tds"}
 
     @responses.activate
-    def test_link_issue(self):
+    def test_link_issue(self) -> None:
         responses.add(
             responses.GET,
             "https://api.trello.com/1/cards/SstgnBIQ",
@@ -151,45 +143,50 @@ class TrelloPluginApiTests(TrelloPluginTestBase):
         )
 
         form_data = {"comment": "please fix this", "issue_id": "SstgnBIQ"}
-        request = self.make_request(user=self.user, method="POST")
+        request = drf_request_from_request(self.make_request(user=self.user, method="POST"))
 
         assert self.plugin.link_issue(request, self.group, form_data) == {
             "title": "MyTitle",
             "id": "SstgnBIQ",
         }
 
-        request = responses.calls[0].request
+        responses_request = responses.calls[0].request
         assert (
-            request.url
+            responses_request.url
             == "https://api.trello.com/1/cards/SstgnBIQ?fields=name%2CshortLink%2CidShort&token=7c8951d1&key=39g"
         )
 
-        request = responses.calls[1].request
+        responses_request = responses.calls[1].request
         assert (
-            request.url
+            responses_request.url
             == "https://api.trello.com/1/cards/SstgnBIQ/actions/comments?text=please+fix+this&token=7c8951d1&key=39g"
         )
 
     @responses.activate
-    def test_view_options(self):
+    def test_view_options(self) -> None:
         responses.add(
             responses.GET,
             "https://api.trello.com/1/boards/f34/lists",
             json=[{"id": "8f3", "name": "list 1"}, {"id": "j8f", "name": "list 2"}],
         )
 
-        request = self.make_request(user=self.user, method="GET")
-        request.GET["option_field"] = "list"
-        request.GET["board"] = "f34"
+        request = drf_request_from_request(
+            self.make_request(
+                user=self.user, method="GET", GET={"option_field": "list", "board": "f34"}
+            )
+        )
 
         response = self.plugin.view_options(request, self.group)
         assert response.data == {"list": [("8f3", "list 1"), ("j8f", "list 2")]}
 
-        request = responses.calls[0].request
-        assert request.url == "https://api.trello.com/1/boards/f34/lists?token=7c8951d1&key=39g"
+        responses_request = responses.calls[0].request
+        assert (
+            responses_request.url
+            == "https://api.trello.com/1/boards/f34/lists?token=7c8951d1&key=39g"
+        )
 
     @responses.activate
-    def test_view_autocomplete(self):
+    def test_view_autocomplete(self) -> None:
         responses.add(
             responses.GET,
             "https://api.trello.com/1/search",
@@ -201,10 +198,13 @@ class TrelloPluginApiTests(TrelloPluginTestBase):
             },
         )
 
-        request = self.make_request(user=self.user, method="GET")
-        request.GET["autocomplete_field"] = "issue_id"
-        request.GET["autocomplete_query"] = "Key"
-
+        request = drf_request_from_request(
+            self.make_request(
+                user=self.user,
+                method="GET",
+                GET={"autocomplete_field": "issue_id", "autocomplete_query": "Key"},
+            )
+        )
         response = self.plugin.view_autocomplete(request, self.group)
         assert response.data == {
             "issue_id": [
@@ -213,8 +213,8 @@ class TrelloPluginApiTests(TrelloPluginTestBase):
             ]
         }
 
-        request = responses.calls[0].request
-        url = urlparse(request.url)
+        responses_request = responses.calls[0].request
+        url = urlparse(responses_request.url)
         query = dict(parse_qsl(url.query))
 
         assert url.path == "/1/search"
@@ -230,7 +230,7 @@ class TrelloPluginApiTests(TrelloPluginTestBase):
         }
 
     @responses.activate
-    def test_view_autocomplete_no_org(self):
+    def test_view_autocomplete_no_org(self) -> None:
         self.plugin.unset_option("organization", self.project)
 
         responses.add(
@@ -244,10 +244,13 @@ class TrelloPluginApiTests(TrelloPluginTestBase):
             },
         )
 
-        request = self.make_request(user=self.user, method="GET")
-        request.GET["autocomplete_field"] = "issue_id"
-        request.GET["autocomplete_query"] = "Key"
-
+        request = drf_request_from_request(
+            self.make_request(
+                user=self.user,
+                method="GET",
+                GET={"autocomplete_field": "issue_id", "autocomplete_query": "Key"},
+            )
+        )
         response = self.plugin.view_autocomplete(request, self.group)
         assert response.data == {
             "issue_id": [
@@ -256,8 +259,8 @@ class TrelloPluginApiTests(TrelloPluginTestBase):
             ]
         }
 
-        request = responses.calls[0].request
-        url = urlparse(request.url)
+        responses_request = responses.calls[0].request
+        url = urlparse(responses_request.url)
         query = dict(parse_qsl(url.query))
 
         assert url.path == "/1/search"

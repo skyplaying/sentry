@@ -1,39 +1,42 @@
-import styled from '@emotion/styled';
+import {Fragment} from 'react';
 
-import ActionLink from 'app/components/actions/actionLink';
-import ActionButton from 'app/components/actions/button';
-import IgnoreActions from 'app/components/actions/ignore';
-import MenuItemActionLink from 'app/components/actions/menuItemActionLink';
-import GuideAnchor from 'app/components/assistant/guideAnchor';
-import DropdownLink from 'app/components/dropdownLink';
-import {IconEllipsis} from 'app/icons';
-import {t} from 'app/locale';
-import GroupStore from 'app/stores/groupStore';
-import space from 'app/styles/space';
-import {Organization, Project, ResolutionStatus} from 'app/types';
-import Projects from 'app/utils/projects';
+import {Button} from '@sentry/scraps/button';
+
+import ArchiveActions from 'sentry/components/actions/archive';
+import {makeGroupPriorityDropdownOptions} from 'sentry/components/badge/groupPriority';
+import {openConfirmModal} from 'sentry/components/confirm';
+import type {MenuItemProps} from 'sentry/components/dropdownMenu';
+import {DropdownMenu} from 'sentry/components/dropdownMenu';
+import {IconEllipsis} from 'sentry/icons';
+import {t} from 'sentry/locale';
+import GroupStore from 'sentry/stores/groupStore';
+import type {BaseGroup} from 'sentry/types/group';
+import {GroupStatus} from 'sentry/types/group';
+import {getConfigForIssueType} from 'sentry/utils/issueTypeConfig';
+import type {IssueTypeConfig} from 'sentry/utils/issueTypeConfig/types';
+import useOrganization from 'sentry/utils/useOrganization';
+import type {IssueUpdateData} from 'sentry/views/issueList/types';
+import {FOR_REVIEW_QUERIES} from 'sentry/views/issueList/utils';
 
 import ResolveActions from './resolveActions';
 import ReviewAction from './reviewAction';
 import {ConfirmAction, getConfirm, getLabel} from './utils';
 
 type Props = {
-  orgSlug: Organization['slug'];
-  queryCount: number;
-  query: string;
   allInQuerySelected: boolean;
   anySelected: boolean;
-  multiSelected: boolean;
   issues: Set<string>;
-  onShouldConfirm: (action: ConfirmAction) => boolean;
+  multiSelected: boolean;
   onDelete: () => void;
   onMerge: () => void;
-  onUpdate: (data?: any) => void;
+  onShouldConfirm: (action: ConfirmAction) => boolean;
+  onUpdate: (data: IssueUpdateData) => void;
+  query: string;
+  queryCount: number;
   selectedProjectSlug?: string;
 };
 
 function ActionSet({
-  orgSlug,
   queryCount,
   query,
   allInQuerySelected,
@@ -46,177 +49,231 @@ function ActionSet({
   onMerge,
   selectedProjectSlug,
 }: Props) {
+  const organization = useOrganization();
   const numIssues = issues.size;
-  const confirm = getConfirm(numIssues, allInQuerySelected, query, queryCount);
+  const confirm = getConfirm({
+    numIssues,
+    allInQuerySelected,
+    query,
+    queryCount,
+  });
+
   const label = getLabel(numIssues, allInQuerySelected);
 
-  // merges require a single project to be active in an org context
-  // selectedProjectSlug is null when 0 or >1 projects are selected.
-  const mergeDisabled = !(multiSelected && selectedProjectSlug);
+  const selectedIssues = [...issues]
+    .map(issueId => GroupStore.get(issueId))
+    .filter(issue => issue) as BaseGroup[];
 
-  const selectedIssues = [...issues].map(GroupStore.get);
+  // Merges require multiple issues of a single project type
+  const multipleIssueProjectsSelected = multiSelected && !selectedProjectSlug;
+  const {enabled: mergeSupported, disabledReason: mergeDisabledReason} =
+    isActionSupported(selectedIssues, 'merge');
+
+  // Members may or may not have access to delete events based on organization settings
+  const hasDeleteAccess = organization.access.includes('event:admin');
+  const {enabled: deleteSupported, disabledReason: deleteDisabledReason} = hasDeleteAccess
+    ? isActionSupported(selectedIssues, 'delete')
+    : {enabled: false, disabledReason: t('You do not have permission to delete issues')};
+
+  const mergeDisabled =
+    !multiSelected || multipleIssueProjectsSelected || !mergeSupported;
+  const ignoreDisabled = !anySelected;
+
   const canMarkReviewed =
     anySelected && (allInQuerySelected || selectedIssues.some(issue => !!issue?.inbox));
 
+  // determine which ... dropdown options to show based on issue(s) selected
+  const canAddBookmark =
+    allInQuerySelected || selectedIssues.some(issue => !issue.isBookmarked);
+  const canRemoveBookmark =
+    allInQuerySelected || selectedIssues.some(issue => issue.isBookmarked);
+  const canSetUnresolved =
+    allInQuerySelected ||
+    selectedIssues.some(
+      issue => issue.status === 'resolved' || issue.status === 'ignored'
+    );
+
+  const makeMergeTooltip = () => {
+    if (mergeDisabledReason) {
+      return mergeDisabledReason;
+    }
+
+    if (multipleIssueProjectsSelected) {
+      return t('Cannot merge issues from different projects');
+    }
+
+    return '';
+  };
+
+  const nestReview = !FOR_REVIEW_QUERIES.includes(query);
+
+  const handleMergeClick = () => {
+    openConfirmModal({
+      bypass: !onShouldConfirm(ConfirmAction.MERGE),
+      onConfirm: onMerge,
+      message: confirm({action: ConfirmAction.MERGE, canBeUndone: false}),
+      confirmText: label('merge'),
+    });
+  };
+
+  const menuItems: MenuItemProps[] = [
+    {
+      key: 'mark-reviewed',
+      label: t('Mark Reviewed'),
+      hidden: !nestReview,
+      disabled: !canMarkReviewed,
+      onAction: () => onUpdate({inbox: false}),
+    },
+    {
+      key: 'bookmark',
+      label: t('Add to Bookmarks'),
+      hidden: !canAddBookmark,
+      onAction: () => {
+        openConfirmModal({
+          bypass: !onShouldConfirm(ConfirmAction.BOOKMARK),
+          onConfirm: () => onUpdate({isBookmarked: true}),
+          message: confirm({action: ConfirmAction.BOOKMARK, canBeUndone: false}),
+          confirmText: label('bookmark'),
+        });
+      },
+    },
+    {
+      key: 'remove-bookmark',
+      label: t('Remove from Bookmarks'),
+      hidden: !canRemoveBookmark,
+      onAction: () => {
+        openConfirmModal({
+          bypass: !onShouldConfirm(ConfirmAction.UNBOOKMARK),
+          onConfirm: () => onUpdate({isBookmarked: false}),
+          message: confirm({
+            action: ConfirmAction.UNBOOKMARK,
+            canBeUndone: false,
+            append: ' from your bookmarks',
+          }),
+          confirmText: label('remove', ' from your bookmarks'),
+        });
+      },
+    },
+    {
+      key: 'unresolve',
+      label: t('Set status to: Unresolved'),
+      hidden: !canSetUnresolved,
+      onAction: () => {
+        openConfirmModal({
+          bypass: !onShouldConfirm(ConfirmAction.UNRESOLVE),
+          onConfirm: () => onUpdate({status: GroupStatus.UNRESOLVED, statusDetails: {}}),
+          message: confirm({action: ConfirmAction.UNRESOLVE, canBeUndone: true}),
+          confirmText: label('unresolve'),
+        });
+      },
+    },
+    {
+      key: 'delete',
+      label: t('Delete'),
+      priority: 'danger',
+      disabled: !deleteSupported,
+      details: deleteDisabledReason,
+      onAction: () => {
+        openConfirmModal({
+          bypass: !onShouldConfirm(ConfirmAction.DELETE),
+          onConfirm: onDelete,
+          priority: 'danger',
+          message: confirm({action: ConfirmAction.DELETE, canBeUndone: false}),
+          confirmText: label('delete'),
+        });
+      },
+    },
+  ];
+
   return (
-    <Wrapper>
-      {selectedProjectSlug ? (
-        <Projects orgId={orgSlug} slugs={[selectedProjectSlug]}>
-          {({projects, initiallyLoaded, fetchError}) => {
-            const selectedProject = projects[0];
-            return (
-              <ResolveActions
-                onShouldConfirm={onShouldConfirm}
-                onUpdate={onUpdate}
-                anySelected={anySelected}
-                orgSlug={orgSlug}
-                params={{
-                  hasReleases: selectedProject.hasOwnProperty('features')
-                    ? (selectedProject as Project).features.includes('releases')
-                    : false,
-                  latestRelease: selectedProject.hasOwnProperty('latestRelease')
-                    ? (selectedProject as Project).latestRelease
-                    : undefined,
-                  projectId: selectedProject.slug,
-                  confirm,
-                  label,
-                  loadingProjects: !initiallyLoaded,
-                  projectFetchError: !!fetchError,
-                }}
-              />
-            );
+    <Fragment>
+      {query.includes('is:archived') ? (
+        <Button
+          size="xs"
+          onClick={() => {
+            openConfirmModal({
+              bypass: !onShouldConfirm(ConfirmAction.UNRESOLVE),
+              onConfirm: () =>
+                onUpdate({status: GroupStatus.UNRESOLVED, statusDetails: {}}),
+              message: confirm({action: ConfirmAction.UNRESOLVE, canBeUndone: true}),
+              confirmText: label('unarchive'),
+            });
           }}
-        </Projects>
-      ) : (
-        <ResolveActions
-          onShouldConfirm={onShouldConfirm}
-          onUpdate={onUpdate}
-          anySelected={anySelected}
-          orgSlug={orgSlug}
-          params={{
-            hasReleases: false,
-            latestRelease: null,
-            projectId: null,
-            confirm,
-            label,
-          }}
-        />
-      )}
-
-      <IgnoreActions
+          disabled={!anySelected}
+        >
+          {t('Unarchive')}
+        </Button>
+      ) : null}
+      <ResolveActions
+        onShouldConfirm={onShouldConfirm}
         onUpdate={onUpdate}
-        shouldConfirm={onShouldConfirm(ConfirmAction.IGNORE)}
-        confirmMessage={confirm(ConfirmAction.IGNORE, true)}
-        confirmLabel={label('ignore')}
-        disabled={!anySelected}
+        anySelected={anySelected}
+        confirm={confirm}
+        label={label}
+        selectedProjectSlug={selectedProjectSlug}
       />
-      <GuideAnchor target="inbox_guide_review" position="bottom">
-        <div className="hidden-sm hidden-xs">
-          <ReviewAction disabled={!canMarkReviewed} onUpdate={onUpdate} />
-        </div>
-      </GuideAnchor>
-      <div className="hidden-md hidden-sm hidden-xs">
-        <ActionLink
-          type="button"
-          disabled={mergeDisabled}
-          onAction={onMerge}
-          shouldConfirm={onShouldConfirm(ConfirmAction.MERGE)}
-          message={confirm(ConfirmAction.MERGE, false)}
-          confirmLabel={label('merge')}
-          title={t('Merge Selected Issues')}
-        >
-          {t('Merge')}
-        </ActionLink>
-      </div>
-
-      <DropdownLink
-        key="actions"
-        customTitle={
-          <ActionButton
-            label={t('Open more issue actions')}
-            icon={<IconEllipsis size="xs" />}
-          />
-        }
+      <ArchiveActions
+        onUpdate={onUpdate}
+        shouldConfirm={onShouldConfirm(ConfirmAction.ARCHIVE)}
+        confirmMessage={() => confirm({action: ConfirmAction.ARCHIVE, canBeUndone: true})}
+        confirmLabel={label('archive')}
+        disabled={ignoreDisabled}
+      />
+      <Button
+        size="xs"
+        onClick={handleMergeClick}
+        disabled={mergeDisabled}
+        tooltipProps={{title: makeMergeTooltip()}}
       >
-        <MenuItemActionLink
-          className="hidden-lg hidden-xl"
-          disabled={mergeDisabled}
-          onAction={onMerge}
-          shouldConfirm={onShouldConfirm(ConfirmAction.MERGE)}
-          message={confirm(ConfirmAction.MERGE, false)}
-          confirmLabel={label('merge')}
-          title={t('Merge Selected Issues')}
-        >
-          {t('Merge')}
-        </MenuItemActionLink>
-        <MenuItemActionLink
-          className="hidden-md hidden-lg hidden-xl"
-          disabled={!canMarkReviewed}
-          onAction={() => onUpdate({inbox: false})}
-          title={t('Mark Reviewed')}
-        >
-          {t('Mark Reviewed')}
-        </MenuItemActionLink>
-        <MenuItemActionLink
-          disabled={!anySelected}
-          onAction={() => onUpdate({isBookmarked: true})}
-          shouldConfirm={onShouldConfirm(ConfirmAction.BOOKMARK)}
-          message={confirm(ConfirmAction.BOOKMARK, false)}
-          confirmLabel={label('bookmark')}
-          title={t('Add to Bookmarks')}
-        >
-          {t('Add to Bookmarks')}
-        </MenuItemActionLink>
-        <MenuItemActionLink
-          disabled={!anySelected}
-          onAction={() => onUpdate({isBookmarked: false})}
-          shouldConfirm={onShouldConfirm(ConfirmAction.UNBOOKMARK)}
-          message={confirm('remove', false, ' from your bookmarks')}
-          confirmLabel={label('remove', ' from your bookmarks')}
-          title={t('Remove from Bookmarks')}
-        >
-          {t('Remove from Bookmarks')}
-        </MenuItemActionLink>
-
-        <MenuItemActionLink
-          disabled={!anySelected}
-          onAction={() => onUpdate({status: ResolutionStatus.UNRESOLVED})}
-          shouldConfirm={onShouldConfirm(ConfirmAction.UNRESOLVE)}
-          message={confirm(ConfirmAction.UNRESOLVE, true)}
-          confirmLabel={label('unresolve')}
-          title={t('Set status to: Unresolved')}
-        >
-          {t('Set status to: Unresolved')}
-        </MenuItemActionLink>
-        <MenuItemActionLink
-          disabled={!anySelected}
-          onAction={onDelete}
-          shouldConfirm={onShouldConfirm(ConfirmAction.DELETE)}
-          message={confirm(ConfirmAction.DELETE, false)}
-          confirmLabel={label('delete')}
-          title={t('Delete Issues')}
-        >
-          {t('Delete Issues')}
-        </MenuItemActionLink>
-      </DropdownLink>
-    </Wrapper>
+        {t('Merge')}
+      </Button>
+      <DropdownMenu
+        triggerLabel={t('Set Priority')}
+        size="xs"
+        items={makeGroupPriorityDropdownOptions({
+          onChange: priority => {
+            openConfirmModal({
+              bypass: !onShouldConfirm(ConfirmAction.SET_PRIORITY),
+              onConfirm: () => onUpdate({priority}),
+              message: confirm({
+                action: ConfirmAction.SET_PRIORITY,
+                append: ` to ${priority}`,
+                canBeUndone: true,
+              }),
+              confirmText: label('reprioritize'),
+            });
+          },
+        })}
+      />
+      {!nestReview && <ReviewAction disabled={!canMarkReviewed} onUpdate={onUpdate} />}
+      <DropdownMenu
+        size="sm"
+        items={menuItems}
+        triggerProps={{
+          'aria-label': t('More issue actions'),
+          icon: <IconEllipsis />,
+          showChevron: false,
+          size: 'xs',
+        }}
+        isDisabled={!anySelected}
+      />
+    </Fragment>
   );
 }
 
-export default ActionSet;
+function isActionSupported(
+  selectedIssues: BaseGroup[],
+  actionType: keyof IssueTypeConfig['actions']
+) {
+  for (const issue of selectedIssues) {
+    const info = getConfigForIssueType(issue, issue.project).actions[actionType];
 
-const Wrapper = styled('div')`
-  @media (min-width: ${p => p.theme.breakpoints[0]}) {
-    width: 66.66%;
+    if (!info.enabled) {
+      return info;
+    }
   }
-  @media (min-width: ${p => p.theme.breakpoints[2]}) {
-    width: 50%;
-  }
-  flex: 1;
-  margin: 0 ${space(1)};
-  display: grid;
-  gap: ${space(0.5)};
-  grid-auto-flow: column;
-  justify-content: flex-start;
-  white-space: nowrap;
-`;
+
+  return {enabled: true};
+}
+
+export default ActionSet;

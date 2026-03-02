@@ -136,9 +136,8 @@ input[type='search'] {
   appearance: none;
 }
 
-// Position radios and checkboxes better
-input[type='radio'],
-input[type='checkbox'] {
+// Position radios better
+input[type='radio'] {
   margin: 4px 0 0;
   margin-top: 1px \9; // IE8-9
   line-height: normal;
@@ -168,13 +167,6 @@ input[type='range'] {
 select[multiple],
 select[size] {
   height: auto;
-}
-
-// Focus for file, radio, and checkbox
-input[type='file']:focus,
-input[type='radio']:focus,
-input[type='checkbox']:focus {
-  .tab-focus();
 }
 
 // Adjust output element
@@ -332,8 +324,8 @@ output {
 }
 .radio input[type='radio'],
 .radio-inline input[type='radio'],
-.checkbox input[type='checkbox'],
-.checkbox-inline input[type='checkbox'] {
+.checkbox label > div,
+.checkbox-inline label > div{
   position: absolute;
   margin-top: 4px \9;
   margin-left: -20px;
@@ -396,9 +388,8 @@ output {
 // issue documented in https://github.com/twbs/bootstrap/issues/15074.
 
 .input-sm {
-  .input-size(
-      @input-height-small; @padding-small-vertical; @padding-small-horizontal;
-        @font-size-small; @line-height-small; @input-border-radius-small
+  .input-size(@input-height-small; @padding-small-vertical; @padding-small-horizontal;
+      @font-size-small; @line-height-small; @input-border-radius-small
     );
 }
 .form-group-sm {
@@ -427,9 +418,8 @@ output {
 }
 
 .input-lg {
-  .input-size(
-      @input-height-large; @padding-large-vertical; @padding-large-horizontal;
-        @font-size-large; @line-height-large; @input-border-radius-large
+  .input-size(@input-height-large; @padding-large-vertical; @padding-large-horizontal;
+      @font-size-large; @line-height-large; @input-border-radius-large
     );
 }
 .form-group-lg {
@@ -733,12 +723,6 @@ output {
 .form-group,
 .control-group {
   margin-bottom: 15px;
-}
-
-.rate-limit-group {
-  .control-group {
-    margin-bottom: 0;
-  }
 }
 
 .form-actions {

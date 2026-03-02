@@ -1,63 +1,37 @@
 import styled from '@emotion/styled';
 
-import TextOverflow from 'app/components/textOverflow';
-import Tooltip from 'app/components/tooltip';
-import {IconFire} from 'app/icons';
-import {t, tct} from 'app/locale';
-import {EntryData} from 'app/types';
-import {Color} from 'app/utils/theme';
+import {Tooltip} from '@sentry/scraps/tooltip';
 
-import {Grid, GridCell} from './styles';
+import TextOverflow from 'sentry/components/textOverflow';
+import {IconFire} from 'sentry/icons';
+import {t, tct} from 'sentry/locale';
+import type {Thread} from 'sentry/types/event';
+import type {EntryData} from 'sentry/types/group';
+
+import {ThreadSelectorGrid} from './styles';
+import type {ThreadStates} from './threadStates';
 
 type Props = {
-  id: number;
+  crashedInfo: EntryData | undefined;
   details: ThreadInfo;
-  crashedInfo?: EntryData;
-  name?: string | null;
-  crashed?: boolean;
+  hasThreadStates: boolean;
+  thread: Thread;
 };
 
 type ThreadInfo = {
-  label?: string;
   filename?: string;
+  label?: string;
+  state?: ThreadStates;
 };
 
-const Option = ({id, details, name, crashed, crashedInfo}: Props) => {
-  const {label = `<${t('unknown')}>`, filename = `<${t('unknown')}>`} = details;
-  const optionName = name || `<${t('unknown')}>`;
+function Option({thread, crashedInfo, details, hasThreadStates}: Props) {
+  const label = details.label ?? `<${t('unknown')}>`;
+  const optionName = thread.name || `<${t('unknown')}>`;
 
   return (
-    <Grid>
-      <GridCell>
-        <InnerCell>
-          <Tooltip title={`#${id}`} position="top">
-            <TextOverflow>{`#${id}`}</TextOverflow>
-          </Tooltip>
-        </InnerCell>
-      </GridCell>
-      <GridCell>
-        <InnerCell isBold>
-          <Tooltip title={optionName} position="top">
-            <TextOverflow>{optionName}</TextOverflow>
-          </Tooltip>
-        </InnerCell>
-      </GridCell>
-      <GridCell>
-        <InnerCell color="blue300">
-          <Tooltip title={label} position="top">
-            <TextOverflow>{label}</TextOverflow>
-          </Tooltip>
-        </InnerCell>
-      </GridCell>
-      <GridCell>
-        <InnerCell color="purple300">
-          <Tooltip title={filename} position="top">
-            <TextOverflow>{filename}</TextOverflow>
-          </Tooltip>
-        </InnerCell>
-      </GridCell>
-      <GridCell>
-        {crashed && (
+    <ThreadSelectorGrid hasThreadStates={hasThreadStates}>
+      <div>
+        {thread.crashed && (
           <InnerCell isCentered>
             {crashedInfo ? (
               <Tooltip
@@ -65,26 +39,55 @@ const Option = ({id, details, name, crashed, crashedInfo}: Props) => {
                 title={tct('Errored with [crashedInfo]', {
                   crashedInfo: crashedInfo.values[0].type,
                 })}
+                disabled={!crashedInfo}
                 position="top"
               >
-                <IconFire color="red300" />
+                <IconFire variant="danger" />
               </Tooltip>
             ) : (
-              <IconFire color="red300" />
+              <IconFire variant="danger" />
             )}
           </InnerCell>
         )}
-      </GridCell>
-    </Grid>
+      </div>
+      <InnerCell>
+        <Tooltip title={`#${thread.id}`} position="top">
+          <TextOverflow>{`#${thread.id}`}</TextOverflow>
+        </Tooltip>
+      </InnerCell>
+      <InnerCell isBold>
+        <Tooltip title={optionName} position="top">
+          <TextOverflow>{optionName}</TextOverflow>
+        </Tooltip>
+      </InnerCell>
+      <InnerCell>
+        <Tooltip title={label} position="top">
+          <TextOverflow>{label}</TextOverflow>
+        </Tooltip>
+      </InnerCell>
+      {hasThreadStates && (
+        <InnerCell>
+          <Tooltip title={details.state} position="top">
+            <TextOverflow>{details.state}</TextOverflow>
+          </Tooltip>
+        </InnerCell>
+      )}
+    </ThreadSelectorGrid>
   );
-};
+}
 
 export default Option;
 
-const InnerCell = styled('div')<{isCentered?: boolean; color?: Color; isBold?: boolean}>`
+const InnerCell = styled('div')<{
+  isBold?: boolean;
+  isCentered?: boolean;
+}>`
+  width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   display: flex;
   align-items: center;
   justify-content: ${p => (p.isCentered ? 'center' : 'flex-start')};
   font-weight: ${p => (p.isBold ? 600 : 400)};
-  ${p => p.color && `color: ${p.theme[p.color]}`}
 `;

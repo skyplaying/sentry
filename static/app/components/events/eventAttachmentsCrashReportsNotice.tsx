@@ -1,42 +1,37 @@
-import {Location} from 'history';
+import {Alert} from '@sentry/scraps/alert';
+import {Link} from '@sentry/scraps/link';
 
-import {IconInfo} from 'app/icons';
-import {tct} from 'app/locale';
-import {crashReportTypes} from 'app/views/organizationGroupDetails/groupEventAttachments/groupEventAttachmentsFilter';
-
-import Alert from '../alert';
-import Link from '../links/link';
+import {tct} from 'sentry/locale';
+import {useLocation} from 'sentry/utils/useLocation';
+import {EventAttachmentFilter} from 'sentry/views/issueDetails/groupEventAttachments/groupEventAttachmentsFilter';
 
 type Props = {
+  groupId: string;
   orgSlug: string;
   projectSlug: string;
-  location: Location;
-  groupId: string;
 };
 
-const EventAttachmentsCrashReportsNotice = ({
-  orgSlug,
-  projectSlug,
-  location,
-  groupId,
-}: Props) => {
+function EventAttachmentsCrashReportsNotice({orgSlug, projectSlug, groupId}: Props) {
+  const location = useLocation();
   const settingsUrl = `/settings/${orgSlug}/projects/${projectSlug}/security-and-privacy/`;
   const attachmentsUrl = {
     pathname: `/organizations/${orgSlug}/issues/${groupId}/attachments/`,
-    query: {...location.query, types: crashReportTypes},
+    query: {...location.query, attachmentFilter: EventAttachmentFilter.CRASH_REPORTS},
   };
 
   return (
-    <Alert type="info" icon={<IconInfo size="md" />}>
-      {tct(
-        'Your limit of stored crash reports has been reached for this issue. [attachmentsLink: View crashes] or [settingsLink: configure limit].',
-        {
-          attachmentsLink: <Link to={attachmentsUrl} />,
-          settingsLink: <Link to={settingsUrl} />,
-        }
-      )}
-    </Alert>
+    <Alert.Container>
+      <Alert variant="info">
+        {tct(
+          'Your limit of stored crash reports has been reached for this issue. [attachmentsLink: View crashes] or [settingsLink: configure limit].',
+          {
+            attachmentsLink: <Link to={attachmentsUrl} />,
+            settingsLink: <Link to={settingsUrl} />,
+          }
+        )}
+      </Alert>
+    </Alert.Container>
   );
-};
+}
 
 export default EventAttachmentsCrashReportsNotice;

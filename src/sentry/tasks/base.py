@@ -1,79 +1,205 @@
-import resource
-from contextlib import contextmanager
-from functools import wraps
+from __future__ import annotations
 
-from celery.task import current
+import datetime
+import functools
+import logging
+from collections.abc import Callable
+from typing import Any, TypeVar
 
-from sentry.celery import app
+import sentry_sdk
+from django.db.models import Model
+
+from sentry.silo.base import SiloMode
+from sentry.taskworker.constants import CompressionType
+from sentry.taskworker.registry import TaskNamespace
+from sentry.taskworker.retry import Retry, RetryTaskError, retry_task
+from sentry.taskworker.silolimiter import TaskSiloLimit
+from sentry.taskworker.state import current_task
+from sentry.taskworker.task import P, R, Task
+from sentry.taskworker.workerchild import ProcessingDeadlineExceeded
 from sentry.utils import metrics
-from sentry.utils.sdk import capture_exception, configure_scope
+
+ModelT = TypeVar("ModelT", bound=Model)
+
+logger = logging.getLogger(__name__)
 
 
-def get_rss_usage():
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+def load_model_from_db(
+    tp: type[ModelT], instance_or_id: ModelT | int, allow_cache: bool = True
+) -> ModelT:
+    """Utility function to allow a task to transition to passing ids rather than model instances."""
+    if isinstance(instance_or_id, int):
+        if hasattr(tp.objects, "get_from_cache") and allow_cache:
+            return tp.objects.get_from_cache(pk=instance_or_id)
+        return tp.objects.get(pk=instance_or_id)
+    return instance_or_id
 
 
-@contextmanager
-def track_memory_usage(metric, **kwargs):
-    before = get_rss_usage()
-    try:
-        yield
-    finally:
-        metrics.timing(metric, get_rss_usage() - before, **kwargs)
+def instrumented_task(
+    name: str,
+    namespace: TaskNamespace,
+    alias: str | None = None,
+    alias_namespace: TaskNamespace | None = None,
+    retry: Retry | None = None,
+    expires: int | datetime.timedelta | None = None,
+    processing_deadline_duration: int | datetime.timedelta | None = None,
+    at_most_once: bool = False,
+    wait_for_delivery: bool = False,
+    compression_type: CompressionType = CompressionType.PLAINTEXT,
+    silo_mode: SiloMode | None = None,
+    **kwargs,
+) -> Callable[[Callable[P, R]], Task[P, R]]:
+    """
+    Decorator for defining tasks.
 
+    Includes a few application specific batteries like:
 
-def instrumented_task(name, stat_suffix=None, **kwargs):
-    def wrapped(func):
-        @wraps(func)
-        def _wrapped(*args, **kwargs):
-            # TODO(dcramer): we want to tag a transaction ID, but overriding
-            # the base on app.task seems to cause problems w/ Celery internals
-            transaction_id = kwargs.pop("__transaction_id", None)
+    - statsd metrics for duration and memory usage.
+    - sentry sdk tagging.
+    - hybrid cloud silo restrictions
+    - alias and alias namespace for renaming a task or moving it to a different namespace
 
-            key = "jobs.duration"
-            if stat_suffix:
-                instance = f"{name}.{stat_suffix(*args, **kwargs)}"
-            else:
-                instance = name
+    Basic task definition:
+        @instrumented_task(
+            name="sentry.tasks.some_task",
+            namespace=some_namespace,
+        )
+        def func():
+            ...
 
-            with configure_scope() as scope:
-                scope.set_tag("task_name", name)
-                scope.set_tag("transaction_id", transaction_id)
+    Renaming a task and/or moving task to a different namespace:
+        @instrumented_task(
+            name="sentry.tasks.new_task_name",
+            namespace=new_namespace,
+            alias="sentry.tasks.previous_task_name",
+            alias_namespace=previous_namespace,
+        )
+        def func():
+            ...
+    """
 
-            with metrics.timer(key, instance=instance), track_memory_usage(
-                "jobs.memory_change", instance=instance
-            ):
-                result = func(*args, **kwargs)
+    def wrapped(func: Callable[P, R]) -> Task[P, R]:
+        task = namespace.register(
+            name=name,
+            retry=retry,
+            expires=expires,
+            processing_deadline_duration=processing_deadline_duration,
+            at_most_once=at_most_once,
+            wait_for_delivery=wait_for_delivery,
+            compression_type=compression_type,
+        )(func)
 
-            return result
+        if silo_mode:
+            silo_limiter = TaskSiloLimit(silo_mode)
+            task = silo_limiter(task)
+            namespace._registered_tasks[name] = task
 
-        return app.task(name=name, **kwargs)(_wrapped)
+        # If an alias is provided, register the task for both "name" and "alias" under namespace
+        # If an alias namespace is provided, register the task in both namespace and alias_namespace
+        # When both are provided, register tasks namespace."name" and alias_namespace."alias"
+        if alias or alias_namespace:
+            target_alias = alias if alias else name
+            target_alias_namespace = alias_namespace if alias_namespace else namespace
+            alias_task = target_alias_namespace.register(
+                name=target_alias,
+                retry=retry,
+                expires=expires,
+                processing_deadline_duration=processing_deadline_duration,
+                at_most_once=at_most_once,
+                wait_for_delivery=wait_for_delivery,
+                compression_type=compression_type,
+            )(func)
+
+            if silo_mode:
+                silo_limiter = TaskSiloLimit(silo_mode)
+                alias_task = silo_limiter(alias_task)
+                target_alias_namespace._registered_tasks[target_alias] = alias_task
+
+        return task
 
     return wrapped
 
 
-def retry(func=None, on=(Exception,), exclude=(), ignore=()):
+def retry(
+    func: Callable[..., Any] | None = None,
+    on: type[Exception] | tuple[type[Exception], ...] = (Exception,),
+    on_silent: type[Exception] | tuple[type[Exception], ...] = (),
+    exclude: type[Exception] | tuple[type[Exception], ...] = (),
+    ignore: type[Exception] | tuple[type[Exception], ...] = (),
+    ignore_and_capture: type[Exception] | tuple[type[Exception], ...] = (),
+    timeouts: bool = False,
+    raise_on_no_retries: bool = True,
+) -> Callable[..., Callable[..., Any]]:
     """
     >>> @retry(on=(Exception,), exclude=(AnotherException,), ignore=(IgnorableException,))
     >>> def my_task():
     >>>     ...
-    """
 
+    The first set of parameters define how different exceptions are handled.
+    Raising an error will still report a Sentry event.
+
+    | Parameter          | Retry | Report | Raise | Description |
+    |--------------------|-------|--------|-------|-------------|
+    | on                 | Yes   | Yes    | No    | Exceptions that will trigger a retry & report to Sentry. |
+    | on_silent          | Yes   | No     | No    | Exceptions that will trigger a retry but not be captured to Sentry. |
+    | exclude            | No    | No     | Yes   | Exceptions that will not trigger a retry and will be raised. |
+    | ignore             | No    | No     | No    | Exceptions that will be ignored and not trigger a retry & not report to Sentry. |
+    | ignore_and_capture | No    | Yes    | No    | Exceptions that will not trigger a retry and will be captured to Sentry. |
+
+    The following modifiers modify the behavior of the retry decorator.
+
+    | Modifier               | Description |
+    |------------------------|-------------|
+    | timeouts               | ProcessingDeadlineExceeded trigger a retry. |
+    | raise_on_no_retries    | Makes a RetryTaskError not be raised if no retries are left. |
+    """
     if func:
         return retry()(func)
 
+    timeout_exceptions: tuple[type[BaseException], ...]
+    timeout_exceptions = (ProcessingDeadlineExceeded,)
+    if not timeouts:
+        timeout_exceptions = ()
+
     def inner(func):
-        @wraps(func)
+        @functools.wraps(func)
         def wrapped(*args, **kwargs):
+            task_state = current_task()
+            no_retries_remaining = task_state and not task_state.retries_remaining
             try:
                 return func(*args, **kwargs)
             except ignore:
                 return
+            except RetryTaskError:
+                if not raise_on_no_retries and no_retries_remaining:
+                    return
+                # If we haven't been asked to ignore no-retries, pass along the RetryTaskError.
+                raise
+            except timeout_exceptions:
+                if timeouts:
+                    with sentry_sdk.isolation_scope() as scope:
+                        task_state = current_task()
+                        if task_state:
+                            scope.fingerprint = [
+                                "task.processing_deadline_exceeded",
+                                task_state.namespace,
+                                task_state.taskname,
+                            ]
+                        sentry_sdk.capture_exception(level="info")
+                    retry_task(raise_on_no_retries=raise_on_no_retries)
+                else:
+                    raise
+            except ignore_and_capture:
+                sentry_sdk.capture_exception(level="info")
+                return
             except exclude:
                 raise
+            except on_silent as exc:
+                logger.info("silently retrying %s due to %s", func.__name__, exc)
+                retry_task(exc, raise_on_no_retries=raise_on_no_retries)
             except on as exc:
-                capture_exception()
-                current.retry(exc=exc)
+                sentry_sdk.capture_exception()
+                retry_task(exc, raise_on_no_retries=raise_on_no_retries)
 
         return wrapped
 

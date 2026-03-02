@@ -1,19 +1,19 @@
-import Link from 'app/components/links/link';
-import {Panel, PanelAlert, PanelBody, PanelHeader} from 'app/components/panels';
-import {t, tct} from 'app/locale';
-import {ProjectKey} from 'app/types';
-import getDynamicText from 'app/utils/getDynamicText';
-import Field from 'app/views/settings/components/forms/field';
-import TextCopyInput from 'app/views/settings/components/forms/textCopyInput';
+import {Link} from '@sentry/scraps/link';
+
+import FieldGroup from 'sentry/components/forms/fieldGroup';
+import Panel from 'sentry/components/panels/panel';
+import PanelAlert from 'sentry/components/panels/panelAlert';
+import PanelBody from 'sentry/components/panels/panelBody';
+import PanelHeader from 'sentry/components/panels/panelHeader';
+import TextCopyInput from 'sentry/components/textCopyInput';
+import {t, tct} from 'sentry/locale';
+import type {ProjectKey} from 'sentry/types/project';
 
 const DEFAULT_ENDPOINT = 'https://sentry.example.com/api/security-report/';
 
 export function getSecurityDsn(keyList: ProjectKey[]) {
-  const endpoint = keyList.length ? keyList[0].dsn.security : DEFAULT_ENDPOINT;
-  return getDynamicText({
-    value: endpoint,
-    fixed: DEFAULT_ENDPOINT,
-  });
+  const endpoint = keyList.length ? keyList[0]!.dsn.security : DEFAULT_ENDPOINT;
+  return endpoint;
 }
 
 type Props = {
@@ -27,7 +27,7 @@ export default function ReportUri({keyList, orgId, projectId}: Props) {
     <Panel>
       <PanelHeader>{t('Report URI')}</PanelHeader>
       <PanelBody>
-        <PanelAlert type="info">
+        <PanelAlert variant="info">
           {tct(
             "We've automatically pulled these credentials from your available [link:Client Keys]",
             {
@@ -35,9 +35,9 @@ export default function ReportUri({keyList, orgId, projectId}: Props) {
             }
           )}
         </PanelAlert>
-        <Field inline={false} flexibleControlStateSize>
+        <FieldGroup inline={false} flexibleControlStateSize>
           <TextCopyInput>{getSecurityDsn(keyList)}</TextCopyInput>
-        </Field>
+        </FieldGroup>
       </PanelBody>
     </Panel>
   );

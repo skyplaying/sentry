@@ -1,31 +1,25 @@
-import {cloneElement, Component, Fragment, isValidElement} from 'react';
+import {Outlet} from 'react-router-dom';
 
-import Feature from 'app/components/acl/feature';
-import {Organization} from 'app/types';
-import withOrganization from 'app/utils/withOrganization';
+import NoProjectMessage from 'sentry/components/noProjectMessage';
+import Redirect from 'sentry/components/redirect';
+import useOrganization from 'sentry/utils/useOrganization';
+import {useRedirectNavV2Routes} from 'sentry/views/nav/useRedirectNavV2Routes';
 
-type Props = {
-  organization: Organization;
-};
+export default function AlertsContainer() {
+  const organization = useOrganization();
 
-class AlertsContainer extends Component<Props> {
-  render() {
-    const {children, organization} = this.props;
-    return (
-      <Feature organization={organization} features={['incidents']}>
-        {({hasFeature: hasMetricAlerts}) => (
-          <Fragment>
-            {children && isValidElement(children)
-              ? cloneElement(children, {
-                  organization,
-                  hasMetricAlerts,
-                })
-              : children}
-          </Fragment>
-        )}
-      </Feature>
-    );
+  const redirectPath = useRedirectNavV2Routes({
+    oldPathPrefix: '/alerts/',
+    newPathPrefix: '/issues/alerts/',
+  });
+
+  if (redirectPath) {
+    return <Redirect to={redirectPath} />;
   }
-}
 
-export default withOrganization(AlertsContainer);
+  return (
+    <NoProjectMessage organization={organization}>
+      <Outlet />
+    </NoProjectMessage>
+  );
+}

@@ -1,11 +1,14 @@
 import os
 import subprocess
+import sys
 import time
+
+from pytest import Config
 
 from sentry.utils import json
 
 
-def pytest_configure(config):
+def pytest_configure(config: Config) -> None:
     """
     Generate frontend assets before running any acceptance tests
 
@@ -27,17 +30,16 @@ def pytest_configure(config):
             last_built = int(time.time()) - data["built"]
 
             if last_built <= 3600:
-                print(  # noqa: B314
-                    """
+                print(  # noqa: S002, T201
+                    f"""
 ###################
 #
-# Frontend assets last built {} seconds ago, skipping rebuilds for another {} seconds.
+# Frontend assets last built {last_built} seconds ago, skipping rebuilds for another {3600 - last_built} seconds.
 # Delete the file: `.webpack.meta` to rebuild.
 #
 ###################
-                """.format(
-                        last_built, 3600 - last_built
-                    )
+                """,
+                    file=sys.stderr,
                 )
                 return
     except OSError:
@@ -45,7 +47,7 @@ def pytest_configure(config):
     except Exception:
         pass
 
-    print(  # noqa: B314
+    print(  # noqa: S002, T201
         """
 ###################
 #
@@ -57,7 +59,7 @@ def pytest_configure(config):
 
     try:
         status = subprocess.call(
-            ["yarn", "build-acceptance"],
+            ["pnpm", "run", "build-acceptance"],
             env={"PATH": os.environ["PATH"], "NODE_OPTIONS": "--max-old-space-size=4096"},
         )
 

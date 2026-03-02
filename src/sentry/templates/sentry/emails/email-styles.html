@@ -24,7 +24,7 @@
     border-spacing: 0;
   }
   * {
-    font-weight: 300;
+    font-weight: 400;
   }
 
   a {
@@ -205,9 +205,21 @@
     border: 1px solid #cce3f3;
     border-radius: 3px;
     padding: 15px;
-    text-align: center;
+    text-align: left;
     margin-bottom: 10px;
     font-size: 15px;
+  }
+
+  .info-box a {
+    color: #493e54;
+    text-decoration: underline;
+  }
+
+  .info-box a.mute {
+    float: right;
+    color: #4674ca;
+    font-weight: 700;
+    text-decoration: none;
   }
 
   .footer {
@@ -285,13 +297,25 @@
   .inner table th {
     min-width: 60px;
     color: #968ba0;
-    padding: 10px 0 0 0;
+    padding: 2px 0 0 0;
   }
   .interface {
     margin-bottom: 30px;
   }
   .interface .title {
     margin-bottom: 15px;
+  }
+
+  .new-title {
+    margin: 30px 0 15px;
+    color: #80708F;
+    font-size: 14px;
+    font-weight: 900;
+  }
+
+  .new-event-title {
+    color: #3D74DB;
+    margin: 0;
   }
 
   .inner .interface table {
@@ -321,6 +345,10 @@
     word-break: break-word;
   }
 
+  .performance .parameter-placeholder {
+    color: rgb(223, 51, 56);
+  }
+
   .inner pre.message {
     margin: 0 0 10px !important;
   }
@@ -341,14 +369,72 @@
     font-weight: 200;
   }
 
+  .new-tag-list {
+    list-style: none;
+    margin: 0 0 20px;
+    padding: 0;
+  }
+  .new-tag-list li {
+    /*border: 1px solid #DBD6E1;*/
+    /*box-shadow: 0 0 2px rgb(43 34 51 / 4%);*/
+    display: inline-block;
+    margin-right: 5px;
+    margin-bottom: 10px;
+    /*border-radius: 3px;*/
+  }
+  .new-tag-list li .tag-key {
+    display: inline-block;
+    border: 1px solid #DBD6E1;
+    box-shadow: 0 0 2px rgb(43 34 51 / 4%);
+    padding: 5px;
+    border-top-left-radius: 3px;
+    border-bottom-left-radius: 3px;
+    background-color: #FFFFFF;
+  }
+  .new-tag-list li .tag-value {
+    display: inline-block;
+    border: 1px solid #DBD6E1;
+    border-left: none;
+    padding: 5px;
+    margin-left: -3px;
+    border-top-right-radius: 3px;
+    border-bottom-right-radius: 3px;
+    background-color: #FAF9FB;
+    color: #3D74DB;
+  }
+
+  .new-event-contexts {
+    list-style: none;
+    margin: 0 0 10px;
+    padding: 0;
+  }
+  .new-event-contexts li {
+    display: inline-block;
+    margin-right: 5px;
+    margin-bottom: 10px;
+  }
+
+  .new-event-contexts li table {
+    margin: 0;
+  }
+  .new-event-contexts li table tr {
+  }
+  .new-event-contexts li table tr th {
+    padding: 0 10px 0 0;
+    min-width: 0;
+  }
+  .new-event-contexts li table tr td {
+    padding: 0 10px 0 0;
+  }
+
+
   .inner p.via {
-    border-radius: 4px;
+    border-radius: 3px;
     margin-top: 15px;
     font-size: 14px;
     background-color: #f7f8f9;
     text-align: center;
     padding: 15px;
-    border-radius: 3px;
   }
 
   .notice {
@@ -376,10 +462,16 @@
     float: right;
   }
 
+  .event-notification-reason {
+    color: #80708F;
+    font-size: 14px;
+    margin-bottom: 15px
+  }
+
   /* Group header */
 
   .group-header {
-    border-top: 1px solid #E7EBEE;
+    border-top: 2px solid #E7EBEE;
     margin-top: 30px;
     padding-top: 30px;
   }
@@ -547,8 +639,12 @@
     vertical-align: text-top;
   }
   .avatar,
-  .html-avatar {
+  .html-avatar,
+  .platform {
     border-radius: 3px;
+  }
+  .html-avatar.rounded {
+    border-radius: 50%;
   }
   .html-avatar {
     display: inline-block;
@@ -585,6 +681,13 @@
     border-left: 10px solid #4674ca;
     padding-left: 0;
     margin: 20px 0;
+  }
+
+  .digest .rule a.mute {
+    float: right;
+    color: #4674ca;
+    font-weight: 700;
+    text-decoration: none;
   }
 
   .digest .rule div {
@@ -664,6 +767,16 @@
   .event-subtitle {
     font-size: 13px;
     font-style: italic;
+    overflow-wrap: break-word;
+    word-wrap: break-word;
+  }
+
+  .replay-link {
+    padding-left: 10px;
+  }
+
+  .replay-link a {
+    font-size: 13px;
     overflow-wrap: break-word;
     word-wrap: break-word;
   }
@@ -765,94 +878,29 @@
   }
 
   .alert-title {
-    margin-bottom: 24px;
+    margin-bottom: 16px;
   }
   .alert-title h3 {
     margin: 0;
   }
-
-  .alert-header {
-    font-size: 12px;
-    color: #9585A3;
-    font-weight: bold;
-    text-transform: uppercase;
-  }
-
   .alert-badge {
     display: inline-block;
-    border-radius: 3px;
-    text-transform: uppercase;
-    font-size: 12px;
-    color: #fff;
-    background: #C6BECF;
-    padding: 4px 8px;
-    margin-right: 12px;
+    margin-right: 8px;
+  }
+  .alert-details tr td {
+    font-size: 14px;
+    padding: 8px 8px;
+    font-weight: normal;
+    line-height: inherit;
+  }
+  .alert-details tr td:last-child {
+    color: #80708F;
+  }
+  /* Add stripe to table */
+  .alert-details tr:nth-child(odd) {
+    background-color: #FAF9FB;
   }
 
-  .alert-info-container {
-    border-radius: 3px;
-    padding: 16px;
-  }
-
-  .alert-info-container table {
-    margin: 0;
-  }
-
-  .alert-info-container h4 {
-    margin: 0 0 12px;
-    display: flex;
-    align-items: center;
-  }
-
-  .alert-container-open {
-    background: #FAF9FB ;
-    border: 1px solid #D3CCDA;
-  }
-
-  .alert-container-resolved {
-    background: #F5FFFB;
-    border: 1px solid #4DC771;
-  }
-  .alert-container-resolved .alert-badge {
-    background: #4DC771;
-  }
-
-  .alert-container-critical {
-    background: #FFF5F7;
-    border: 1px solid #FA4747;
-  }
-  .alert-container-critical .alert-badge {
-    background: #FA4747;
-  }
-
-  .alert-container-warning {
-    background: #FFFDF5;
-    border: 1px solid #FFC227;
-  }
-  .alert-container-warning .alert-badge {
-    background: #FFC227;
-  }
-
-  table.alert-rule-table th {
-    font-size: 12px;
-    color: #9585A3;
-    font-weight: bold;
-    text-transform: uppercase;
-  }
-
-  .alert-critical {
-    fill: #e03e2f;
-    font-weight: bold;
-    text-transform: uppercase;
-    margin-bottom: -2px;
-  }
-
-  .alert-warning {
-    fill: #e6bc23;
-    font-weight: bold;
-    text-transform: uppercase;
-    margin-bottom: -2px;
-  }
 
   /*
     ===
@@ -985,6 +1033,23 @@
   }
   .banner .banner-action {
     margin-left: auto;
+  }
+
+  .badge {
+    height: 20px;
+    border-radius: 20px;
+    padding: 0 8px;
+    margin-right: 8px;
+  }
+
+  .badge.new {
+    background-color: rgba(245, 176, 0, 0.08);
+    border: 1px solid rgba(245, 176, 0, 0.55);
+  }
+
+  .badge.regression {
+    background-color: rgba(245, 84, 89, 0.09);
+    border: 1px solid rgba(245, 84, 89, 0.5);
   }
 
   @media only screen and (max-device-width: 480px) {

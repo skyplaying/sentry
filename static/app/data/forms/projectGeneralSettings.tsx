@@ -1,13 +1,21 @@
 import styled from '@emotion/styled';
 import {PlatformIcon} from 'platformicons';
 
-import platforms from 'app/data/platforms';
-import {t, tct, tn} from 'app/locale';
-import space from 'app/styles/space';
-import {convertMultilineFieldValue, extractMultilineFields} from 'app/utils';
-import getDynamicText from 'app/utils/getDynamicText';
-import slugify from 'app/utils/slugify';
-import {Field} from 'app/views/settings/components/forms/type';
+import {Button} from '@sentry/scraps/button';
+import {CodeBlock} from '@sentry/scraps/code';
+import {Flex} from '@sentry/scraps/layout';
+import {Link} from '@sentry/scraps/link';
+
+import {hasEveryAccess} from 'sentry/components/acl/access';
+import {createFilter} from 'sentry/components/forms/controls/reactSelectWrapper';
+import type {Field} from 'sentry/components/forms/types';
+import {Hovercard} from 'sentry/components/hovercard';
+import platforms from 'sentry/data/platforms';
+import {t, tct, tn} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import {convertMultilineFieldValue, extractMultilineFields} from 'sentry/utils';
+import getDynamicText from 'sentry/utils/getDynamicText';
+import slugify from 'sentry/utils/slugify';
 
 // Export route to make these forms searchable by label/help
 export const route = '/settings/:orgId/projects/:projectId/';
@@ -38,36 +46,50 @@ const ORG_DISABLED_REASON = t(
   "This option is enforced by your organization's settings and cannot be customized per-project."
 );
 
-export const fields: Record<string, Field> = {
+const StyledPlatformIcon = styled(PlatformIcon)`
+  margin-right: ${space(1)};
+`;
+
+export const fields = {
   slug: {
     name: 'slug',
     type: 'string',
     required: true,
-    label: t('Name'),
-    placeholder: t('my-service-name'),
+    label: t('Slug'),
     help: t('A unique ID used to identify this project'),
-    transformInput: slugify,
-
+    transformInput: slugify as (str: string) => string,
+    getData: (data: {slug?: string}) => {
+      return {
+        slug: data.slug,
+      };
+    },
     saveOnBlur: false,
-    saveMessageAlertType: 'info',
-    saveMessage: t('You will be redirected to the new project slug after saving'),
+    saveMessageAlertVariant: 'warning',
+    saveMessage: t(
+      "Changing a project's slug can break your build scripts! Please proceed carefully."
+    ),
   },
-
   platform: {
     name: 'platform',
     type: 'select',
     label: t('Platform'),
-    choices: () =>
-      platforms.map(({id, name}) => [
-        id,
-        <PlatformWrapper key={id}>
+    options: platforms.map(({id, name}) => ({
+      value: id,
+      label: (
+        <Flex key={id} align="center">
           <StyledPlatformIcon platform={id} />
           {name}
-        </PlatformWrapper>,
-      ]),
+        </Flex>
+      ),
+    })),
     help: t('The primary platform for this project'),
+    filterOption: createFilter({
+      stringify: option => {
+        const matchedPlatform = platforms.find(({id}) => id === option.value);
+        return `${matchedPlatform?.name} ${option.value}`;
+      },
+    }),
   },
-
   subjectPrefix: {
     name: 'subjectPrefix',
     type: 'string',
@@ -100,13 +122,12 @@ export const fields: Record<string, Field> = {
     },
     saveOnBlur: false,
     saveMessage: tct(
-      '[Caution]: Enabling auto resolve will immediately resolve anything that has ' +
-        'not been seen within this period of time. There is no undo!',
+      '[strong:Caution]: Enabling auto resolve will immediately resolve anything that has not been seen within this period of time. There is no undo!',
       {
-        Caution: <strong>Caution</strong>,
+        strong: <strong />,
       }
     ),
-    saveMessageAlertType: 'warning',
+    saveMessageAlertVariant: 'warning',
   },
   allowedDomains: {
     name: 'allowedDomains',
@@ -117,18 +138,33 @@ export const fields: Record<string, Field> = {
     rows: 1,
     placeholder: t('https://example.com or example.com'),
     label: t('Allowed Domains'),
-    help: t('Separate multiple entries with a newline'),
-    getValue: val => extractMultilineFields(val),
-    setValue: val => convertMultilineFieldValue(val),
+    help: tct('Separate multiple entries with a newline. [examples]', {
+      examples: (
+        <Hovercard
+          body={
+            <CodeBlock hideCopyButton>
+              {`https://example.com\n*.example.com\n*:80\n*`}
+            </CodeBlock>
+          }
+        >
+          <Button priority="link" size="xs">
+            {t('View Examples')}
+          </Button>
+        </Hovercard>
+      ),
+    }),
+    getValue: extractMultilineFields,
+    setValue: convertMultilineFieldValue,
   },
   scrapeJavaScript: {
     name: 'scrapeJavaScript',
     type: 'boolean',
     // if this is off for the organization, it cannot be enabled for the project
-    disabled: ({organization, name}) => !organization[name],
+    disabled: ({organization, project, name}) =>
+      !organization[name] || !hasEveryAccess(['project:write'], {organization, project}),
     disabledReason: ORG_DISABLED_REASON,
     // `props` are the props given to FormField
-    setValue: (val, props) => props.organization && props.organization[props.name] && val,
+    setValue: (val, props) => props.organization?.[props.name] && val,
     label: t('Enable JavaScript source fetching'),
     help: t('Allow Sentry to scrape missing JavaScript source context when possible'),
   },
@@ -139,6 +175,8 @@ export const fields: Record<string, Field> = {
     help: t(
       'Outbound requests matching Allowed Domains will have the header "{token_header}: {token}" appended'
     ),
+    saveOnBlur: false,
+    saveMessage: t('Ensure you update usages of your security token.'),
     setValue: value => getDynamicText({value, fixed: '__SECURITY_TOKEN__'}),
   },
   securityTokenHeader: {
@@ -149,6 +187,8 @@ export const fields: Record<string, Field> = {
     help: t(
       'Outbound requests matching Allowed Domains will have the header "{token_header}: {token}" appended'
     ),
+    saveOnBlur: false,
+    saveMessage: t('Ensure you update usages of the security token header.'),
   },
   verifySSL: {
     name: 'verifySSL',
@@ -156,12 +196,52 @@ export const fields: Record<string, Field> = {
     label: t('Verify TLS/SSL'),
     help: t('Outbound requests will verify TLS (sometimes known as SSL) connections'),
   },
-};
-
-const PlatformWrapper = styled('div')`
-  display: flex;
-  align-items: center;
-`;
-const StyledPlatformIcon = styled(PlatformIcon)`
-  margin-right: ${space(1)};
-`;
+  debugFilesRole: {
+    name: 'debugFilesRole',
+    type: 'select',
+    label: t('Debug Files Access'),
+    help: ({organization}) =>
+      tct(
+        'Role required to download debug information files, proguard mappings and source maps. Overrides [organizationSettingsLink: organization settings].',
+        {
+          organizationSettingsLink: (
+            <Link
+              to={{
+                pathname: `/settings/${organization.slug}/`,
+                hash: 'debugFilesRole',
+              }}
+            />
+          ),
+        }
+      ),
+    placeholder: ({organization, name, model}) => {
+      const value = model.getValue(name);
+      // empty value means that this project should inherit organization settings
+      if (value === null || value === undefined) {
+        const orgRoleName =
+          organization.orgRoleList?.find(
+            (r: {id: string; name: string}) => r.id === organization.debugFilesRole
+          )?.name || organization.debugFilesRole;
+        return tct('Inherit organization setting ([organizationValue])', {
+          organizationValue: orgRoleName,
+        });
+      }
+      return value;
+    },
+    choices: ({organization}) => [
+      [
+        null,
+        tct('Inherit organization setting ([organizationValue])', {
+          organizationValue:
+            organization.orgRoleList?.find(
+              (r: {id: string; name: string}) => r.id === organization.debugFilesRole
+            )?.name || organization.debugFilesRole,
+        }),
+      ],
+      ...(organization?.orgRoleList?.map((r: {id: string; name: string}) => [
+        r.id,
+        r.name,
+      ]) ?? []),
+    ],
+  },
+} satisfies Record<string, Field>;

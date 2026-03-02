@@ -1,48 +1,67 @@
+from __future__ import annotations
+
 from collections import defaultdict
-from dataclasses import dataclass
-from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Optional, Sequence
+from collections.abc import Callable, Sequence
+from datetime import datetime, timedelta, timezone
+from enum import Enum
+from typing import Any, Optional
 
-from django.db import DataError
-from django.utils import timezone
+from django.contrib.auth.models import AnonymousUser
+from django.db import DataError, connections, router
+from django.utils import timezone as django_timezone
 
-if TYPE_CHECKING:
-    from sentry.api.event_search import SearchFilter
-
-from sentry.models import KEYWORD_MAP, EventUser, FrozenSet, Release, Team, User
-from sentry.models.group import STATUS_QUERY_CHOICES
+from sentry.models.environment import Environment
+from sentry.models.group import STATUS_QUERY_CHOICES, Group
+from sentry.models.organizationmember import OrganizationMember
+from sentry.models.organizationmemberteam import OrganizationMemberTeam
+from sentry.models.project import Project
+from sentry.models.release import Release, ReleaseStatus, follows_semver_versioning_scheme
+from sentry.models.team import Team
 from sentry.search.base import ANY
-from sentry.utils.auth import find_users
-from sentry.utils.compat import map
+from sentry.search.events.constants import MAX_PARAMETERS_IN_ARRAY
+from sentry.types.group import SUBSTATUS_UPDATE_CHOICES
+from sentry.users.models.user import User
+from sentry.users.services.user.model import RpcUser
+from sentry.users.services.user.serial import serialize_rpc_user
+from sentry.users.services.user.service import user_service
+from sentry.utils.eventuser import KEYWORD_MAP, EventUser
 
 
 class InvalidQuery(Exception):
     pass
 
 
-def get_user_tag(projects, key, value):
+def get_user_tag(projects: Sequence[Project], key: str, value: str) -> str | None:
     # TODO(dcramer): do something with case of multiple matches
     try:
-        lookup = EventUser.attr_from_keyword(key)
-        euser = EventUser.objects.filter(
-            project_id__in=[p.id for p in projects], **{lookup: value}
-        )[0]
+        euser = EventUser.for_projects(projects, {key: [value]}, result_limit=1)[0]
     except (KeyError, IndexError):
         return f"{key}:{value}"
     except DataError:
         raise InvalidQuery(f"malformed '{key}:' query '{value}'.")
+
     return euser.tag_value
 
 
-def parse_status_value(value):
-    if value in STATUS_QUERY_CHOICES:
-        return STATUS_QUERY_CHOICES[value]
-    if value in STATUS_QUERY_CHOICES.values():
-        return value
-    raise ValueError("Invalid status value")
+def parse_status_value(status: str | int) -> int:
+    if isinstance(status, str) and status in STATUS_QUERY_CHOICES:
+        return STATUS_QUERY_CHOICES[status]
+    elif isinstance(status, int) and status in STATUS_QUERY_CHOICES.values():
+        return status
+    else:
+        raise ValueError(f"Invalid status value: {status!r}")
 
 
-def parse_duration(value, interval):
+def parse_substatus_value(substatus: str | int) -> int:
+    if isinstance(substatus, str) and substatus in SUBSTATUS_UPDATE_CHOICES:
+        return SUBSTATUS_UPDATE_CHOICES[substatus]
+    elif isinstance(substatus, int) and substatus in SUBSTATUS_UPDATE_CHOICES.values():
+        return substatus
+    else:
+        raise ValueError(f"Invalid substatus value: {substatus!r}")
+
+
+def parse_duration(value: str, interval: str) -> float:
     try:
         duration = float(value)
     except ValueError:
@@ -74,32 +93,92 @@ def parse_duration(value, interval):
     return delta.total_seconds() * 1000.0
 
 
-def parse_percentage(value):
+def parse_size(value: str, size: str) -> float:
+    """Returns in total bytes"""
     try:
-        value = float(value)
+        size_value = float(value)
+    except ValueError:
+        raise InvalidQuery(f"{value} is not a valid size value")
+
+    # size units are case insensitive
+    size = size.lower()
+
+    if size == "bit":
+        byte = size_value / 8
+    elif size == "nb":
+        byte = size_value / 2
+    elif size == "bytes":
+        byte = size_value
+    elif size == "kb":
+        byte = size_value * 1000
+    elif size == "mb":
+        byte = size_value * 1000**2
+    elif size == "gb":
+        byte = size_value * 1000**3
+    elif size == "tb":
+        byte = size_value * 1000**4
+    elif size == "pb":
+        byte = size_value * 1000**5
+    elif size == "eb":
+        byte = size_value * 1000**6
+    elif size == "zb":
+        byte = size_value * 1000**7
+    elif size == "yb":
+        byte = size_value * 1000**8
+    elif size == "kib":
+        byte = size_value * 1024
+    elif size == "mib":
+        byte = size_value * 1024**2
+    elif size == "gib":
+        byte = size_value * 1024**3
+    elif size == "tib":
+        byte = size_value * 1024**4
+    elif size == "pib":
+        byte = size_value * 1024**5
+    elif size == "eib":
+        byte = size_value * 1024**6
+    elif size == "zib":
+        byte = size_value * 1024**7
+    elif size == "yib":
+        byte = size_value * 1024**8
+    else:
+        raise InvalidQuery(
+            f"{size} is not a valid size type, must be bit, bytes, kb, mb, gb, tb, pb, eb, zb, yb, kib, mib, gib, tib, pib, eib, zib, yib"
+        )
+
+    return byte
+
+
+def parse_percentage(value: str) -> float:
+    try:
+        parsed_value = float(value)
     except ValueError:
         raise InvalidQuery(f"{value} is not a valid percentage value")
 
-    return value / 100
+    return parsed_value / 100
 
 
-def parse_numeric_value(value, suffix=None):
+def parse_numeric_value(value: str, suffix: str | None = None) -> float:
     try:
-        value = float(value)
+        parsed_value = float(value)
     except ValueError:
         raise InvalidQuery("Invalid number")
 
     if not suffix:
-        return value
+        return parsed_value
 
-    numeric_multiples = {"k": 10.0 ** 3, "m": 10.0 ** 6, "b": 10.0 ** 9}
+    # numeric "nuts" are case insensitive
+    suffix = suffix.lower()
+    numeric_multiples = {"k": 10.0**3, "m": 10.0**6, "b": 10.0**9}
     if suffix not in numeric_multiples:
         raise InvalidQuery(f"{suffix} is not a valid number suffix, must be k, m or b")
 
-    return value * numeric_multiples[suffix]
+    return parsed_value * numeric_multiples[suffix]
 
 
-def parse_datetime_range(value):
+def parse_datetime_range(
+    value: str,
+) -> tuple[tuple[datetime, bool], None] | tuple[None, tuple[datetime, bool]]:
     try:
         flag, count, interval = value[0], int(value[1:-1]), value[-1]
     except (ValueError, TypeError, IndexError):
@@ -120,32 +199,35 @@ def parse_datetime_range(value):
         raise InvalidQuery(f"{value} is not a valid datetime query")
 
     if flag == "-":
-        return ((timezone.now() - delta, True), None)
+        return (django_timezone.now() - delta, True), None
     else:
-        return (None, (timezone.now() - delta, True))
+        return None, (django_timezone.now() - delta, True)
 
 
 DATE_FORMAT = "%Y-%m-%d"
-DATETIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
-DATETIME_FORMAT_MICROSECONDS = "%Y-%m-%dT%H:%M:%S.%f"
 
 
-def parse_unix_timestamp(value):
-    return datetime.utcfromtimestamp(float(value)).replace(tzinfo=timezone.utc)
+def parse_unix_timestamp(value: str) -> datetime:
+    return datetime.fromtimestamp(float(value), timezone.utc)
 
 
-def parse_datetime_string(value):
-    # timezones are not supported and are assumed UTC
-    if value[-1:] == "Z":
-        value = value[:-1]
-    if len(value) >= 6 and value[-6] == "+":
-        value = value[:-6]
+def parse_iso_timestamp(value: str) -> datetime:
+    # datetime.fromisoformat does not support parsing 'Z'
+    date = datetime.fromisoformat(value.replace("Z", "+00:00"))
 
-    for format in [DATETIME_FORMAT_MICROSECONDS, DATETIME_FORMAT, DATE_FORMAT]:
-        try:
-            return datetime.strptime(value, format).replace(tzinfo=timezone.utc)
-        except ValueError:
-            pass
+    # Values with no timezone info will default to UTC
+    if not date.tzinfo:
+        date.replace(tzinfo=timezone.utc)
+
+    # Convert to UTC
+    return datetime.fromtimestamp(date.timestamp(), tz=timezone.utc)
+
+
+def parse_datetime_string(value: str) -> datetime:
+    try:
+        return parse_iso_timestamp(value)
+    except ValueError:
+        pass
 
     try:
         return parse_unix_timestamp(value)
@@ -155,26 +237,25 @@ def parse_datetime_string(value):
     raise InvalidQuery(f"{value} is not a valid ISO8601 date query")
 
 
-def parse_datetime_comparison(value):
+ParsedDatetime = Optional[tuple[datetime, bool]]
+
+
+def parse_datetime_comparison(
+    value: str,
+) -> tuple[ParsedDatetime, ParsedDatetime]:
     if value[:2] == ">=":
-        return ((parse_datetime_string(value[2:]), True), None)
+        return (parse_datetime_string(value[2:]), True), None
     if value[:2] == "<=":
-        return (None, (parse_datetime_string(value[2:]), True))
+        return None, (parse_datetime_string(value[2:]), True)
     if value[:1] == ">":
-        return ((parse_datetime_string(value[1:]), False), None)
+        return (parse_datetime_string(value[1:]), False), None
     if value[:1] == "<":
-        return (None, (parse_datetime_string(value[1:]), False))
+        return None, (parse_datetime_string(value[1:]), False)
 
     raise InvalidQuery(f"{value} is not a valid datetime query")
 
 
-def parse_datetime_value(value):
-    # timezones are not supported and are assumed UTC
-    if value[-1:] == "Z":
-        value = value[:-1]
-    if len(value) >= 6 and value[-6] == "+":
-        value = value[:-6]
-
+def parse_datetime_value(value: str) -> tuple[tuple[datetime, bool], tuple[datetime, bool]]:
     result = None
 
     # A value that only specifies the date (without a time component) should be
@@ -184,17 +265,12 @@ def parse_datetime_value(value):
     except ValueError:
         pass
     else:
-        return ((result, True), (result + timedelta(days=1), False))
+        return (result, True), (result + timedelta(days=1), False)
 
     # A value that contains the time should converted to an interval.
-    for format in [DATETIME_FORMAT, DATETIME_FORMAT_MICROSECONDS]:
-        try:
-            result = datetime.strptime(value, format).replace(tzinfo=timezone.utc)
-        except ValueError:
-            pass
-        else:
-            break  # avoid entering the else clause below
-    else:
+    try:
+        result = parse_iso_timestamp(value)
+    except ValueError:
         try:
             result = parse_unix_timestamp(value)
         except ValueError:
@@ -203,10 +279,10 @@ def parse_datetime_value(value):
     if result is None:
         raise InvalidQuery(f"{value} is not a valid datetime query")
 
-    return ((result - timedelta(minutes=5), True), (result + timedelta(minutes=6), False))
+    return (result - timedelta(minutes=5), True), (result + timedelta(minutes=6), False)
 
 
-def parse_datetime_expression(value):
+def parse_datetime_expression(value: str) -> tuple[ParsedDatetime, ParsedDatetime]:
     if value.startswith(("-", "+")):
         return parse_datetime_range(value)
     elif value.startswith((">", "<", "<=", ">=")):
@@ -215,9 +291,9 @@ def parse_datetime_expression(value):
         return parse_datetime_value(value)
 
 
-def get_date_params(value, from_field, to_field):
+def get_date_params(value: str, from_field: str, to_field: str) -> dict[str, datetime | bool]:
     date_from, date_to = parse_datetime_expression(value)
-    result = {}
+    result: dict[str, datetime | bool] = {}
     if date_from is not None:
         date_from_value, date_from_inclusive = date_from
         result.update({from_field: date_from_value, f"{from_field}_inclusive": date_from_inclusive})
@@ -227,73 +303,245 @@ def get_date_params(value, from_field, to_field):
     return result
 
 
-def parse_team_value(projects, value, user):
+def parse_team_value(projects: Sequence[Project], value: Sequence[str]) -> Team:
     return Team.objects.filter(
         slug__iexact=value[1:], projectteam__project__in=projects
     ).first() or Team(id=0)
 
 
-def parse_actor_value(projects, value, user):
+def get_teams_for_users(projects: Sequence[Project], users: Sequence[User]) -> list[Team]:
+    user_ids = [u.id for u in users if u is not None]
+    teams = Team.objects.filter(
+        id__in=OrganizationMemberTeam.objects.filter(
+            organizationmember__in=OrganizationMember.objects.filter(
+                user_id__in=user_ids, organization_id=projects[0].organization_id
+            ),
+            is_active=True,
+        ).values("team")
+    )
+    return list(teams)
+
+
+def parse_actor_value(
+    projects: Sequence[Project], value: str, user: User | RpcUser | AnonymousUser
+) -> RpcUser | Team:
     if value.startswith("#"):
-        return parse_team_value(projects, value, user)
+        return parse_team_value(projects, value)
     return parse_user_value(value, user)
 
 
-def parse_actor_or_none_value(projects, value, user):
+def parse_actor_or_none_value(
+    projects: Sequence[Project], value: str, user: User | RpcUser | AnonymousUser
+) -> RpcUser | Team | None:
     if value == "none":
         return None
     return parse_actor_value(projects, value, user)
 
 
-def parse_user_value(value, user):
+# XXX(dcramer): hacky way to avoid showing any results when
+# an invalid user is entered
+_HACKY_INVALID_USER = RpcUser(id=0)
+
+
+def parse_user_value(value: str, user: User | RpcUser | AnonymousUser) -> RpcUser:
     if value == "me":
-        return user
+        if isinstance(user, User):
+            return serialize_rpc_user(user)
+        elif isinstance(user, RpcUser):
+            return user
+        else:
+            return _HACKY_INVALID_USER
 
     try:
-        return find_users(value)[0]
+        return user_service.get_by_username(username=value)[0]
     except IndexError:
-        # XXX(dcramer): hacky way to avoid showing any results when
-        # an invalid user is entered
-        return User(id=0)
+        return _HACKY_INVALID_USER
 
 
-def get_latest_release(projects, environments, organization_id=None):
+class LatestReleaseOrders(Enum):
+    DATE = 0
+    SEMVER = 1
+
+
+def get_latest_release(
+    projects: Sequence[Project | int],
+    environments: Sequence[Environment] | None,
+    organization_id: int | None = None,
+    adopted=False,
+) -> list[str]:
     if organization_id is None:
         project = projects[0]
-        if hasattr(project, "organization_id"):
+        if isinstance(project, Project):
             organization_id = project.organization_id
         else:
-            return ""
+            return []
 
-    release_qs = Release.objects.filter(organization_id=organization_id, projects__in=projects)
+    # Convert projects to ids so that we can work with them more easily
+    project_ids = [project.id if isinstance(project, Project) else project for project in projects]
 
-    if environments:
-        release_qs = release_qs.filter(
-            releaseprojectenvironment__environment__id__in=[
-                environment.id for environment in environments
-            ]
+    semver_project_ids = []
+    date_project_ids = []
+    for project_id in project_ids:
+        if follows_semver_versioning_scheme(organization_id, project_id):
+            semver_project_ids.append(project_id)
+        else:
+            date_project_ids.append(project_id)
+
+    versions: set[str] = set()
+    versions.update(
+        _run_latest_release_query(
+            LatestReleaseOrders.SEMVER,
+            semver_project_ids,
+            environments,
+            organization_id,
+            adopted=adopted,
         )
-
-    return (
-        release_qs.extra(select={"sort": "COALESCE(date_released, date_added)"})
-        .order_by("-sort")
-        .values_list("version", flat=True)[:1]
-        .get()
+    )
+    versions.update(
+        _run_latest_release_query(
+            LatestReleaseOrders.DATE,
+            date_project_ids,
+            environments,
+            organization_id,
+            adopted=adopted,
+        )
     )
 
+    if not versions:
+        raise Release.DoesNotExist()
 
-def parse_release(value, projects, environments, organization_id=None):
+    return sorted(versions)
+
+
+def _get_release_query_type_sql(query_type: LatestReleaseOrders, last: bool) -> tuple[str, str]:
+    direction = "DESC" if last else "ASC"
+    extra_conditions = ""
+    if query_type == LatestReleaseOrders.SEMVER:
+        rank_order_by = f"major {direction}, minor {direction}, patch {direction}, revision {direction}, CASE WHEN (prerelease = '') THEN 1 ELSE 0 END {direction}, prerelease {direction}, sr.id {direction}"
+        extra_conditions += " AND sr.major IS NOT NULL"
+    else:
+        rank_order_by = f"COALESCE(date_released, date_added) {direction}"
+    return rank_order_by, extra_conditions
+
+
+def _run_latest_release_query(
+    query_type: LatestReleaseOrders,
+    project_ids: Sequence[int],
+    environments: Sequence[Environment] | None,
+    organization_id: int,
+    # Only include adopted releases in the results
+    adopted: bool = False,
+) -> Sequence[str]:
+    if not project_ids:
+        return []
+
+    extra_join_conditions = ""
+    extra_conditions = ""
+    if environments:
+        extra_join_conditions = "AND jt.environment_id IN %s"
+        join_table = "sentry_releaseprojectenvironment"
+    else:
+        join_table = "sentry_release_project"
+
+    if adopted:
+        extra_conditions += " AND jt.adopted IS NOT NULL AND jt.unadopted IS NULL "
+
+    rank_order_by, query_type_conditions = _get_release_query_type_sql(query_type, True)
+    extra_conditions += query_type_conditions
+
+    # XXX: This query can be very inefficient for projects with a large (100k+)
+    # number of releases. To work around this, we only check 1000 releases
+    # ordered by highest release id, which is generally correlated with
+    # most recent releases for a project. This isn't guaranteed to be correct,
+    # since `date_released` could end up out of order, or we might be using semver.
+    # However, this should be close enough the majority of the time. If a project has
+    # > 400 newer releases that were more recently associated with the "true" most recent
+    # release then likely something is off.
+    # We might be able to remove this kind of hackery once we add retention to the release
+    # and related tables.
+    query = f"""
+        SELECT DISTINCT version
+        FROM (
+            SELECT sr.version, rank() OVER (
+                PARTITION BY jt.project_id
+                ORDER BY {rank_order_by}
+            ) AS rank
+            FROM "sentry_release" sr
+            INNER JOIN (
+                SELECT release_id, project_id, adopted, unadopted
+                FROM {join_table} jt
+                WHERE jt.project_id IN %s
+                {extra_join_conditions}
+                ORDER BY release_id desc
+                LIMIT 1000
+            ) jt on sr.id = jt.release_id
+            WHERE sr.organization_id = %s
+            AND sr.status = {ReleaseStatus.OPEN}
+            {extra_conditions}
+        ) sr
+        WHERE rank = 1
+    """
+    cursor = connections[router.db_for_read(Release, replica=True)].cursor()
+    query_args: list[int | tuple[int, ...]] = [tuple(project_ids)]
+    if environments:
+        query_args.append(tuple(e.id for e in environments))
+    query_args.append(organization_id)
+    cursor.execute(query, query_args)
+    return [row[0] for row in cursor.fetchall()]
+
+
+def get_first_last_release_for_group(
+    group: Group,
+    query_type: LatestReleaseOrders,
+    last: bool,
+) -> Release:
+    """
+    Fetches the first or last release associated with a group. `query_type` determines whether we use semver or date
+    ordering to order the releases.
+    """
+    direction = "DESC" if last else "ASC"
+    rank_order_by, extra_conditions = _get_release_query_type_sql(query_type, last)
+
+    query = f"""
+        SELECT sr.*
+        FROM sentry_release sr
+        INNER JOIN (
+            SELECT sgr.release_id
+            FROM sentry_grouprelease sgr
+            WHERE sgr.group_id = %s
+            ORDER BY sgr.first_seen {direction}
+            -- We limit the number of groupreleases we check here to handle edge cases of groups with 100k+ releases
+            LIMIT 1000
+        ) sgr ON sr.id = sgr.release_id
+        {extra_conditions}
+        ORDER BY {rank_order_by}
+        LIMIT 1
+    """
+    result = list(Release.objects.raw(query, [group.id]))
+    if not result:
+        raise Release.DoesNotExist
+    return result[0]
+
+
+def parse_release(
+    value: str,
+    projects: Sequence[Project | int],
+    environments: Sequence[Environment] | None,
+    organization_id: int | None = None,
+) -> list[str]:
     if value == "latest":
         try:
             return get_latest_release(projects, environments, organization_id)
         except Release.DoesNotExist:
             # Should just get no results here, so return an empty release name.
-            return ""
+            return [""]
     else:
-        return value
+        return [value]
 
 
-numeric_modifiers = [
+numeric_modifiers: Sequence[
+    tuple[str, Callable[[str, int | float], dict[str, int | float | bool]]]
+] = [
     (
         ">=",
         lambda field, value: {
@@ -325,11 +573,13 @@ numeric_modifiers = [
 ]
 
 
-def get_numeric_field_value(field, raw_value, type=int):
+def get_numeric_field_value(
+    field: str, raw_value: str, type: Callable[[str], int | float] = int
+) -> dict[str, int | float | bool]:
     try:
         for modifier, function in numeric_modifiers:
             if raw_value.startswith(modifier):
-                return function(field, type(raw_value[len(modifier) :]))
+                return function(field, type(str(raw_value[len(modifier) :])))
         else:
             return {field: type(raw_value)}
     except ValueError:
@@ -337,7 +587,7 @@ def get_numeric_field_value(field, raw_value, type=int):
         raise InvalidQuery(msg)
 
 
-def tokenize_query(query):
+def tokenize_query(query: str) -> dict[str, list[str]]:
     """
     Tokenizes a standard Sentry search query.
 
@@ -373,22 +623,22 @@ def tokenize_query(query):
         query_params[state].append(token)
 
     if "query" in query_params:
-        result["query"] = map(format_query, query_params["query"])
+        result["query"] = [format_query(query) for query in query_params["query"]]
     for tag in query_params["tags"]:
         key, value = format_tag(tag)
         result[key].append(value)
     return dict(result)
 
 
-def format_tag(tag):
+def format_tag(tag: str) -> tuple[str, str]:
     """
-    Splits tags on ':' and removes enclosing quotes and grouping parens if present and returns
+    Splits tags on ':' and removes enclosing quotes and grouping parens if present and
     returns both sides of the split as strings
 
     Example:
     >>> format_tag('user:foo')
     'user', 'foo'
-    >>>format_tag('user:"foo bar"'')
+    >>>format_tag('user:"foo bar"')
     'user', 'foo bar'
     """
     idx = tag.index(":")
@@ -397,7 +647,7 @@ def format_tag(tag):
     return key, value
 
 
-def remove_surrounding_quotes(text):
+def remove_surrounding_quotes(text: str) -> str:
     length = len(text)
     if length <= 1:
         return text
@@ -417,7 +667,7 @@ def remove_surrounding_quotes(text):
     return text[left : right + 1]
 
 
-def format_query(query):
+def format_query(query: str) -> str:
     """
     Strips enclosing quotes and grouping parens from queries if present.
 
@@ -428,7 +678,7 @@ def format_query(query):
     return query.strip('"()')
 
 
-def split_query_into_tokens(query):
+def split_query_into_tokens(query: str) -> Sequence[str]:
     """
     Splits query string into tokens for parsing by 'tokenize_query'.
     Returns list of strigs
@@ -466,19 +716,49 @@ def split_query_into_tokens(query):
                 if quote_enclosed:
                     quote_type = char
         if quote_enclosed and char == "\\" and next_char == quote_type:
-            token += next_char
-            idx += 1
+            if next_char is not None:
+                token += next_char
+                idx += 1
         idx += 1
     if not token.isspace():
         tokens.append(token.strip(" "))
     return tokens
 
 
-def parse_query(projects, query, user, environments):
+def parse_query(
+    projects: Sequence[Project],
+    query: str,
+    user: User | RpcUser | AnonymousUser,
+    environments: Sequence[Environment],
+) -> dict[str, Any]:
+    """| Parses the query string and returns a dict of structured query term values:
+    | Required:
+    | - tags: dict[str, Union[str, list[str], Any]]: dictionary of tag key-values 'user.id:123'
+    | - query: str: the general query portion of the query string
+    | Optional:
+    | - unassigned: bool: 'is:unassigned'
+    | - for_review: bool: 'is:for_review'
+    | - linked: bool: 'is:linked'
+    | - status: int: 'is:<resolved,unresolved,ignored,muted,reprocessing>'
+    | - assigned_to: Optional[Union[User, Team]]: 'assigned:<user or team>'
+    | - assigned_or_suggested: Optional[Union[User, Team]]: 'assigned_or_suggested:<user or team>'
+    | - bookmarked_by: User: 'bookmarks:<user>'
+    | - subscribed_by: User: 'subscribed:<user>'
+    | - first_release: Sequence[str]: '<first-release/firstRelease>:1.2.3'
+    | - age_from: Union[datetime, bool]: '<age/firstSeen>:-1h'
+    | - age_to: Union[datetime, bool]: '<age/firstSeen>:+1h'
+    | - last_seen_from: Union[datetime, bool]: 'last_seen/lastSeen:-1h'
+    | - last_seen_to: Union[datetime, bool]: 'last_seen/lastSeen:+1h'
+    | - date_from: Union[datetime, bool]: 'event.timestamp:-24h'
+    | - date_to: Union[datetime, bool]: 'event.timestamp:+0m'
+    | - times_seen: Union[int, float]: 'timesSeen:>100'
+
+    :returns: A dict of parsed values from the query.
+    """
     # TODO(dcramer): handle query being wrapped in quotes
     tokens = tokenize_query(query)
 
-    results = {"tags": {}, "query": []}
+    results: dict[str, Any] = {"tags": {}, "query": []}
     for key, token_list in tokens.items():
         for value in token_list:
             if key == "query":
@@ -543,46 +823,43 @@ def parse_query(projects, query, user, environments):
                 results["tags"][key] = value
 
     results["query"] = " ".join(results["query"])
-
     return results
 
 
-def convert_user_tag_to_query(key, value):
+def convert_user_tag_to_query(key: str, value: str) -> str | None:
     """
     Converts a user tag to a query string that can be used to search for that
     user. Returns None if not a user tag.
     """
-    if key == "user" and ":" in value:
+    if key == "user" and value is not None and ":" in value:
         sub_key, value = value.split(":", 1)
         if KEYWORD_MAP.get_key(sub_key, None):
             return 'user.{}:"{}"'.format(sub_key, value.replace('"', '\\"'))
+    return None
 
 
-@dataclass
-class SupportedConditions:
-    field_name: str
-    operators: Optional[FrozenSet[str]] = None
-
-
-supported_cdc_conditions = [
-    SupportedConditions("status", frozenset(["IN"])),
-]
-supported_cdc_conditions_lookup = {
-    condition.field_name: condition for condition in supported_cdc_conditions
+# Mapping of device class to the store corresponding tag value
+DEVICE_CLASS: dict[str, set[str]] = {
+    "low": {"1"},
+    "medium": {"2"},
+    "high": {"3"},
 }
 
 
-def validate_cdc_search_filters(search_filters: Sequence["SearchFilter"]) -> bool:
-    """
-    Validates whether a set of search filters can be handled by the cdc search backend.
-    """
-    for search_filter in search_filters:
-        supported_condition = supported_cdc_conditions_lookup.get(search_filter.key.name)
-        if not supported_condition:
-            return False
-        if (
-            supported_condition.operators
-            and search_filter.operator not in supported_condition.operators
-        ):
-            return False
-    return True
+def map_device_class_level(device_class: str) -> str | None:
+    for key, value in DEVICE_CLASS.items():
+        if device_class in value:
+            return key
+    return None
+
+
+def validate_snuba_array_parameter(parameter: Sequence[str]) -> bool:
+    """Returns whether parameter is within a reasonable length to be used as a snuba parameter"""
+    # 4 here is for the 2 quotes around the string + a comma + a space
+    # this should be roughly equivalent to len(str(parameter)), but runs 2x as fast
+    # python -m timeit -n 10000 -s "array=['abcdef123456']*1000" "sum(len(x) for x in array) + 4 * len(array)"
+    # 10000 loops, best of 5: 23.6 usec per loop
+    # python -m timeit -n 10000 -s "array=['abcdef123456']*1000" "len(str(array))"
+    # 10000 loops, best of 5: 42.6 usec per loop
+    converted_length = sum(len(item) for item in parameter) + (4 * len(parameter))
+    return converted_length <= MAX_PARAMETERS_IN_ARRAY

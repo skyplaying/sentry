@@ -1,20 +1,29 @@
+from collections.abc import Callable
+
 from django import VERSION
-from django.db import models
 
 from sentry.new_migrations.monkey.executor import SentryMigrationExecutor
 from sentry.new_migrations.monkey.fields import deconstruct
 
-LAST_VERIFIED_DJANGO_VERSION = (2, 2)
+LAST_VERIFIED_DJANGO_VERSION = (5, 2)
 CHECK_MESSAGE = """Looks like you're trying to upgrade Django! Since we monkeypatch
-the Django migration library in several places, please verify that we have the latest
-code, and that the monkeypatching still works as expected. Currently the main things
-to check are:
- - `django.db.migrations.executor.MigrationExecutor`. The `is_dangerous` flag should
-   continue to work here when we set `MIGRATION_SKIP_DANGEROUS=1` as an environment
-   variable. Confirm that the structure of the class hasn't drastically changed.
-- `django.db.migrations.writer.MIGRATION_TEMPLATE`. Verify that the template hasn't
+Django in several places, please verify that we have the latest code, and that the
+monkeypatching still works as expected. Currently the main things to check are:
+ - `django.db.migrations.executor.MigrationExecutor`. The `is_post_deployment` flag
+   should continue to work here when we set `MIGRATION_SKIP_DANGEROUS=1` as an
+   environment variable. Confirm that the structure of the class hasn't drastically
+   changed.
+ - `django.db.migrations.writer.MIGRATION_TEMPLATE`. Verify that the template hasn't
   significantly changed. Details on what we've changed are in a comment on
   `sentry.migrations.monkey.writer.SENTRY_MIGRATION_TEMPLATE`
+ - `sentry.db.models.manager.base_query_set.BaseQuerySet.update_with_returning`. This
+    is copied and modified from `Queryset.update()` to add `RETURNING <fields>` to
+    the update query. Verify that the `update` code hasn't significantly changed,
+    and if it has update as needed.
+ - We monkeypatch `SentryProjectState` over `ProjectState` in a few places. Check where
+    Django is importing it and make sure that we're still patching correctly.
+    We also need to verify that the patched `SentryProjectState` isn't missing new
+    features added by Django.
 
 When you're happy that these changes are good to go, update
 `LAST_VERIFIED_DJANGO_VERSION` to the version of Django you're upgrading to. If the
@@ -26,33 +35,29 @@ if VERSION[:2] > LAST_VERIFIED_DJANGO_VERSION:
 
 
 # This should be exactly the same as MIGRATION_TEMPLATE in `django.db.migrations.writer.py`,
-# except that we add our own `is_dangerous = False` to the class definition,
+# except that we add our own `is_post_deployment = False` to the class definition,
 # and set django's `atomic = True`.
 # Compare this template after each Django version bump to make
 # sure we're not missing any important changes.
 SENTRY_MIGRATION_TEMPLATE = """\
 %(imports)s
+from sentry.new_migrations.migrations import CheckedMigration
 
-class Migration(migrations.Migration):
-    # This flag is used to mark that a migration shouldn't be automatically run in
-    # production. We set this to True for operations that we think are risky and want
-    # someone from ops to run manually and monitor.
-    # General advice is that if in doubt, mark your migration as `is_dangerous`.
-    # Some things you should always mark as dangerous:
-    # - Large data migrations. Typically we want these to be run manually by ops so that
-    #   they can be monitored. Since data migrations will now hold a transaction open
-    #   this is even more important.
-    # - Adding columns to highly active tables, even ones that are NULL.
-    is_dangerous = False
 
-    # This flag is used to decide whether to run this migration in a transaction or not.
-    # By default we prefer to run in a transaction, but for migrations where you want
-    # to `CREATE INDEX CONCURRENTLY` this needs to be set to False. Typically you'll
-    # want to create an index concurrently when adding one to an existing table.
-    # You'll also usually want to set this to `False` if you're writing a data
-    # migration, since we don't want the entire migration to run in one long-running
-    # transaction.
-    atomic = True
+class Migration(CheckedMigration):
+    # This flag is used to mark that a migration shouldn't be automatically run in production.
+    # This should only be used for operations where it's safe to run the migration after your
+    # code has deployed. So this should not be used for most operations that alter the schema
+    # of a table.
+    # Here are some things that make sense to mark as post deployment:
+    # - Large data migrations. Typically we want these to be run manually so that they can be
+    #   monitored and not block the deploy for a long period of time while they run.
+    # - Adding indexes to large tables. Since this can take a long time, we'd generally prefer to
+    #   run this outside deployments so that we don't block them. Note that while adding an index
+    #   is a schema change, it's completely safe to run the operation after the code has deployed.
+    # Once deployed, run these manually via: https://develop.sentry.dev/database-migrations/#migration-deployment
+
+    is_post_deployment = False
 
 %(replaces_str)s%(initial_str)s
     dependencies = [
@@ -76,13 +81,39 @@ else:
 """
 
 
-def monkey_migrations():
+def _ensure_patched[**P](f: Callable[P, None]) -> Callable[P, None]:
+    def _ensure_patched_impl(*args: P.args, **kwargs: P.kwargs) -> None:
+        module = type(args[0]).__module__
+        if not module.startswith("sentry."):
+            raise AssertionError(f"unexpectedly unpatched: {module}")
+        return f(*args, **kwargs)
+
+    return _ensure_patched_impl
+
+
+def monkey_migrations() -> None:
+    from django.core.management.commands import migrate
+    from django.db import models
+
     # This import needs to be below the other imports for `executor` and `writer` so
     # that we can successfully monkeypatch them.
     from django.db.migrations import executor, migration, writer
 
+    executor.MigrationExecutor.__init__ = _ensure_patched(executor.MigrationExecutor.__init__)  # type: ignore[method-assign]
+
     # monkeypatch Django's migration executor and template.
-    executor.MigrationExecutor = SentryMigrationExecutor
+    migrate.MigrationExecutor = executor.MigrationExecutor = SentryMigrationExecutor  # type: ignore[attr-defined, misc]
     migration.Migration.initial = None
     writer.MIGRATION_TEMPLATE = SENTRY_MIGRATION_TEMPLATE
-    models.Field.deconstruct = deconstruct
+    models.Field.deconstruct = deconstruct  # type: ignore[method-assign]
+
+    from django.db.migrations import graph, state
+
+    from sentry.new_migrations.monkey.state import SentryProjectState
+
+    # XXX: our patched ProjectState isn't being used in a lot of places!
+    # state.ProjectState.__init__ = _ensure_patched(state.ProjectState.__init__)  # type: ignore[method-assign]
+
+    state.ProjectState = SentryProjectState  # type: ignore[misc]
+    graph.ProjectState = SentryProjectState  # type: ignore[attr-defined]
+    executor.ProjectState = SentryProjectState  # type: ignore[attr-defined]

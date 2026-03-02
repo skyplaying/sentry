@@ -1,58 +1,58 @@
-import operator
+from __future__ import annotations
+
+from collections.abc import Container
+from typing import TYPE_CHECKING, Any, Generic, Self, overload
 from uuid import uuid4
 
-from django.db.models import F
-from django.db.models.expressions import CombinedExpression, Value
-from django.template.defaultfilters import slugify
+from django.db.models import Field, Model
 from django.utils.crypto import get_random_string
+from django.utils.text import slugify
 
-from sentry.db.exceptions import CannotResolveExpression
+from sentry.db.models.fields.types import FieldGetType, FieldSetType
 
-COMBINED_EXPRESSION_CALLBACKS = {
-    CombinedExpression.ADD: operator.add,
-    CombinedExpression.SUB: operator.sub,
-    CombinedExpression.MUL: operator.mul,
-    CombinedExpression.DIV: operator.floordiv,
-    CombinedExpression.MOD: operator.mod,
-    CombinedExpression.BITAND: operator.and_,
-    CombinedExpression.BITOR: operator.or_,
-}
+if TYPE_CHECKING:
+    from sentry.db.models.base import Model as SentryModel
 
 
-def resolve_combined_expression(instance, node):
-    def _resolve(instance, node):
-        if isinstance(node, Value):
-            return node.value
-        if isinstance(node, F):
-            return getattr(instance, node.name)
-        if isinstance(node, CombinedExpression):
-            return resolve_combined_expression(instance, node)
-        return node
+def is_model_attr_cached(model: Model, attr: str) -> bool:
+    """
+    This method will check to see if the given attribute is already annotated / cached
+    on the given model instance. The primary use case for this method is to determine
+    if django will issue a query to fetch a related attribute or not.
 
-    if isinstance(node, Value):
-        return node.value
-    if not hasattr(node, "connector"):
-        raise CannotResolveExpression
-    op = COMBINED_EXPRESSION_CALLBACKS.get(node.connector, None)
-    if not op:
-        raise CannotResolveExpression
-    if hasattr(node, "children"):
-        children = node.children
+    If the attribute has been prefetched or selected, then this method will return True,
+    otherwise it will return False.
+
+    model `Model`: The model instance to check, this can be any model that's based on `django.db.models.Model`
+    attr `str`: The attribute, as a string, to check if it's cached or prefetched on the django model
+    """
+    is_prefetched = (
+        hasattr(model, "_prefetched_objects_cache") and attr in model._prefetched_objects_cache
+    )
+    field = getattr(type(model), attr)
+
+    if hasattr(field, "is_cached"):
+        is_selected = field.is_cached(model)
     else:
-        children = [node.lhs, node.rhs]
-    runner = _resolve(instance, children[0])
-    for n in children[1:]:
-        runner = op(runner, _resolve(instance, n))
-    return runner
+        # For regular fields, check if not deferred
+        is_selected = attr not in model.get_deferred_fields()
+
+    return is_prefetched or is_selected
 
 
-def slugify_instance(inst, label, reserved=(), max_length=30, field_name="slug", *args, **kwargs):
-    base_value = slugify(label)[:max_length]
-
+def unique_db_instance(
+    inst: SentryModel,
+    base_value: str,
+    reserved: Container[str] = (),
+    max_length: int = 30,
+    field_name: str = "slug",
+    *args: Any,
+    **kwargs: Any,
+) -> None:
     if base_value is not None:
         base_value = base_value.strip()
         if base_value in reserved:
-            base_value = None
+            base_value = ""
 
     if not base_value:
         base_value = uuid4().hex[:12]
@@ -65,8 +65,11 @@ def slugify_instance(inst, label, reserved=(), max_length=30, field_name="slug",
 
     setattr(inst, field_name, base_value)
 
-    # We don't need to further mutate if we're unique at this point
-    if not base_qs.filter(**{f"{field_name}__iexact": base_value}).exists():
+    # Don't further mutate if the value is unique and not entirely numeric
+    if (
+        not base_qs.filter(**{f"{field_name}__iexact": base_value}).exists()
+        and not base_value.isdecimal()
+    ):
         return
 
     # We want to sanely generate the shortest unique slug possible, so
@@ -91,20 +94,41 @@ def slugify_instance(inst, label, reserved=(), max_length=30, field_name="slug",
     # an IntegrityError from database, which is ok, and unlikely to happen
 
 
-class Creator:
+def slugify_instance(
+    inst: SentryModel,
+    label: str,
+    reserved: Container[str] = (),
+    max_length: int = 30,
+    field_name: str = "slug",
+    *args: Any,
+    **kwargs: Any,
+) -> None:
+    value = slugify(label)[:max_length]
+    value = value.strip("-")
+
+    return unique_db_instance(inst, value, reserved, max_length, field_name, *args, **kwargs)
+
+
+class Creator(Generic[FieldSetType, FieldGetType]):
     """
     A descriptor that invokes `to_python` when attributes are set.
     This provides backwards compatibility for fields that used to use
     SubfieldBase which will be removed in Django1.10
     """
 
-    def __init__(self, field):
+    def __init__(self, field: Field[FieldSetType, FieldGetType]) -> None:
         self.field = field
 
-    def __get__(self, obj, type=None):
-        if obj is None:
-            return self
-        return obj.__dict__[self.field.name]
+    @overload
+    def __get__(self, inst: Model, owner: type[Any]) -> Any: ...
 
-    def __set__(self, obj, value):
+    @overload
+    def __get__(self, inst: None, owner: type[Any]) -> Self: ...
+
+    def __get__(self, inst: Model | None, owner: type[Any]) -> Self | Any:
+        if inst is None:
+            return self
+        return inst.__dict__[self.field.name]
+
+    def __set__(self, obj: Model, value: Any) -> None:
         obj.__dict__[self.field.name] = self.field.to_python(value)

@@ -1,7 +1,5 @@
 ---
-created: '2020-10-13T10:09:31.365749Z'
-creator: sentry
-source: tests/sentry/grouping/test_fingerprinting.py
+source: tests/sentry/grouping/test_fingerprinting.py::test_event_hash_variant
 ---
 config:
   rules:
@@ -13,6 +11,7 @@ config:
       - symbolicator::actors::symcaches::*
     - - app
       - 'false'
+    text: function:"symbolicator::actors::symcaches::*" app:"false" -> "symcache-error"
   version: 1
 fingerprint:
 - '{{ default }}'
@@ -21,12 +20,16 @@ variants:
   app:
     component:
       contributes: true
-      contributes_to_similarity: true
       hint: null
+    contributes: true
+    hint: null
+    key: app_chained_exception_stacktrace
     type: component
   system:
     component:
       contributes: true
-      contributes_to_similarity: true
       hint: null
+    contributes: true
+    hint: null
+    key: system_chained_exception_stacktrace
     type: component

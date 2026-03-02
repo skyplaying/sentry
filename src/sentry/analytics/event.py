@@ -1,109 +1,136 @@
-from sentry.utils.compat import map
+from __future__ import annotations
 
-__all__ = ("Attribute", "Event", "Map")
-
+import logging
 from base64 import b64encode
-from collections.abc import Mapping
-from uuid import uuid1
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, field, fields
+from datetime import datetime as dt
+from typing import Any, ClassVar, Self, cast, dataclass_transform, overload
+from uuid import UUID, uuid1
 
 from django.utils import timezone
 
-from sentry.utils.dates import to_timestamp
+logger = logging.getLogger(__name__)
 
 
-class Attribute:
-    def __init__(self, name, type=str, required=True):
-        self.name = name
-        self.type = type
-        self.required = required
-
-    def extract(self, value):
-        if value is None:
-            return value
-        return self.type(value)
+# this overload of the decorator is for using it with parenthesis, first parameter is optional
+# e.g: `@eventclass()` or `@eventclass("my-event")`
+@overload
+def eventclass(event_name_or_class: str | None = None) -> Callable[[type[Event]], type[Event]]: ...
 
 
-class Map(Attribute):
-    def __init__(self, name, attributes=None, required=True):
-        self.name = name
-        self.required = required
-        self.attributes = attributes
-
-    def extract(self, value):
-        """
-        If passed a non dictionary we assume we can pull attributes from it.
-
-        This will hard error in some situations if you're passing a bad type
-        (like an int).
-        """
-        if value is None:
-            return value
-
-        if not isinstance(value, Mapping):
-            new_value = {}
-            for attr in self.attributes:
-                new_value[attr.name] = attr.extract(getattr(value, attr.name, None))
-            items = new_value
-        else:
-            # ensure we don't mutate the original
-            # we don't need to deepcopy as if it recurses into another Map it
-            # will once again copy itself
-            items = value.copy()
-
-        data = {}
-        for attr in self.attributes:
-            nv = items.pop(attr.name, None)
-            if attr.required and nv is None:
-                raise ValueError(f"{attr.name} is required (cannot be None)")
-
-            data[attr.name] = attr.extract(nv)
-
-        if items:
-            raise ValueError("Unknown attributes: {}".format(", ".join(map(str, items.keys()))))
-
-        return data
+# this overload of the decorator is for using it without parenthesis
+# e.g: `@eventclass`
+@overload
+def eventclass(event_name_or_class: type[Event]) -> type[Event]: ...
 
 
+@dataclass_transform(kw_only_default=True)
+def eventclass(
+    event_name_or_class: str | type[Event] | None = None,
+) -> Callable[[type[Event]], type[Event]] | type[Event]:
+    """
+    Decorator for marking an Event as a dataclass. Sets default arguments for the dataclass underneath and sets
+    the classes `type` property if specified.
+
+    Use it either without paranthesis:
+
+    >>> @eventclass
+    ... class MyEvent(Event):
+    ...     ...
+    >>> MyEvent.type
+    None
+
+    With parenthesis (but no type name):
+
+    >>> @eventclass()
+    ... class MyEvent(Event):
+    ...     ...
+    >>> MyEvent.type
+    None
+
+    Or with an event type name:
+
+    >>> @eventclass("my-event")
+    ... class MyEvent(Event):
+    ...     ...
+    >>> MyEvent.type
+    "my-event"
+    """
+
+    def wrapper(cls: type[Event]) -> type[Event]:
+        # set the Event subclass `type` attribute, if it is set to anything
+        if isinstance(event_name_or_class, str):
+            cls.type = event_name_or_class
+
+        cls._eventclass_initialized = True
+        return cast(type[Event], dataclass(kw_only=True)(cls))
+
+    # for using without parenthesis, wrap the passed class
+    if isinstance(event_name_or_class, type) and issubclass(event_name_or_class, Event):
+        return wrapper(event_name_or_class)
+
+    # for usage with parenthesis return the wrapper itself
+    return wrapper
+
+
+# unfortunately we cannot directly use `eventclass` here, as it is making a typecheck to Event
+@dataclass(kw_only=True)
 class Event:
-    __slots__ = ["uuid", "data", "datetime"]
+    """
+    Base class for custom analytics Events.
+    """
 
-    type = None
+    # the type of the event, used for serialization and matching. Can be None for abstract base event classes
+    type: ClassVar[str | None]
+    _eventclass_initialized: ClassVar[bool] = False
 
-    attributes = ()
+    def __new__(cls, *args: Any, **kwargs: Any) -> Self:
+        # Check if this class was decorated with @eventclass
+        if "_eventclass_initialized" not in cls.__dict__:
+            # If not decorated, check if it adds new dataclass fields compared to parent
+            if getattr(cls, "__annotations__", None):
+                logger.warning(
+                    "Event class with new fields must use @eventclass decorator",
+                    extra={"cls": cls},
+                )
 
-    def __init__(self, type=None, datetime=None, **items):
-        self.uuid = uuid1()
+        return super().__new__(cls)
 
-        self.datetime = datetime or timezone.now()
-        if type is not None:
-            self.type = type
-
-        if self.type is None:
-            raise ValueError("Event is missing type")
-
-        data = {}
-        for attr in self.attributes:
-            nv = items.pop(attr.name, None)
-            if attr.required and nv is None:
-                raise ValueError(f"{attr.name} is required (cannot be None)")
-            data[attr.name] = attr.extract(nv)
-
-        if items:
-            raise ValueError("Unknown attributes: {}".format(", ".join(items.keys())))
-
-        self.data = data
-
-    def serialize(self):
-        return {
-            "uuid": b64encode(self.uuid.bytes),
-            "timestamp": to_timestamp(self.datetime),
-            "type": self.type,
-            "data": self.data,
-        }
+    def serialize(self) -> dict[str, Any]:
+        return {k: v for k, v in asdict(self).items() if k != "type"}
 
     @classmethod
-    def from_instance(cls, instance, **kwargs):
-        values = {}
-        for attr in cls.attributes:
-            values[attr.name] = kwargs.get(attr.name, getattr(instance, attr.name, None))
-        return cls(**values)
+    # @deprecated("This constructor function is discouraged, as it is not type-safe.")
+    def from_instance(cls, instance: Any, **kwargs: Any) -> Self:
+        attrs: dict[str, Any] = {
+            f.name: kwargs.get(f.name, getattr(instance, f.name, None))
+            for f in fields(cls)
+            if f.name != "type"
+        }
+        return cls(**attrs)
+
+
+@dataclass()
+class EventEnvelope:
+    """
+    An event envelope, adding an identifier and a timestamp for a recorded event
+    """
+
+    event: Event
+    uuid: UUID = field(default_factory=lambda: uuid1())
+    datetime: dt = field(default_factory=timezone.now)
+
+    def serialize(self) -> dict[str, Any]:
+        return serialize_event_envelope(self)
+
+
+def serialize_event_envelope(envelope: EventEnvelope) -> dict[str, Any]:
+    # TODO: this is the "old-style" attributes based serializer. Once all events are migrated to the new style,
+    # we can remove this.
+    return {
+        "type": envelope.event.type,
+        "uuid": b64encode(envelope.uuid.bytes),
+        "timestamp": envelope.datetime.timestamp(),
+        "data": envelope.event.serialize(),
+    }

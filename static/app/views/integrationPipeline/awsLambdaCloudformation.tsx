@@ -1,18 +1,20 @@
-import * as React from 'react';
+import {Component, Fragment} from 'react';
 import styled from '@emotion/styled';
 import debounce from 'lodash/debounce';
 import * as qs from 'query-string';
 
-import {addErrorMessage, addLoadingMessage} from 'app/actionCreators/indicator';
-import Button from 'app/components/actions/button';
-import List from 'app/components/list';
-import ListItem from 'app/components/list/listItem';
-import {t} from 'app/locale';
-import {Organization} from 'app/types';
-import {uniqueId} from 'app/utils/guid';
-import {trackIntegrationAnalytics} from 'app/utils/integrationUtil';
-import SelectField from 'app/views/settings/components/forms/selectField';
-import TextField from 'app/views/settings/components/forms/textField';
+import {Button, LinkButton} from '@sentry/scraps/button';
+
+import {addErrorMessage, addLoadingMessage} from 'sentry/actionCreators/indicator';
+import SelectField from 'sentry/components/forms/fields/selectField';
+import TextField from 'sentry/components/forms/fields/textField';
+import List from 'sentry/components/list';
+import ListItem from 'sentry/components/list/listItem';
+import {t} from 'sentry/locale';
+import type {Organization} from 'sentry/types/organization';
+import {uniqueId} from 'sentry/utils/guid';
+import {trackIntegrationAnalytics} from 'sentry/utils/integrationUtil';
+import {testableWindowLocation} from 'sentry/utils/testableWindowLocation';
 
 import FooterWithButtons from './components/footerWithButtons';
 import HeaderWithHelp from './components/headerWithHelp';
@@ -34,27 +36,27 @@ const testAccountNumber = (arn: string) => accountNumberRegex.test(arn);
 
 type Props = {
   baseCloudformationUrl: string;
-  templateUrl: string;
-  stackName: string;
-  regionList: string[];
   initialStepNumber: number;
   organization: Organization;
+  regionList: string[];
+  stackName: string;
+  templateUrl: string;
   accountNumber?: string;
-  region?: string;
-  error?: string;
   awsExternalId?: string;
+  error?: string;
+  region?: string;
 };
 
 type State = {
-  awsExternalId?: string;
   accountNumber?: string;
-  region?: string;
   accountNumberError?: string;
-  submitting?: boolean;
+  awsExternalId?: string;
+  region?: string;
   showInputs?: boolean;
+  submitting?: boolean;
 };
 
-export default class AwsLambdaCloudformation extends React.Component<Props, State> {
+export default class AwsLambdaCloudformation extends Component<Props, State> {
   state: State = {
     accountNumber: this.props.accountNumber,
     region: this.props.region,
@@ -116,16 +118,16 @@ export default class AwsLambdaCloudformation extends React.Component<Props, Stat
     // this is needed so we don't restart the pipeline loading from the original
     // OrganizationIntegrationSetupView route
     const newUrl = `${origin}/extensions/aws_lambda/setup/?${qs.stringify(data)}`;
-    window.location.assign(newUrl);
+    testableWindowLocation.assign(newUrl);
   };
 
   validateAccountNumber = (value: string) => {
     // validate the account number
     let accountNumberError = '';
     if (!value) {
-      accountNumberError = t('Account number required');
+      accountNumberError = t('Account ID required');
     } else if (!testAccountNumber(value)) {
-      accountNumberError = t('Invalid account number');
+      accountNumberError = t('Invalid Account ID');
     }
     this.setState({accountNumberError});
   };
@@ -183,7 +185,7 @@ export default class AwsLambdaCloudformation extends React.Component<Props, Stat
     });
   };
 
-  render = () => {
+  render() {
     const {initialStepNumber} = this.props;
     const {
       accountNumber,
@@ -194,12 +196,13 @@ export default class AwsLambdaCloudformation extends React.Component<Props, Stat
       showInputs,
     } = this.state;
     return (
-      <React.Fragment>
+      <Fragment>
         <HeaderWithHelp docsUrl="https://docs.sentry.io/product/integrations/cloud-monitoring/aws-lambda/" />
         <StyledList symbol="colored-numeric" initialCounterValue={initialStepNumber}>
           <ListItem>
             <h3>{t("Add Sentry's CloudFormation")}</h3>
             <StyledButton
+              size="xs"
               priority="primary"
               onClick={this.trackOpenCloudFormation}
               external
@@ -208,7 +211,7 @@ export default class AwsLambdaCloudformation extends React.Component<Props, Stat
               {t('Go to AWS')}
             </StyledButton>
             {!showInputs && (
-              <React.Fragment>
+              <Fragment>
                 <p>
                   {t(
                     "Once you've created Sentry's CloudFormation stack (or if you already have one) press the button below to continue."
@@ -217,7 +220,7 @@ export default class AwsLambdaCloudformation extends React.Component<Props, Stat
                 <Button name="showInputs" onClick={this.handleChangeShowInputs}>
                   {t("I've created the stack")}
                 </Button>
-              </React.Fragment>
+              </Fragment>
             )}
           </ListItem>
           {showInputs ? (
@@ -231,10 +234,10 @@ export default class AwsLambdaCloudformation extends React.Component<Props, Stat
                 error={accountNumberError}
                 inline={false}
                 stacked
-                label={t('AWS Account Number')}
+                label={t('AWS Account ID')}
                 showHelpInTooltip
                 help={t(
-                  'Your account number can be found on the right side of the header in AWS'
+                  'Your Account ID can be found on the right side of the header in AWS'
                 )}
               />
               <SelectField
@@ -266,7 +269,7 @@ export default class AwsLambdaCloudformation extends React.Component<Props, Stat
               />
             </ListItem>
           ) : (
-            <React.Fragment />
+            <Fragment />
           )}
         </StyledList>
         <FooterWithButtons
@@ -274,15 +277,15 @@ export default class AwsLambdaCloudformation extends React.Component<Props, Stat
           onClick={this.handleSubmit}
           disabled={submitting || !this.formValid}
         />
-      </React.Fragment>
+      </Fragment>
     );
-  };
+  }
 }
 
 const StyledList = styled(List)`
   padding: 100px 50px 50px 50px;
 `;
 
-const StyledButton = styled(Button)`
+const StyledButton = styled(LinkButton)`
   margin-bottom: 20px;
 `;

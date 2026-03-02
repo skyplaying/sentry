@@ -1,10 +1,20 @@
 import re
+from typing import ClassVar, Self
+from urllib.parse import unquote
 
-from django.db import IntegrityError, models, transaction
+from django.db import models
 from django.utils import timezone
 
+from sentry.backup.scopes import RelocationScope
 from sentry.constants import ENVIRONMENT_NAME_MAX_LENGTH, ENVIRONMENT_NAME_PATTERN
-from sentry.db.models import BoundedPositiveIntegerField, FlexibleForeignKey, Model, sane_repr
+from sentry.db.models import (
+    BoundedBigIntegerField,
+    FlexibleForeignKey,
+    Model,
+    region_silo_model,
+    sane_repr,
+)
+from sentry.db.models.manager.base import BaseManager
 from sentry.utils import metrics
 from sentry.utils.cache import cache
 from sentry.utils.hashlib import md5_text
@@ -12,12 +22,13 @@ from sentry.utils.hashlib import md5_text
 OK_NAME_PATTERN = re.compile(ENVIRONMENT_NAME_PATTERN)
 
 
+@region_silo_model
 class EnvironmentProject(Model):
-    __include_in_export__ = False
+    __relocation_scope__ = RelocationScope.Organization
 
     project = FlexibleForeignKey("sentry.Project")
     environment = FlexibleForeignKey("sentry.Environment")
-    is_hidden = models.NullBooleanField()
+    is_hidden = models.BooleanField(null=True)
 
     class Meta:
         app_label = "sentry"
@@ -25,15 +36,16 @@ class EnvironmentProject(Model):
         unique_together = (("project", "environment"),)
 
 
+@region_silo_model
 class Environment(Model):
-    __include_in_export__ = False
+    __relocation_scope__ = RelocationScope.Organization
 
-    organization_id = BoundedPositiveIntegerField()
+    organization_id = BoundedBigIntegerField()
     projects = models.ManyToManyField("sentry.Project", through=EnvironmentProject)
-    # DEPRECATED, use projects
-    project_id = BoundedPositiveIntegerField(null=True)
     name = models.CharField(max_length=64)
     date_added = models.DateTimeField(default=timezone.now)
+
+    objects: ClassVar[BaseManager[Self]] = BaseManager(cache_fields=["pk"])
 
     class Meta:
         app_label = "sentry"
@@ -46,14 +58,14 @@ class Environment(Model):
     def is_valid_name(cls, value):
         """Limit length and reject problematic bytes
 
-        If you change the rules here also update the event ingestion schema in Relay.
+        If you change the rules here also update the event + monitor check-in ingestion schema in Relay.
         """
         if len(value) > ENVIRONMENT_NAME_MAX_LENGTH:
             return False
         return OK_NAME_PATTERN.match(value) is not None
 
     @classmethod
-    def get_cache_key(cls, organization_id, name):
+    def get_cache_key(cls, organization_id, name) -> str:
         return f"env:2:{organization_id}:{md5_text(name).hexdigest()}"
 
     @classmethod
@@ -98,15 +110,11 @@ class Environment(Model):
         cache_key = f"envproj:c:{self.id}:{project.id}"
 
         if cache.get(cache_key) is None:
-            try:
-                with transaction.atomic():
-                    EnvironmentProject.objects.create(
-                        project=project, environment=self, is_hidden=is_hidden
-                    )
-                cache.set(cache_key, 1, 3600)
-            except IntegrityError:
-                # We've already created the object, should still cache the action.
-                cache.set(cache_key, 1, 3600)
+            EnvironmentProject.objects.get_or_create(
+                project=project, environment=self, defaults={"is_hidden": is_hidden}
+            )
+            # The object already exists, we cache the action to reduce the load on the database.
+            cache.set(cache_key, 1, 3600)
 
     @staticmethod
     def get_name_from_path_segment(segment):
@@ -115,4 +123,4 @@ class Environment(Model):
         # environment name for historic reasons (see commit b09858f.) In all
         # other contexts (incl. request query string parameters), the empty
         # string should be used.
-        return segment if segment != "none" else ""
+        return unquote(segment) if segment != "none" else ""

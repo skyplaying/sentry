@@ -1,14 +1,14 @@
-from typing import Any, Mapping, Tuple
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any
 
 from .base import GroupActivityNotification
 
 
 class ResolvedActivityNotification(GroupActivityNotification):
-    def get_activity_name(self) -> str:
-        return "Resolved Issue"
+    metrics_key = "resolved_activity"
+    title = "Resolved Issue"
 
-    def get_description(self) -> Tuple[str, Mapping[str, Any], Mapping[str, Any]]:
-        return "{author} marked {an issue} as resolved", {}, {}
-
-    def get_category(self) -> str:
-        return "resolved_activity_email"
+    def get_description(self) -> tuple[str, str | None, Mapping[str, Any]]:
+        return "{author} marked {an issue} as resolved", None, {}

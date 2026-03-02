@@ -1,14 +1,18 @@
 from django.conf import settings
 from django.contrib.auth import REDIRECT_FIELD_NAME
+from django.http.request import HttpRequest
+from django.http.response import HttpResponseBase
 from django.urls import reverse
+from rest_framework.request import Request
 from rest_framework.response import Response
 
 from sentry import newsletter
-from sentry.api.base import Endpoint
-from sentry.auth.superuser import is_active_superuser
+from sentry.api.api_owners import ApiOwner
+from sentry.api.api_publish_status import ApiPublishStatus
+from sentry.api.base import Endpoint, control_silo_endpoint
 from sentry.constants import WARN_SESSION_EXPIRED
 from sentry.http import get_server_hostname
-from sentry.models import Organization
+from sentry.models.organization import Organization
 from sentry.utils.auth import (
     get_org_redirect_url,
     has_user_registration,
@@ -16,22 +20,28 @@ from sentry.utils.auth import (
     is_valid_redirect,
 )
 from sentry.web.frontend.auth_login import additional_context
-from sentry.web.frontend.base import OrganizationMixin
+from sentry.web.frontend.base import OrganizationMixin, determine_active_organization
 
 
+@control_silo_endpoint
 class AuthConfigEndpoint(Endpoint, OrganizationMixin):
+    publish_status = {
+        "GET": ApiPublishStatus.PRIVATE,
+    }
+    owner = ApiOwner.ENTERPRISE
     # Disable authentication and permission requirements.
-    permission_classes = []
+    permission_classes = ()
 
-    def get(self, request, *args, **kwargs):
+    def dispatch(self, request: HttpRequest, *args, **kwargs) -> HttpResponseBase:
+        self.active_organization = determine_active_organization(request)
+        return super().dispatch(request, *args, **kwargs)
+
+    def get(self, request: Request, *args, **kwargs) -> Response:
         """
         Get context required to show a login page. Registration is handled elsewhere.
         """
         if request.user.is_authenticated:
-            # if the user is a superuser, but not 'superuser authenticated' we
-            # allow them to re-authenticate to gain superuser status
-            if not request.user.is_superuser or is_active_superuser(request):
-                return self.respond_authenticated(request)
+            return self.respond_authenticated(request)
 
         next_uri = self.get_next_uri(request)
 
@@ -55,28 +65,27 @@ class AuthConfigEndpoint(Endpoint, OrganizationMixin):
 
         return response
 
-    def respond_authenticated(self, request):
+    def respond_authenticated(self, request: Request):
         next_uri = self.get_next_uri(request)
 
         if not is_valid_redirect(next_uri, allowed_hosts=(request.get_host(),)):
-            active_org = self.get_active_organization(request)
-            next_uri = get_org_redirect_url(request, active_org)
+            next_uri = get_org_redirect_url(
+                request, self.active_organization.organization if self.active_organization else None
+            )
 
         return Response({"nextUri": next_uri})
 
-    def get_next_uri(self, request):
-        next_uri_fallback = None
-        if request.session.get("_next") is not None:
-            next_uri_fallback = request.session.pop("_next")
+    def get_next_uri(self, request: HttpRequest) -> str:
+        next_uri_fallback = request.session.pop("_next", None)
         return request.GET.get(REDIRECT_FIELD_NAME, next_uri_fallback)
 
-    def prepare_login_context(self, request, *args, **kwargs):
+    def prepare_login_context(self, request: Request, *args, **kwargs):
         can_register = bool(has_user_registration() or request.session.get("can_register"))
 
         context = {
             "serverHostname": get_server_hostname(),
             "canRegister": can_register,
-            "hasNewsletter": newsletter.is_enabled(),
+            "hasNewsletter": newsletter.backend.is_enabled(),
         }
 
         if "session_expired" in request.COOKIES:

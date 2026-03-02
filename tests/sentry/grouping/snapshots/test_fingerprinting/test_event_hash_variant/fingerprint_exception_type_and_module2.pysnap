@@ -1,7 +1,5 @@
 ---
-created: '2020-10-13T10:09:30.497241Z'
-creator: sentry
-source: tests/sentry/grouping/test_fingerprinting.py
+source: tests/sentry/grouping/test_fingerprinting.py::test_event_hash_variant
 ---
 config:
   rules:
@@ -13,6 +11,7 @@ config:
       - DatabaseUnavailable
     - - module
       - invalid.databasestuff.*
+    text: type:"DatabaseUnavailable" module:"invalid.databasestuff.*" -> "database-unavailable"
   version: 1
 fingerprint:
 - my-route
@@ -20,20 +19,30 @@ fingerprint:
 title: 'DatabaseUnavailable: For some reason the database went away'
 variants:
   app:
+    client_values:
+    - my-route
+    - '{{ default }}'
     component:
-      contributes: false
-      contributes_to_similarity: false
-      hint: exception of system takes precedence
-    type: salted-component
+      contributes: true
+      hint: null
+    contributes: true
+    hint: null
+    key: app_exception_message_hybrid_fingerprint
+    type: salted_component
     values:
     - my-route
     - '{{ default }}'
   system:
+    client_values:
+    - my-route
+    - '{{ default }}'
     component:
-      contributes: true
-      contributes_to_similarity: true
-      hint: null
-    type: salted-component
+      contributes: false
+      hint: ignored because app exception takes precedence
+    contributes: false
+    hint: ignored because app exception takes precedence
+    key: system_exception_message_hybrid_fingerprint
+    type: salted_component
     values:
     - my-route
     - '{{ default }}'

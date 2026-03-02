@@ -1,17 +1,21 @@
 import * as Sentry from '@sentry/react';
 
-import ExternalLink from 'app/components/links/externalLink';
+import {ExternalLink} from '@sentry/scraps/link';
+
+import type {Field} from 'sentry/components/forms/types';
 import {
   AWS_REGIONS,
   DEBUG_SOURCE_CASINGS,
   DEBUG_SOURCE_LAYOUTS,
-} from 'app/data/debugFileSources';
-import {t, tct} from 'app/locale';
-import {CustomRepoType} from 'app/types/debugFiles';
-import {Field} from 'app/views/settings/components/forms/type';
+} from 'sentry/data/debugFileSources';
+import {t, tct} from 'sentry/locale';
+import {CustomRepoType} from 'sentry/types/debugFiles';
+import {uniqueId} from 'sentry/utils/guid';
 
-function objectToChoices(obj: Record<string, string>): [key: string, value: string][] {
-  return Object.entries(obj).map(([key, value]) => [key, t(value)]);
+function objectToChoices(
+  obj: Record<string, string>
+): Array<[key: string, value: string]> {
+  return Object.entries(obj).map(([key, value]) => [key, value]);
 }
 
 type FieldMap = Record<string, Field>;
@@ -21,7 +25,7 @@ const commonFields: FieldMap = {
     name: 'id',
     type: 'hidden',
     required: true,
-    defaultValue: () => Math.random().toString(36).substring(2),
+    defaultValue: uniqueId,
   },
   name: {
     name: 'name',
@@ -65,7 +69,7 @@ export function getFormFieldsAndInitialData(
   type: CustomRepoType,
   sourceConfig?: Record<string, any>
 ) {
-  if (type === CustomRepoType.HTTP || type === CustomRepoType.APP_STORE_CONNECT) {
+  if (type === CustomRepoType.HTTP) {
     return {};
   }
 
@@ -115,7 +119,7 @@ export function getFormFieldsAndInitialData(
               {
                 link: (
                   <ExternalLink href="https://console.aws.amazon.com/iam/">
-                    IAM console
+                    {t('IAM console')}
                   </ExternalLink>
                 ),
               }
@@ -124,7 +128,7 @@ export function getFormFieldsAndInitialData(
           {
             name: 'secret_key',
             type: 'string',
-            required: true,
+            required: !secret_key,
             label: t('Secret Access Key'),
             placeholder:
               typeof secret_key === 'object'
@@ -136,12 +140,12 @@ export function getFormFieldsAndInitialData(
           commonFields.layoutType,
           commonFields.layoutCasing,
         ],
-        initialData: !initialData
-          ? undefined
-          : {
+        initialData: initialData
+          ? {
               ...initialData,
               secret_key: undefined,
-            },
+            }
+          : undefined,
       };
     case 'gcs':
       return {
@@ -170,7 +174,8 @@ export function getFormFieldsAndInitialData(
           {
             name: 'private_key',
             type: 'string',
-            required: true,
+            // Private key is only required if it's not already set
+            required: !private_key,
             multiline: true,
             autosize: true,
             maxRows: 5,
@@ -196,12 +201,12 @@ export function getFormFieldsAndInitialData(
           commonFields.layoutType,
           commonFields.layoutCasing,
         ],
-        initialData: !initialData
-          ? undefined
-          : {
+        initialData: initialData
+          ? {
               ...initialData,
               private_key: undefined,
-            },
+            }
+          : undefined,
       };
     default: {
       Sentry.captureException(new Error('Unknown custom repository type'));
@@ -211,7 +216,7 @@ export function getFormFieldsAndInitialData(
 }
 
 export function getFinalData(type: CustomRepoType, data: Record<string, any>) {
-  if (type === CustomRepoType.HTTP || type === CustomRepoType.APP_STORE_CONNECT) {
+  if (type === CustomRepoType.HTTP) {
     return data;
   }
 

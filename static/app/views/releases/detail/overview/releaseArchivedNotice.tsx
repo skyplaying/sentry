@@ -1,10 +1,10 @@
 import {Fragment} from 'react';
 import styled from '@emotion/styled';
 
-import Alert from 'app/components/alert';
-import Button from 'app/components/button';
-import {IconInfo} from 'app/icons';
-import {t} from 'app/locale';
+import {Alert} from '@sentry/scraps/alert';
+import {Button} from '@sentry/scraps/button';
+
+import {t} from 'sentry/locale';
 
 type Props = {
   multi?: boolean;
@@ -13,20 +13,22 @@ type Props = {
 
 function ReleaseArchivedNotice({onRestore, multi}: Props) {
   return (
-    <Alert icon={<IconInfo size="md" />} type="warning">
-      {multi
-        ? t('These releases have been archived.')
-        : t('This release has been archived.')}
+    <Alert.Container>
+      <Alert variant="warning" showIcon={false}>
+        {multi
+          ? t('These releases have been archived.')
+          : t('This release has been archived.')}
 
-      {!multi && onRestore && (
-        <Fragment>
-          {' '}
-          <UnarchiveButton size="zero" priority="link" onClick={onRestore}>
-            {t('Restore this release')}
-          </UnarchiveButton>
-        </Fragment>
-      )}
-    </Alert>
+        {!multi && onRestore && (
+          <Fragment>
+            {' '}
+            <UnarchiveButton size="zero" priority="link" onClick={onRestore}>
+              {t('Restore this release')}
+            </UnarchiveButton>
+          </Fragment>
+        )}
+      </Alert>
+    </Alert.Container>
   );
 }
 
@@ -37,7 +39,7 @@ const UnarchiveButton = styled(Button)`
   &:hover,
   &:focus,
   &:active {
-    color: ${p => p.theme.textColor};
+    color: ${p => p.theme.tokens.content.primary};
   }
 `;
 

@@ -1,168 +1,138 @@
 import {Fragment} from 'react';
-import {RouteComponentProps} from 'react-router';
 
-import AlertLink from 'app/components/alertLink';
-import Button from 'app/components/button';
-import {PanelAlert} from 'app/components/panels';
-import PluginList from 'app/components/pluginList';
-import {fields} from 'app/data/forms/projectAlerts';
-import {IconMail} from 'app/icons';
-import {t} from 'app/locale';
-import {Organization, Plugin, Project} from 'app/types';
-import routeTitleGen from 'app/utils/routeTitle';
-import AsyncView from 'app/views/asyncView';
-import Form from 'app/views/settings/components/forms/form';
-import JsonForm from 'app/views/settings/components/forms/jsonForm';
-import SettingsPageHeader from 'app/views/settings/components/settingsPageHeader';
-import PermissionAlert from 'app/views/settings/project/permissionAlert';
+import {AlertLink} from '@sentry/scraps/alert';
+import {LinkButton} from '@sentry/scraps/button';
 
-type RouteParams = {orgId: string; projectId: string};
-type Props = RouteComponentProps<RouteParams, {}> &
-  AsyncView['props'] & {
-    canEditRule: boolean;
-    organization: Organization;
-    project: Project;
-  };
+import Form from 'sentry/components/forms/form';
+import JsonForm from 'sentry/components/forms/jsonForm';
+import LoadingError from 'sentry/components/loadingError';
+import LoadingIndicator from 'sentry/components/loadingIndicator';
+import PanelAlert from 'sentry/components/panels/panelAlert';
+import PluginList from 'sentry/components/pluginList';
+import SentryDocumentTitle from 'sentry/components/sentryDocumentTitle';
+import {fields} from 'sentry/data/forms/projectAlerts';
+import {IconMail} from 'sentry/icons';
+import {t} from 'sentry/locale';
+import type {Plugin} from 'sentry/types/integrations';
+import getApiUrl from 'sentry/utils/api/getApiUrl';
+import type {ApiQueryKey} from 'sentry/utils/queryClient';
+import {useApiQuery} from 'sentry/utils/queryClient';
+import routeTitleGen from 'sentry/utils/routeTitle';
+import useOrganization from 'sentry/utils/useOrganization';
+import {makeAlertsPathname} from 'sentry/views/alerts/pathnames';
+import SettingsPageHeader from 'sentry/views/settings/components/settingsPageHeader';
+import {ProjectPermissionAlert} from 'sentry/views/settings/project/projectPermissionAlert';
+import {useProjectAlertsOutlet} from 'sentry/views/settings/projectAlerts';
 
-type State = AsyncView['state'] & {
-  project: Project | null;
-  pluginList: Array<Plugin> | null;
-};
+function makeFetchProjectPluginsQueryKey(
+  organizationSlug: string,
+  projectSlug: string
+): ApiQueryKey {
+  return [
+    getApiUrl(`/projects/$organizationIdOrSlug/$projectIdOrSlug/plugins/`, {
+      path: {organizationIdOrSlug: organizationSlug, projectIdOrSlug: projectSlug},
+    }),
+  ];
+}
 
-class Settings extends AsyncView<Props, State> {
-  getDefaultState() {
-    return {
-      ...super.getDefaultState(),
-      project: null,
-      pluginList: [],
-    };
+export default function ProjectAlertSettings() {
+  const organization = useOrganization();
+  const {canEditRule, project} = useProjectAlertsOutlet();
+
+  const {
+    data: pluginList = [],
+    isPending: isPluginListLoading,
+    isError: isPluginListError,
+    refetch: refetchPluginList,
+  } = useApiQuery<Plugin[]>(
+    makeFetchProjectPluginsQueryKey(organization.slug, project.slug),
+    {staleTime: 0, gcTime: 0}
+  );
+
+  if (isPluginListError) {
+    return <LoadingError onRetry={refetchPluginList} />;
   }
-  getProjectEndpoint({orgId, projectId}: RouteParams) {
-    return `/projects/${orgId}/${projectId}/`;
-  }
 
-  getEndpoints(): ReturnType<AsyncView['getEndpoints']> {
-    const {params} = this.props;
-    const {orgId, projectId} = params;
-    const projectEndpoint = this.getProjectEndpoint(params);
-    return [
-      ['project', projectEndpoint],
-      ['pluginList', `/projects/${orgId}/${projectId}/plugins/`],
-    ];
-  }
-
-  handleEnablePlugin = (plugin: Plugin) => {
-    this.setState(prevState => ({
-      pluginList: (prevState.pluginList ?? []).map(p => {
-        if (p.id !== plugin.id) {
-          return p;
+  return (
+    <Fragment>
+      <SentryDocumentTitle
+        title={routeTitleGen(t('Alerts Settings'), project.slug, false)}
+      />
+      <SettingsPageHeader
+        title={t('Alerts Settings')}
+        action={
+          <LinkButton
+            to={{
+              pathname: makeAlertsPathname({
+                path: `/rules/`,
+                organization,
+              }),
+              query: {project: project?.id},
+            }}
+            size="sm"
+          >
+            {t('View Alert Rules')}
+          </LinkButton>
         }
-        return {
-          ...plugin,
-          enabled: true,
-        };
-      }),
-    }));
-  };
-
-  handleDisablePlugin = (plugin: Plugin) => {
-    this.setState(prevState => ({
-      pluginList: (prevState.pluginList ?? []).map(p => {
-        if (p.id !== plugin.id) {
-          return p;
-        }
-        return {
-          ...plugin,
-          enabled: false,
-        };
-      }),
-    }));
-  };
-
-  getTitle() {
-    const {projectId} = this.props.params;
-    return routeTitleGen(t('Alerts Settings'), projectId, false);
-  }
-
-  renderBody() {
-    const {canEditRule, organization, params} = this.props;
-    const {orgId} = params;
-    const {project, pluginList} = this.state;
-
-    if (!project) {
-      return null;
-    }
-
-    const projectEndpoint = this.getProjectEndpoint(params);
-
-    return (
-      <Fragment>
-        <SettingsPageHeader
-          title={t('Alerts Settings')}
-          action={
-            <Button
-              to={{
-                pathname: `/organizations/${orgId}/alerts/rules/`,
-                query: {project: project.id},
-              }}
-              size="small"
-            >
-              {t('View Alert Rules')}
-            </Button>
-          }
-        />
-        <PermissionAlert />
-        <AlertLink to="/settings/account/notifications/" icon={<IconMail />}>
+      />
+      <ProjectPermissionAlert project={project} />
+      <AlertLink.Container>
+        <AlertLink
+          to="/settings/account/notifications/"
+          trailingItems={<IconMail />}
+          variant="info"
+        >
           {t(
             'Looking to fine-tune your personal notification preferences? Visit your Account Settings'
           )}
         </AlertLink>
+      </AlertLink.Container>
 
-        <Form
-          saveOnBlur
-          allowUndo
-          initialData={{
-            subjectTemplate: project.subjectTemplate,
-            digestsMinDelay: project.digestsMinDelay,
-            digestsMaxDelay: project.digestsMaxDelay,
-          }}
-          apiMethod="PUT"
-          apiEndpoint={projectEndpoint}
-        >
-          <JsonForm
-            disabled={!canEditRule}
-            title={t('Email Settings')}
-            fields={[fields.subjectTemplate]}
-          />
+      {isPluginListLoading ? (
+        <LoadingIndicator />
+      ) : (
+        <Fragment>
+          <Form
+            saveOnBlur
+            allowUndo
+            initialData={{
+              subjectTemplate: project.subjectTemplate,
+              digestsMinDelay: project.digestsMinDelay,
+              digestsMaxDelay: project.digestsMaxDelay,
+            }}
+            apiMethod="PUT"
+            apiEndpoint={`/projects/${organization.slug}/${project.slug}/`}
+          >
+            <JsonForm
+              disabled={!canEditRule}
+              title={t('Email Settings')}
+              fields={[fields.subjectTemplate]}
+            />
 
-          <JsonForm
-            title={t('Digests')}
-            disabled={!canEditRule}
-            fields={[fields.digestsMinDelay, fields.digestsMaxDelay]}
-            renderHeader={() => (
-              <PanelAlert type="info">
-                {t(
-                  'Sentry will automatically digest alerts sent by some services to avoid flooding your inbox with individual issue notifications. To control how frequently notifications are delivered, use the sliders below.'
-                )}
-              </PanelAlert>
-            )}
-          />
-        </Form>
+            <JsonForm
+              title={t('Digests')}
+              disabled={!canEditRule}
+              fields={[fields.digestsMinDelay, fields.digestsMaxDelay]}
+              renderHeader={() => (
+                <PanelAlert variant="info">
+                  {t(
+                    'Sentry will automatically digest alerts sent by some services to avoid flooding your inbox with individual issue notifications. To control how frequently notifications are delivered, use the sliders below.'
+                  )}
+                </PanelAlert>
+              )}
+            />
+          </Form>
 
-        {canEditRule && (
-          <PluginList
-            organization={organization}
-            project={project}
-            pluginList={(pluginList ?? []).filter(
-              p => p.type === 'notification' && p.hasConfiguration
-            )}
-            onEnablePlugin={this.handleEnablePlugin}
-            onDisablePlugin={this.handleDisablePlugin}
-          />
-        )}
-      </Fragment>
-    );
-  }
+          {canEditRule && (
+            <PluginList
+              project={project}
+              pluginList={(pluginList ?? []).filter(
+                p => p.type === 'notification' && p.hasConfiguration
+              )}
+            />
+          )}
+        </Fragment>
+      )}
+    </Fragment>
+  );
 }
-
-export default Settings;

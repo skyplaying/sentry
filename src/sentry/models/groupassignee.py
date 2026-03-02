@@ -1,220 +1,261 @@
+from __future__ import annotations
+
 import logging
-from collections import defaultdict
+from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 
 from django.conf import settings
-from django.db import models
+from django.db import models, router, transaction
 from django.utils import timezone
 
-from sentry.db.models import BaseManager, FlexibleForeignKey, Model, sane_repr
-from sentry.models.activity import Activity
+from sentry import features
+from sentry.backup.scopes import RelocationScope
+from sentry.db.models import FlexibleForeignKey, Model, region_silo_model, sane_repr
+from sentry.db.models.fields.hybrid_cloud_foreign_key import HybridCloudForeignKey
+from sentry.db.models.manager.base import BaseManager
+from sentry.integrations.services.assignment_source import AssignmentSource
+from sentry.models.grouphistory import GroupHistoryStatus, record_group_history
+from sentry.models.groupowner import GroupOwner
+from sentry.models.groupsubscription import GroupSubscription
 from sentry.notifications.types import GroupSubscriptionReason
-from sentry.signals import issue_assigned
+from sentry.signals import issue_assigned, issue_unassigned
 from sentry.types.activity import ActivityType
+from sentry.types.actor import Actor, ActorType
 from sentry.utils import metrics
 
+if TYPE_CHECKING:
+    from sentry.models.group import Group
+    from sentry.models.team import Team
+    from sentry.users.models.user import User
+    from sentry.users.services.user import RpcUser
 
-def get_user_project_ids(users):
-    """
-    Given a list of users, return a dict where keys are user_ids
-    and values are a set of the project_ids the user is a member of
-    """
-    from sentry.models import OrganizationMemberTeam, ProjectTeam
-
-    user_teams = list(
-        OrganizationMemberTeam.objects.filter(
-            organizationmember__user__in=users, is_active=True
-        ).values("organizationmember__user", "team")
-    )
-
-    # team_id to list of projects
-    projects_by_team = defaultdict(set)
-    for tp in ProjectTeam.objects.filter(team__in=[ut["team"] for ut in user_teams]):
-        projects_by_team[tp.team_id].add(tp.project_id)
-
-    # user_id to projects
-    projects_by_user = defaultdict(set)
-    for ut in user_teams:
-        projects_by_user[ut["organizationmember__user"]].update(projects_by_team[ut["team"]])
-
-    return projects_by_user
+logger = logging.getLogger(__name__)
 
 
-def sync_group_assignee_inbound(integration, email, external_issue_key, assign=True):
-    """
-    Given an integration, user email address and an external issue key,
-    assign linked groups to matching users. Checks project membership.
-    Returns a list of groups that were successfully assigned.
-    """
-    from sentry import features
-    from sentry.models import Group, User, UserEmail
+class NewAssignee(NamedTuple):
+    id: int
+    type: str
 
-    logger = logging.getLogger("sentry.integrations.%s" % integration.provider)
 
-    orgs_with_sync_enabled = []
-    for org in integration.organizations.all():
-        has_issue_sync = features.has("organizations:integrations-issue-sync", org)
-        if not has_issue_sync:
-            continue
+class GroupAssigneeManager(BaseManager["GroupAssignee"]):
+    def get_assigned_to_data(
+        self,
+        assigned_to: Team | RpcUser | User,
+        assignee_type: str,
+        extra: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        data = {
+            "assignee": str(assigned_to.id),
+            "assigneeEmail": getattr(assigned_to, "email", None),
+            "assigneeName": getattr(assigned_to, "name", None),
+            "assigneeType": assignee_type,
+        }
+        if extra:
+            data.update(extra)
 
-        installation = integration.get_installation(org.id)
-        if installation.should_sync("inbound_assignee"):
-            orgs_with_sync_enabled.append(org.id)
+        return data
 
-    affected_groups = list(
-        Group.objects.get_groups_by_external_issue(integration, external_issue_key).filter(
-            project__organization_id__in=orgs_with_sync_enabled
-        )
-    )
+    def get_assignee_data(self, assigned_to: Team | RpcUser | User) -> tuple[str, str, str]:
+        from sentry.models.team import Team
+        from sentry.users.models.user import User
+        from sentry.users.services.user import RpcUser
 
-    if not affected_groups:
-        return []
+        if isinstance(assigned_to, (User, RpcUser)):
+            assignee_type = "user"
+            assignee_type_attr = "user_id"
+            other_type = "team"
+        elif isinstance(assigned_to, Team):
+            assignee_type = "team"
+            assignee_type_attr = "team_id"
+            other_type = "user_id"
+        else:
+            raise AssertionError(f"Invalid type to assign to: {type(assigned_to)}")
 
-    if not assign:
-        for group in affected_groups:
-            GroupAssignee.objects.deassign(group)
-        return affected_groups
+        return (assignee_type, assignee_type_attr, other_type)
 
-    users = {
-        u.id: u
-        for u in User.objects.filter(
-            id__in=UserEmail.objects.filter(is_verified=True, email=email).values_list(
-                "user_id", flat=True
-            )
-        )
-    }
+    def remove_old_assignees(
+        self,
+        group: Group,
+        previous_assignee: GroupAssignee | None,
+        *,
+        new_assignee: NewAssignee | None = None,
+    ) -> None:
+        from sentry.models.team import Team
 
-    projects_by_user = get_user_project_ids(list(users.values()))
+        if not previous_assignee:
+            return
 
-    groups_assigned = []
-    for group in affected_groups:
-        try:
-            user_id = [
-                user_id
-                for user_id, projects in projects_by_user.items()
-                if group.project_id in projects
-            ][0]
-        except IndexError:
+        if previous_assignee.team:
+            team_members = list(previous_assignee.team.member_set.values_list("user_id", flat=True))
+            if (
+                new_assignee is not None
+                and new_assignee.type == "user"
+                and new_assignee.id in team_members
+            ):
+                team_members.remove(new_assignee.id)
+
+            GroupSubscription.objects.filter(
+                group=group,
+                project=group.project,
+                user_id__in=team_members,
+                reason=GroupSubscriptionReason.assigned,
+            ).delete()
             logger.info(
-                "assignee-not-found-inbound",
-                extra={
-                    "integration_id": integration.id,
-                    "email": email,
-                    "issue_key": external_issue_key,
-                },
+                "groupassignee.remove",
+                extra={"group_id": group.id, "team_id": previous_assignee.team.id},
             )
         else:
-            user = users[user_id]
-            GroupAssignee.objects.assign(group, user)
-            groups_assigned.append(group)
+            # if the new assignee is a team that the old assignee (a user) is in, don't remove them
+            if new_assignee is not None and new_assignee.type == "team":
+                team = Team.objects.get(id=new_assignee.id)
+                team_members = list(team.member_set.values_list("user_id", flat=True))
+                if previous_assignee.user_id in team_members:
+                    return
 
-    return groups_assigned
+            GroupSubscription.objects.filter(
+                group=group,
+                project=group.project,
+                user_id=previous_assignee.user_id,
+                reason=GroupSubscriptionReason.assigned,
+            ).delete()
+            logger.info(
+                "groupassignee.remove",
+                extra={"group_id": group.id, "user_id": previous_assignee.user_id},
+            )
 
-
-def sync_group_assignee_outbound(group, user_id, assign=True):
-    from sentry.models import GroupLink
-    from sentry.tasks.integrations import sync_assignee_outbound
-
-    external_issue_ids = GroupLink.objects.filter(
-        project_id=group.project_id, group_id=group.id, linked_type=GroupLink.LinkedType.issue
-    ).values_list("linked_id", flat=True)
-
-    for external_issue_id in external_issue_ids:
-        sync_assignee_outbound.apply_async(
-            kwargs={"external_issue_id": external_issue_id, "user_id": user_id, "assign": assign}
-        )
-
-
-class GroupAssigneeManager(BaseManager):
-    def assign(self, group, assigned_to, acting_user=None):
-        from sentry import features
-        from sentry.models import GroupSubscription, Team, User
+    def assign(
+        self,
+        group: Group,
+        assigned_to: Team | RpcUser | User,
+        acting_user: RpcUser | User | None = None,
+        create_only: bool = False,
+        extra: dict[str, str] | None = None,
+        force_autoassign: bool = False,
+        assignment_source: AssignmentSource | None = None,
+    ) -> dict[str, bool]:
+        from sentry.integrations.utils.sync import sync_group_assignee_outbound
+        from sentry.models.activity import Activity
+        from sentry.models.groupsubscription import GroupSubscription
 
         GroupSubscription.objects.subscribe_actor(
             group=group, actor=assigned_to, reason=GroupSubscriptionReason.assigned
         )
 
-        if isinstance(assigned_to, User):
-            assignee_type = "user"
-            other_type = "team"
-        elif isinstance(assigned_to, Team):
-            assignee_type = "team"
-            other_type = "user"
-        else:
-            raise AssertionError("Invalid type to assign to: %r" % type(assigned_to))
+        assigned_to_id = assigned_to.id
+        assignee_type, assignee_type_attr, other_type = self.get_assignee_data(assigned_to)
 
         now = timezone.now()
-        assignee, created = GroupAssignee.objects.get_or_create(
+        assignee, created = self.get_or_create(
             group=group,
-            defaults={"project": group.project, assignee_type: assigned_to, "date_added": now},
+            defaults={
+                "project": group.project,
+                assignee_type_attr: assigned_to_id,
+                "date_added": now,
+            },
         )
-
         if not created:
-            affected = (
-                GroupAssignee.objects.filter(group=group)
-                .exclude(**{assignee_type: assigned_to})
-                .update(**{assignee_type: assigned_to, other_type: None, "date_added": now})
+            affected = not create_only and (
+                self.filter(group=group)
+                .exclude(**{assignee_type_attr: assigned_to_id})
+                .update(**{assignee_type_attr: assigned_to_id, other_type: None, "date_added": now})
+                or force_autoassign
             )
         else:
             affected = True
-            issue_assigned.send_robust(
-                project=group.project, group=group, user=acting_user, sender=self.__class__
-            )
 
         if affected:
+            transaction.on_commit(
+                lambda: issue_assigned.send_robust(
+                    project=group.project, group=group, user=acting_user, sender=self.__class__
+                ),
+                router.db_for_write(GroupAssignee),
+            )
+            data = self.get_assigned_to_data(assigned_to, assignee_type, extra)
+
             Activity.objects.create_group_activity(
                 group,
                 ActivityType.ASSIGNED,
                 user=acting_user,
-                data={
-                    "assignee": str(assigned_to.id),
-                    "assigneeEmail": getattr(assigned_to, "email", None),
-                    "assigneeType": assignee_type,
-                },
+                data=data,
             )
+            record_group_history(group, GroupHistoryStatus.ASSIGNED, actor=acting_user)
+            GroupOwner.invalidate_assignee_exists_cache(group.id)
 
             metrics.incr("group.assignee.change", instance="assigned", skip_internal=True)
             # sync Sentry assignee to external issues
             if assignee_type == "user" and features.has(
                 "organizations:integrations-issue-sync", group.organization, actor=acting_user
             ):
-                sync_group_assignee_outbound(group, assigned_to.id, assign=True)
+                sync_group_assignee_outbound(
+                    group, assigned_to.id, assign=True, assignment_source=assignment_source
+                )
+
+            if not created:  # aka re-assignment
+                self.remove_old_assignees(
+                    group, assignee, new_assignee=NewAssignee(id=assigned_to_id, type=assignee_type)
+                )
 
         return {"new_assignment": created, "updated_assignment": bool(not created and affected)}
 
-    def deassign(self, group, acting_user=None):
-        from sentry import features
+    def deassign(
+        self,
+        group: Group,
+        # XXX: Some callers do not pass an acting user but we should make it mandatory
+        acting_user: User | RpcUser | None = None,
+        assignment_source: AssignmentSource | None = None,
+    ) -> None:
+        from sentry.integrations.utils.sync import sync_group_assignee_outbound
+        from sentry.models.activity import Activity
+        from sentry.models.projectownership import ProjectOwnership
 
-        affected = GroupAssignee.objects.filter(group=group)[:1].count()
-        GroupAssignee.objects.filter(group=group).delete()
+        try:
+            previous_groupassignee = self.get(group=group)
+        except GroupAssignee.DoesNotExist:
+            previous_groupassignee = None
+
+        affected = self.filter(group=group)[:1].count()
+        self.filter(group=group).delete()
 
         if affected > 0:
-            activity = Activity.objects.create(
-                project=group.project, group=group, type=Activity.UNASSIGNED, user=acting_user
-            )
-            activity.send_notification()
+            Activity.objects.create_group_activity(group, ActivityType.UNASSIGNED, user=acting_user)
+
+            record_group_history(group, GroupHistoryStatus.UNASSIGNED, actor=acting_user)
+
+            # Clear ownership cache for the deassigned group
+            ownership = ProjectOwnership.get_ownership_cached(group.project.id)
+            if not ownership:
+                ownership = ProjectOwnership(project_id=group.project.id)
+            GroupOwner.invalidate_assignee_exists_cache(group.id)
+            GroupOwner.invalidate_debounce_issue_owners_evaluation_cache(group.id)
+
             metrics.incr("group.assignee.change", instance="deassigned", skip_internal=True)
             # sync Sentry assignee to external issues
             if features.has(
                 "organizations:integrations-issue-sync", group.organization, actor=acting_user
             ):
-                sync_group_assignee_outbound(group, None, assign=False)
+                sync_group_assignee_outbound(
+                    group, None, assign=False, assignment_source=assignment_source
+                )
+
+            issue_unassigned.send_robust(
+                project=group.project, group=group, user=acting_user, sender=self.__class__
+            )
+            self.remove_old_assignees(group, previous_groupassignee)
 
 
+@region_silo_model
 class GroupAssignee(Model):
     """
     Identifies an assignment relationship between a user/team and an
     aggregated event (Group).
     """
 
-    __include_in_export__ = False
+    __relocation_scope__ = RelocationScope.Excluded
 
-    objects = GroupAssigneeManager()
+    objects: ClassVar[GroupAssigneeManager] = GroupAssigneeManager()
 
     project = FlexibleForeignKey("sentry.Project", related_name="assignee_set")
     group = FlexibleForeignKey("sentry.Group", related_name="assignee_set", unique=True)
-    user = FlexibleForeignKey(
-        settings.AUTH_USER_MODEL, related_name="sentry_assignee_set", null=True
-    )
+    user_id = HybridCloudForeignKey(settings.AUTH_USER_MODEL, on_delete="CASCADE", null=True)
     team = FlexibleForeignKey("sentry.Team", related_name="sentry_assignee_set", null=True)
     date_added = models.DateTimeField(default=timezone.now)
 
@@ -225,22 +266,19 @@ class GroupAssignee(Model):
 
     __repr__ = sane_repr("group_id", "user_id", "team_id")
 
-    def save(self, *args, **kwargs):
+    def save(self, *args: Any, **kwargs: Any) -> None:
         assert not (self.user_id is not None and self.team_id is not None) and not (
             self.user_id is None and self.team_id is None
         ), "Must have Team or User, not both"
         super().save(*args, **kwargs)
 
-    def assigned_actor_id(self):
-        if self.user:
-            return f"user:{self.user_id}"
-
-        if self.team:
-            return f"team:{self.team_id}"
+    def assigned_actor(self) -> Actor:
+        if self.user_id is not None:
+            return Actor(
+                id=self.user_id,
+                actor_type=ActorType.USER,
+            )
+        if self.team_id is not None:
+            return Actor(id=self.team_id, actor_type=ActorType.TEAM)
 
         raise NotImplementedError("Unknown Assignee")
-
-    def assigned_actor(self):
-        from sentry.models import ActorTuple
-
-        return ActorTuple.from_actor_identifier(self.assigned_actor_id())

@@ -1,27 +1,22 @@
-import styled from '@emotion/styled';
-
-import {
-  getAttachmentUrl,
-  ViewerProps,
-} from 'app/components/events/attachmentViewers/utils';
-import {PanelItem} from 'app/components/panels';
+import type {ViewerProps} from 'sentry/components/events/attachmentViewers/utils';
+import {getAttachmentUrl} from 'sentry/components/events/attachmentViewers/utils';
 
 type Props = Omit<ViewerProps, 'attachment'> & {
-  attachment: Omit<ViewerProps['attachment'], 'event_id'> & {
-    event_id?: string;
-  };
+  attachment: ViewerProps['attachment'];
+  onError?: React.ReactEventHandler<HTMLImageElement>;
+  onLoad?: React.ReactEventHandler<HTMLImageElement>;
 };
 
-function ImageViewer({className, ...props}: Props) {
+function ImageViewer({onLoad, onError, className, ...props}: Props) {
   return (
-    <Container className={className}>
-      <img src={getAttachmentUrl(props, true)} />
-    </Container>
+    <img
+      className={className}
+      data-test-id="image-viewer"
+      src={`/api/0${getAttachmentUrl(props)}?download`}
+      onLoad={onLoad}
+      onError={onError}
+    />
   );
 }
 
 export default ImageViewer;
-
-const Container = styled(PanelItem)`
-  justify-content: center;
-`;

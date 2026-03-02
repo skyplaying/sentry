@@ -1,147 +1,244 @@
-PIP := python -m pip --disable-pip-version-check
-WEBPACK := yarn build-acceptance
+.PHONY: all
+all: develop
 
-bootstrap \
-develop \
+WEBPACK := pnpm run build-acceptance
+
+freeze-requirements:
+	@uv lock
+
+bootstrap:
+	@echo "devenv bootstrap is typically run on new machines."
+	@echo "you probably want to run devenv sync to bring the"
+	@echo "sentry dev environment up to date!"
+
+build-platform-assets \
 clean \
 init-config \
 run-dependent-services \
 drop-db \
 create-db \
 apply-migrations \
-reset-db \
-setup-git \
-node-version-check \
-install-js-dev \
-install-py-dev :
+reset-db :
 	@./scripts/do.sh $@
 
-build-platform-assets \
-direnv-help \
-upgrade-pip \
-prerequisites \
-setup-git-config :
-	@SENTRY_NO_VENV_CHECK=1 ./scripts/do.sh $@
+develop \
+install-js-dev \
+install-py-dev :
+	@make devenv-sync
 
-setup-pyenv:
-	@./scripts/pyenv_setup.sh
+# This is to ensure devenv sync's only called once if the above
+# macros are combined e.g. `make install-js-dev install-py-dev`
+.PHONY: devenv-sync
+devenv-sync:
+	devenv sync
 
-build-js-po: node-version-check
+build-js-po:
 	mkdir -p build
-	SENTRY_EXTRACT_TRANSLATIONS=1 $(WEBPACK)
+	pnpm run build-js-po
+
+build-spectacular-docs:
+	@echo "--> Building drf-spectacular openapi spec (combines with deprecated docs)"
+	@OPENAPIGENERATE=1 sentry django spectacular --file tests/apidocs/openapi-spectacular.json --format openapi-json --validate --fail-on-warn
+
+build-deprecated-docs:
+	@echo "--> Building deprecated openapi spec from json files"
+	pnpm run build-deprecated-docs
+
+build-api-docs: build-deprecated-docs build-spectacular-docs
+	@echo "--> Dereference the json schema for ease of use"
+	pnpm run deref-api-docs
+
+watch-api-docs:
+	@cd api-docs/ && pnpm install --frozen-lockfile
+	@cd api-docs/ && node --experimental-transform-types ./watch.ts
+
+diff-api-docs:
+	@echo "--> diffing local api docs against sentry-api-schema/openapi-derefed.json"
+	pnpm run diff-docs
 
 build: locale
 
 merge-locale-catalogs: build-js-po
-	$(PIP) install Babel
+	uv pip install Babel
 	cd src/sentry && sentry django makemessages -i static -l en
 	./bin/merge-catalogs en
 
 compile-locale:
+	uv pip install Babel
 	./bin/find-good-catalogs src/sentry/locale/catalogs.json
 	cd src/sentry && sentry django compilemessages
 
-locale: merge-locale-catalogs compile-locale
+install-transifex:
+	uv pip install transifex-client
 
-sync-transifex: merge-locale-catalogs
-	$(PIP) install transifex-client
+push-transifex: merge-locale-catalogs install-transifex
 	tx push -s
+
+pull-transifex: install-transifex
 	tx pull -a
 
-update-transifex: sync-transifex compile-locale
+# Update transifex with new strings that need to be translated
+update-transifex: push-transifex
+
+# Pulls new translations from transifex and compiles for usage
+update-local-locales: pull-transifex compile-locale
 
 build-chartcuterie-config:
 	@echo "--> Building chartcuterie config module"
-	yarn build-chartcuterie-config
-
-fetch-release-registry:
-	@echo "--> Fetching release registry"
-	@echo "from sentry.utils.distutils import sync_registry; sync_registry()" | sentry exec
+	pnpm run build-chartcuterie-config
 
 run-acceptance:
 	@echo "--> Running acceptance tests"
-	pytest tests/acceptance --cov . --cov-report="xml:.artifacts/acceptance.coverage.xml" --junit-xml=".artifacts/acceptance.junit.xml"
+	python3 -b -m pytest tests/acceptance --reuse-db --json-report --json-report-file=".artifacts/pytest.acceptance.json" --json-report-omit=log --junit-xml=".artifacts/acceptance.junit.xml" -o junit_suite_name=acceptance
 	@echo ""
 
-test-cli:
+test-cli: create-db
 	@echo "--> Testing CLI"
 	rm -rf test_cli
 	mkdir test_cli
 	cd test_cli && sentry init test_conf
 	cd test_cli && sentry --config=test_conf help
 	cd test_cli && sentry --config=test_conf upgrade --traceback --noinput
-	cd test_cli && sentry --config=test_conf export
+	cd test_cli && sentry --config=test_conf export --help
 	rm -r test_cli
 	@echo ""
 
-test-js-build: node-version-check
+test-js-build:
 	@echo "--> Running type check"
-	@yarn run tsc -p config/tsconfig.build.json
+	@pnpm run tsc -p tsconfig.json
 	@echo "--> Building static assets"
-	@NODE_ENV=production yarn webpack-profile > .artifacts/webpack-stats.json
+	@NODE_ENV=production pnpm run build-profile > .artifacts/webpack-stats.json
 
-test-js: node-version-check
+test-js:
 	@echo "--> Running JavaScript tests"
-	@yarn run test
+	@pnpm run test
 	@echo ""
 
-test-js-ci: node-version-check
+test-js-ci:
 	@echo "--> Running CI JavaScript tests"
-	@yarn run test-ci
+	@pnpm run test-ci
 	@echo ""
-
-test-python:
-	@echo "--> Running Python tests"
-	# This gets called by getsentry
-	pytest tests/integration tests/sentry
 
 test-python-ci:
-	make build-platform-assets
 	@echo "--> Running CI Python tests"
-	pytest tests/integration tests/sentry --cov . --cov-report="xml:.artifacts/python.coverage.xml" --junit-xml=".artifacts/python.junit.xml" || exit 1
+	python3 -b -m pytest \
+		tests \
+		--reuse-db \
+		--ignore tests/acceptance \
+		--ignore tests/apidocs \
+		--ignore tests/js \
+		--ignore tests/tools \
+		--json-report \
+		--json-report-file=".artifacts/pytest.json" \
+		--json-report-omit=log \
+		--junit-xml=.artifacts/pytest.junit.xml \
+		-o junit_suite_name=pytest
 	@echo ""
 
-test-snuba:
-	@echo "--> Running snuba tests"
-	pytest tests/snuba tests/sentry/eventstream/kafka tests/sentry/snuba/test_discover.py -vv --cov . --cov-report="xml:.artifacts/snuba.coverage.xml" --junit-xml=".artifacts/snuba.junit.xml"
+test-backend-ci-with-coverage:
+	@echo "--> Running CI Python tests with coverage"
+	python3 -b -m pytest \
+		tests \
+		--reuse-db \
+		--ignore tests/acceptance \
+		--ignore tests/apidocs \
+		--ignore tests/js \
+		--ignore tests/tools \
+		--cov . \
+		--cov-context=test \
+		--json-report \
+		--json-report-file=".artifacts/pytest.json" \
+		--json-report-omit=log \
+		--junit-xml=.artifacts/pytest.junit.xml \
+		-o junit_suite_name=pytest
 	@echo ""
 
-backend-typing:
-	@echo "--> Running Python typing checks"
-	mypy --strict --warn-unreachable --config-file mypy.ini
+compute-selected-tests:
+	@echo "--> Computing selected tests from coverage data"
+	python3 .github/workflows/scripts/selective-testing/compute-selected-tests.py \
+		--coverage-db "$(COVERAGE_DB)" \
+		--changed-files "$(CHANGED_FILES)" \
+		--output .artifacts/selected-tests.txt \
+		--github-output
 	@echo ""
 
+test-selective:
+	@echo "--> Running selective tests based on branch changes"
+	python3 .github/workflows/scripts/selective-testing/fetch-coverage.py \
+		--output .cache/coverage.db
+	python3 .github/workflows/scripts/selective-testing/compute-selected-tests.py \
+		--coverage-db .cache/coverage.db \
+		--changed-files "$$(git diff --name-only $$(git merge-base origin/master HEAD))" \
+		--output .cache/selected-tests.txt
+	python3 .github/workflows/scripts/selective-testing/confirm-test-selection.py \
+		.cache/selected-tests.txt
+	SELECTED_TESTS_FILE=.cache/selected-tests.txt \
+	python3 -b -m pytest \
+		tests \
+		--reuse-db \
+		--ignore tests/acceptance \
+		--ignore tests/apidocs \
+		--ignore tests/js \
+		--ignore tests/tools \
+		-svv
+	@echo ""
+
+# it's not possible to change settings.DATABASE after django startup, so
+# unfortunately these tests must be run in a separate pytest process. References:
+#   * https://docs.djangoproject.com/en/4.2/topics/testing/tools/#overriding-settings
+#   * https://code.djangoproject.com/ticket/19031
+#   * https://github.com/pombredanne/django-database-constraints/blob/master/runtests.py#L61-L77
+test-monolith-dbs:
+	@echo "--> Running CI Python tests (SENTRY_USE_MONOLITH_DBS=1)"
+	SENTRY_LEGACY_TEST_SUITE=1 \
+	SENTRY_USE_MONOLITH_DBS=1 \
+	python3 -b -m pytest \
+	  tests/sentry/backup/test_exhaustive.py \
+	  tests/sentry/backup/test_exports.py \
+	  tests/sentry/backup/test_imports.py \
+	  tests/sentry/runner/commands/test_backup.py \
+	  --reuse-db \
+	  --json-report \
+	  --json-report-file=".artifacts/pytest.monolith-dbs.json" \
+	  --json-report-omit=log \
+	  --junit-xml=.artifacts/monolith-dbs.junit.xml \
+	  -o junit_suite_name=monolith-dbs \
+	;
+	@echo ""
+
+test-tools:
+	@echo "--> Running tools tests"
+	@# bogus configuration to force vanilla pytest
+	python3 -b -m pytest -c setup.cfg --confcutdir tests/tools tests/tools --reuse-db -vv --junit-xml=.artifacts/tools.junit.xml -o junit_suite_name=tools
+	@echo ""
+
+# JavaScript relay tests are meant to be run within Symbolicator test suite, as they are parametrized to verify both processing pipelines during migration process.
+# Running Locally: Run `devservices up` before starting these tests
 test-symbolicator:
 	@echo "--> Running symbolicator tests"
-	pytest tests/symbolicator -vv --cov . --cov-report="xml:.artifacts/symbolicator.coverage.xml" --junit-xml=".artifacts/symbolicator.junit.xml"
+	python3 -b -m pytest tests/symbolicator --reuse-db -vv --junit-xml=.artifacts/symbolicator.junit.xml -o junit_suite_name=symbolicator
+	python3 -b -m pytest tests/relay_integration/lang/javascript/ --reuse-db -vv -m symbolicator
+	python3 -b -m pytest tests/relay_integration/lang/java/ --reuse-db -vv -m symbolicator
 	@echo ""
 
-test-chartcuterie:
-	@echo "--> Running chartcuterie tests"
-	pytest tests/chartcuterie -vv --cov . --cov-report="xml:.artifacts/chartcuterie.coverage.xml" --junit-xml=".artifacts/chartcuterie.junit.xml"
-	@echo ""
-
-test-acceptance: node-version-check
+test-acceptance:
 	@echo "--> Building static assets"
 	@$(WEBPACK)
 	make run-acceptance
 
-test-plugins:
-	@echo "--> Running plugin tests"
-	pytest tests/sentry_plugins -vv --cov . --cov-report="xml:.artifacts/plugins.coverage.xml" --junit-xml=".artifacts/plugins.junit.xml" || exit 1
-	@echo ""
-
+# XXX: this is called by `getsentry/relay`
 test-relay-integration:
 	@echo "--> Running Relay integration tests"
-	pytest tests/relay_integration -vv
+	python3 -b -m pytest \
+		tests/relay_integration \
+		tests/sentry/ingest/ingest_consumer/test_ingest_consumer_kafka.py \
+		--reuse-db \
+		-vv
 	@echo ""
 
-test-api-docs:
-	@echo "--> Generating testing api doc schema"
-	yarn run build-derefed-docs
-	@echo "--> Validating endpoints' examples against schemas"
-	yarn run validate-api-examples
-	pytest tests/apidocs/endpoints
+test-api-docs: build-api-docs
+	pnpm run validate-api-examples
+	python3 -b -m pytest tests/apidocs --reuse-db
 	@echo ""
 
 review-python-snapshots:
@@ -155,11 +252,5 @@ accept-python-snapshots:
 reject-python-snapshots:
 	@cargo insta --version &> /dev/null || cargo install cargo-insta
 	@cargo insta reject --workspace-root `pwd` -e pysnap
-
-lint-js:
-	@echo "--> Linting javascript"
-	bin/lint --js --parseable
-	@echo ""
-
 
 .PHONY: build

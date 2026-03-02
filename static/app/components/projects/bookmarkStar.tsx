@@ -1,72 +1,66 @@
-import * as React from 'react';
-import styled from '@emotion/styled';
+import {useState} from 'react';
 
-import {addErrorMessage} from 'app/actionCreators/indicator';
-import {update} from 'app/actionCreators/projects';
-import {Client} from 'app/api';
-import {IconStar} from 'app/icons';
-import {t} from 'app/locale';
-import {Organization, Project} from 'app/types';
-import {defined} from 'app/utils';
-import withApi from 'app/utils/withApi';
+import {Button, type ButtonProps} from '@sentry/scraps/button';
 
-type Props = {
-  api: Client;
+import {addErrorMessage} from 'sentry/actionCreators/indicator';
+import {update} from 'sentry/actionCreators/projects';
+import {IconStar} from 'sentry/icons';
+import {t} from 'sentry/locale';
+import type {Organization} from 'sentry/types/organization';
+import type {Project} from 'sentry/types/project';
+import {useMutation} from 'sentry/utils/queryClient';
+import useApi from 'sentry/utils/useApi';
+
+interface BookmarkStarProps extends Omit<ButtonProps, 'as' | 'onToggle'> {
   organization: Organization;
   project: Project;
-  /* used to override when under local state */
-  isBookmarked?: boolean;
-  className?: string;
   onToggle?: (isBookmarked: boolean) => void;
-};
+}
 
-const BookmarkStar = ({
-  api,
-  isBookmarked: isBookmarkedProp,
-  className,
+export function BookmarkStar({
   organization,
   project,
   onToggle,
-}: Props) => {
-  const isBookmarked = defined(isBookmarkedProp)
-    ? isBookmarkedProp
-    : project.isBookmarked;
+  tooltipProps,
+  ...props
+}: BookmarkStarProps) {
+  const api = useApi({persistInFlight: true});
+  const [isBookmarked, setIsBookmarked] = useState(project.isBookmarked);
 
-  const toggleProjectBookmark = (event: React.MouseEvent) => {
-    update(api, {
-      orgId: organization.slug,
-      projectId: project.slug,
-      data: {isBookmarked: !isBookmarked},
-    }).catch(() => {
+  const {mutate: handleBookmarkToggle, isPending: isBookmarking} = useMutation({
+    mutationFn: (variables: {isBookmarked: boolean}) => {
+      return update(api, {
+        orgId: organization.slug,
+        projectId: project.slug,
+        data: {isBookmarked: variables.isBookmarked},
+      });
+    },
+    onMutate: variables => {
+      onToggle?.(variables.isBookmarked);
+      setIsBookmarked(variables.isBookmarked);
+    },
+    onError: (_data, variables) => {
       addErrorMessage(t('Unable to toggle bookmark for %s', project.slug));
-    });
-
-    // needed to dismiss tooltip
-    (document.activeElement as HTMLElement).blur();
-
-    // prevent dropdowns from closing
-    event.stopPropagation();
-
-    if (onToggle) {
-      onToggle(!isBookmarked);
-    }
-  };
+      setIsBookmarked(!variables.isBookmarked);
+    },
+  });
 
   return (
-    <Star
-      isBookmarked={isBookmarked}
-      isSolid={isBookmarked}
-      onClick={toggleProjectBookmark}
-      className={className}
+    <Button
+      tooltipProps={{
+        ...tooltipProps,
+        title: isBookmarked ? t('Remove Bookmark') : t('Bookmark'),
+      }}
+      aria-label={isBookmarked ? t('Remove Bookmark') : t('Bookmark')}
+      aria-pressed={isBookmarked}
+      busy={isBookmarking}
+      onClick={() => handleBookmarkToggle({isBookmarked: !isBookmarked})}
+      size="zero"
+      priority="transparent"
+      icon={
+        <IconStar variant={isBookmarked ? 'warning' : 'muted'} isSolid={isBookmarked} />
+      }
+      {...props}
     />
   );
-};
-
-const Star = styled(IconStar, {shouldForwardProp: p => p !== 'isBookmarked'})<{
-  isBookmarked: boolean;
-}>`
-  color: ${p => (p.isBookmarked ? p.theme.yellow300 : p.theme.gray200)};
-  cursor: pointer;
-`;
-
-export default withApi(BookmarkStar);
+}

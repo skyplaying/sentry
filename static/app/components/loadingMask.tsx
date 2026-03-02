@@ -1,8 +1,10 @@
 import styled from '@emotion/styled';
 
-const LoadingMask = styled('div')`
-  background-color: ${p => p.theme.backgroundSecondary};
-  border-radius: ${p => p.theme.borderRadius};
+export interface LoadingMaskProps extends React.HTMLAttributes<HTMLDivElement> {}
+
+const LoadingMask = styled('div')<LoadingMaskProps>`
+  background-color: ${p => p.theme.tokens.background.secondary};
+  border-radius: ${p => p.theme.radius.md};
   position: absolute;
   top: 0;
   bottom: 0;

@@ -12,7 +12,6 @@
       "defaultRole",
       "enhancedPrivacy",
       "experiments",
-      "features",
       "id",
       "isDefault",
       "isEarlyAdopter",
@@ -76,6 +75,9 @@
       "enhancedPrivacy": {
         "type": "boolean"
       },
+      "enablePrReviewTestGeneration": {
+        "type": "boolean"
+      },
       "experiments": {
         "type": "object"
       },
@@ -100,7 +102,23 @@
       "onboardingTasks": {
         "type": "array",
         "items": {
-          "type": "object"
+          "type": "object",
+          "properties": {
+            "data": {
+              "type": "object",
+              "nullable": true
+            },
+            "dateCompleted": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "status": {
+              "type": "string"
+            },
+            "task": {
+              "type": "integer"
+            }
+          }
         }
       },
       "openMembership": {
@@ -117,7 +135,26 @@
         }
       },
       "quota": {
-        "type": "object"
+        "type": "object",
+        "properties": {
+          "accountLimit": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "maxRate": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          },
+          "maxRateInterval": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "projectLimit": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
       },
       "require2FA": {
         "type": "boolean"

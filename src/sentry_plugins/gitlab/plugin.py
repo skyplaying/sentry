@@ -1,4 +1,6 @@
-from sentry.integrations import FeatureDescription, IntegrationFeatures
+from rest_framework.request import Request
+
+from sentry.integrations.base import FeatureDescription, IntegrationFeatures
 from sentry.plugins.bases.issue2 import IssuePlugin2
 from sentry.shared_integrations.exceptions import ApiError
 from sentry.utils.http import absolute_uri
@@ -18,20 +20,6 @@ class GitLabPlugin(CorePluginMixin, IssuePlugin2):
     feature_descriptions = [
         FeatureDescription(
             """
-            Track commits and releases (learn more
-            [here](https://docs.sentry.io/learn/releases/))
-            """,
-            IntegrationFeatures.COMMITS,
-        ),
-        FeatureDescription(
-            """
-            Resolve Sentry issues via GitLab commits and merge requests by
-            including `Fixes PROJ-ID` in the message
-            """,
-            IntegrationFeatures.COMMITS,
-        ),
-        FeatureDescription(
-            """
             Create GitLab issues from Sentry
             """,
             IntegrationFeatures.ISSUE_BASIC,
@@ -44,47 +32,43 @@ class GitLabPlugin(CorePluginMixin, IssuePlugin2):
         ),
     ]
 
-    def is_configured(self, request, project, **kwargs):
+    def is_configured(self, project) -> bool:
         return bool(
             self.get_option("gitlab_repo", project)
             and self.get_option("gitlab_token", project)
             and self.get_option("gitlab_url", project)
         )
 
-    def get_new_issue_fields(self, request, group, event, **kwargs):
+    def get_new_issue_fields(self, request: Request, group, event, **kwargs):
         fields = super().get_new_issue_fields(request, group, event, **kwargs)
-        return (
-            [
-                {
-                    "name": "repo",
-                    "label": "Repository",
-                    "default": self.get_option("gitlab_repo", group.project),
-                    "type": "text",
-                    "readonly": True,
-                }
-            ]
-            + fields
-            + [
-                {
-                    "name": "assignee",
-                    "label": "Assignee",
-                    "default": "",
-                    "type": "select",
-                    "required": False,
-                    "choices": self.get_allowed_assignees(request, group),
-                },
-                {
-                    "name": "labels",
-                    "label": "Labels",
-                    "default": self.get_option("gitlab_labels", group.project),
-                    "type": "text",
-                    "placeholder": "e.g. high, bug",
-                    "required": False,
-                },
-            ]
-        )
+        return [
+            {
+                "name": "repo",
+                "label": "Repository",
+                "default": self.get_option("gitlab_repo", group.project),
+                "type": "text",
+                "readonly": True,
+            },
+            *fields,
+            {
+                "name": "assignee",
+                "label": "Assignee",
+                "default": "",
+                "type": "select",
+                "required": False,
+                "choices": self.get_allowed_assignees(request, group),
+            },
+            {
+                "name": "labels",
+                "label": "Labels",
+                "default": self.get_option("gitlab_labels", group.project),
+                "type": "text",
+                "placeholder": "e.g. high, bug",
+                "required": False,
+            },
+        ]
 
-    def get_link_existing_issue_fields(self, request, group, event, **kwargs):
+    def get_link_existing_issue_fields(self, request: Request, group, event, **kwargs):
         return [
             {
                 "name": "issue_id",
@@ -100,12 +84,12 @@ class GitLabPlugin(CorePluginMixin, IssuePlugin2):
                     group.get_absolute_url(params={"referrer": "gitlab_plugin"})
                 ),
                 "type": "textarea",
-                "help": ("Leave blank if you don't want to " "add a comment to the GitLab issue."),
+                "help": ("Leave blank if you don't want to add a comment to the GitLab issue."),
                 "required": False,
             },
         ]
 
-    def get_allowed_assignees(self, request, group):
+    def get_allowed_assignees(self, request: Request, group):
         repo = self.get_option("gitlab_repo", group.project)
         client = self.get_client(group.project)
         try:
@@ -116,7 +100,7 @@ class GitLabPlugin(CorePluginMixin, IssuePlugin2):
 
         return (("", "(Unassigned)"),) + users
 
-    def get_new_issue_title(self, **kwargs):
+    def get_new_issue_title(self, **kwargs) -> str:
         return "Create GitLab Issue"
 
     def get_client(self, project):
@@ -125,7 +109,7 @@ class GitLabPlugin(CorePluginMixin, IssuePlugin2):
 
         return GitLabClient(url, token)
 
-    def create_issue(self, request, group, form_data, **kwargs):
+    def create_issue(self, request: Request, group, form_data):
         repo = self.get_option("gitlab_repo", group.project)
 
         client = self.get_client(group.project)
@@ -145,7 +129,7 @@ class GitLabPlugin(CorePluginMixin, IssuePlugin2):
 
         return response["iid"]
 
-    def link_issue(self, request, group, form_data, **kwargs):
+    def link_issue(self, request: Request, group, form_data, **kwargs):
         client = self.get_client(group.project)
         repo = self.get_option("gitlab_repo", group.project)
         try:
@@ -162,16 +146,16 @@ class GitLabPlugin(CorePluginMixin, IssuePlugin2):
 
         return {"title": issue["title"]}
 
-    def get_issue_label(self, group, issue_id, **kwargs):
+    def get_issue_label(self, group, issue_id: str) -> str:
         return f"GL-{issue_id}"
 
-    def get_issue_url(self, group, issue_iid, **kwargs):
+    def get_issue_url(self, group, issue_id: str) -> str:
         url = self.get_option("gitlab_url", group.project).rstrip("/")
         repo = self.get_option("gitlab_repo", group.project)
 
-        return f"{url}/{repo}/issues/{issue_iid}"
+        return f"{url}/{repo}/issues/{issue_id}"
 
-    def get_configure_plugin_fields(self, request, project, **kwargs):
+    def get_configure_plugin_fields(self, project, **kwargs):
         gitlab_token = self.get_option("gitlab_token", project)
         secret_field = get_secret_field_config(
             gitlab_token, "Enter your GitLab API token.", include_prefix=True

@@ -1,9 +1,9 @@
-from sentry.models import ProjectRedirect
-from sentry.testutils import TestCase
+from sentry.models.projectredirect import ProjectRedirect
+from sentry.testutils.cases import TestCase
 
 
 class ProjectRedirectTest(TestCase):
-    def test_record(self):
+    def test_record(self) -> None:
         org = self.create_organization()
         project = self.create_project(organization=org)
         ProjectRedirect.record(project, "old_slug")

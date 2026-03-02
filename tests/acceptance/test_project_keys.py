@@ -1,13 +1,13 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
-from django.utils import timezone
+from sentry.models.projectkey import ProjectKey
+from sentry.testutils.cases import AcceptanceTestCase, SnubaTestCase
+from sentry.testutils.silo import no_silo_test
 
-from sentry.models import ProjectKey
-from sentry.testutils import AcceptanceTestCase
 
-
-class ProjectKeysTest(AcceptanceTestCase):
-    def setUp(self):
+@no_silo_test
+class ProjectKeysTest(AcceptanceTestCase, SnubaTestCase):
+    def setUp(self) -> None:
         super().setUp()
         self.user = self.create_user("foo@example.com")
         self.org = self.create_organization(name="Rowdy Tiger", owner=None)
@@ -26,15 +26,15 @@ class ProjectKeysTest(AcceptanceTestCase):
         self.login_as(self.user)
         self.path = f"/{self.org.slug}/{self.project.slug}/settings/keys/"
 
-    def test_simple(self):
+    def test_simple(self) -> None:
         self.browser.get(self.path)
-        self.browser.wait_until_not(".loading-indicator")
+        self.browser.wait_until_not('[data-test-id="loading-indicator"]')
         self.browser.wait_until_test_id("project-keys")
-        self.browser.snapshot("project keys")
 
 
-class ProjectKeyDetailsTest(AcceptanceTestCase):
-    def setUp(self):
+@no_silo_test
+class ProjectKeyDetailsTest(AcceptanceTestCase, SnubaTestCase):
+    def setUp(self) -> None:
         super().setUp()
         self.user = self.create_user("foo@example.com")
         self.org = self.create_organization(name="Rowdy Tiger", owner=None)
@@ -53,9 +53,8 @@ class ProjectKeyDetailsTest(AcceptanceTestCase):
         self.login_as(self.user)
         self.path = f"/{self.org.slug}/{self.project.slug}/settings/keys/{self.pk.public_key}/"
 
-    def test_simple(self):
+    def test_simple(self) -> None:
         self.browser.get(self.path)
-        self.browser.wait_until_not(".loading-indicator")
+        self.browser.wait_until_not('[data-test-id="loading-indicator"]')
         self.browser.wait_until_test_id("key-details")
         self.browser.wait_until_not('[data-test-id="loading-placeholder"]')
-        self.browser.snapshot("project key details")

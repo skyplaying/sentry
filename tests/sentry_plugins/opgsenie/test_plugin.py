@@ -1,25 +1,24 @@
-import responses
-from exam import fixture
+from functools import cached_property
 
-from sentry.models import Rule
+import orjson
+import responses
+
+from sentry.models.rule import Rule
 from sentry.plugins.base import Notification
-from sentry.testutils import PluginTestCase
-from sentry.utils import json
+from sentry.testutils.cases import PluginTestCase
 from sentry_plugins.opsgenie.plugin import OpsGeniePlugin
 
 
+def test_conf_key() -> None:
+    assert OpsGeniePlugin().conf_key == "opsgenie"
+
+
 class OpsGeniePluginTest(PluginTestCase):
-    @fixture
-    def plugin(self):
+    @cached_property
+    def plugin(self) -> OpsGeniePlugin:
         return OpsGeniePlugin()
 
-    def test_conf_key(self):
-        assert self.plugin.conf_key == "opsgenie"
-
-    def test_entry_point(self):
-        self.assertPluginInstalled("opsgenie", self.plugin)
-
-    def test_is_configured(self):
+    def test_is_configured(self) -> None:
         assert self.plugin.is_configured(self.project) is False
         self.plugin.set_option("api_key", "abcdef", self.project)
         assert self.plugin.is_configured(self.project) is False
@@ -27,7 +26,7 @@ class OpsGeniePluginTest(PluginTestCase):
         assert self.plugin.is_configured(self.project) is True
 
     @responses.activate
-    def test_simple_notification(self):
+    def test_simple_notification(self) -> None:
         responses.add("POST", "https://api.opsgenie.com/v2/alerts")
         self.plugin.set_option("api_key", "abcdef", self.project)
         self.plugin.set_option("alert_url", "https://api.opsgenie.com/v2/alerts", self.project)
@@ -43,6 +42,7 @@ class OpsGeniePluginTest(PluginTestCase):
             project_id=self.project.id,
         )
         group = event.group
+        assert group is not None
 
         rule = Rule.objects.create(project=self.project, label="my rule")
 
@@ -52,7 +52,7 @@ class OpsGeniePluginTest(PluginTestCase):
             self.plugin.notify(notification)
 
         request = responses.calls[0].request
-        payload = json.loads(request.body)
+        payload = orjson.loads(request.body)
         group_id = str(group.id)
         assert payload == {
             "recipients": "me",

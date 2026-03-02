@@ -1,4 +1,5 @@
-import {Query} from 'history';
+import {useCallback} from 'react';
+import type {Query} from 'history';
 import chunk from 'lodash/chunk';
 import debounce from 'lodash/debounce';
 
@@ -6,23 +7,27 @@ import {
   addErrorMessage,
   addLoadingMessage,
   addSuccessMessage,
-} from 'app/actionCreators/indicator';
-import ProjectActions from 'app/actions/projectActions';
-import {Client} from 'app/api';
-import {PlatformKey} from 'app/data/platformCategories';
-import {t, tct} from 'app/locale';
-import ProjectsStatsStore from 'app/stores/projectsStatsStore';
-import {Project, Team} from 'app/types';
+} from 'sentry/actionCreators/indicator';
+import type {Client} from 'sentry/api';
+import {t, tct} from 'sentry/locale';
+import ProjectsStatsStore from 'sentry/stores/projectsStatsStore';
+import ProjectsStore from 'sentry/stores/projectsStore';
+import type {Team} from 'sentry/types/organization';
+import type {Project} from 'sentry/types/project';
+import getApiUrl from 'sentry/utils/api/getApiUrl';
+import type {ApiQueryKey} from 'sentry/utils/queryClient';
+import {setApiQueryData, useApiQuery, useQueryClient} from 'sentry/utils/queryClient';
+import useApi from 'sentry/utils/useApi';
 
 type UpdateParams = {
   orgId: string;
   projectId: string;
-  data?: {[key: string]: any};
+  data?: Record<string, any>;
   query?: Query;
 };
 
 export function update(api: Client, params: UpdateParams) {
-  ProjectActions.update(params.projectId, params.data);
+  ProjectsStatsStore.onUpdate(params.projectId, params.data as Partial<Project>);
 
   const endpoint = `/projects/${params.orgId}/${params.projectId}/`;
   return api
@@ -32,11 +37,11 @@ export function update(api: Client, params: UpdateParams) {
     })
     .then(
       data => {
-        ProjectActions.updateSuccess(data);
+        ProjectsStore.onUpdateSuccess(data);
         return data;
       },
       err => {
-        ProjectActions.updateError(err, params.projectId);
+        ProjectsStatsStore.onUpdateError(err, params.projectId);
         throw err;
       }
     );
@@ -45,23 +50,16 @@ export function update(api: Client, params: UpdateParams) {
 type StatsParams = Pick<UpdateParams, 'orgId' | 'data' | 'query'>;
 
 export function loadStats(api: Client, params: StatsParams) {
-  ProjectActions.loadStats(params.orgId, params.data);
-
   const endpoint = `/organizations/${params.orgId}/stats/`;
   api.request(endpoint, {
     query: params.query,
-    success: data => {
-      ProjectActions.loadStatsSuccess(data);
-    },
-    error: data => {
-      ProjectActions.loadStatsError(data);
-    },
+    success: data => ProjectsStore.onStatsLoadSuccess(data),
   });
 }
 
 // This is going to queue up a list of project ids we need to fetch stats for
 // Will be cleared when debounced function fires
-const _projectStatsToFetch: Set<string> = new Set();
+export const _projectStatsToFetch = new Set<string>();
 
 // Max projects to query at a time, otherwise if we fetch too many in the same request
 // it can timeout
@@ -89,7 +87,7 @@ const _queryForStats = (
 
 export const _debouncedLoadStats = debounce(
   (api: Client, projectSet: Set<string>, params: UpdateParams) => {
-    const storedProjects: {[key: string]: Project} = ProjectsStatsStore.getAll();
+    const storedProjects: Record<string, Project> = ProjectsStatsStore.getAll();
     const existingProjectStats = Object.values(storedProjects).map(({id}) => id);
     const projects = Array.from(projectSet).filter(
       project => !existingProjectStats.includes(project)
@@ -108,7 +106,7 @@ export const _debouncedLoadStats = debounce(
 
     Promise.all(queries)
       .then(results => {
-        ProjectActions.loadStatsForProjectSuccess(
+        ProjectsStatsStore.onStatsLoadSuccess(
           results.reduce((acc, result) => acc.concat(result), [])
         );
       })
@@ -127,33 +125,6 @@ export function loadStatsForProject(api: Client, project: string, params: Update
   // and call a debounced function to fetch stats for list of projects
   _projectStatsToFetch.add(project);
   _debouncedLoadStats(api, _projectStatsToFetch, params);
-}
-
-export function setActiveProject(project: Project | null) {
-  ProjectActions.setActive(project);
-}
-
-export function removeProject(api: Client, orgId: string, project: Project) {
-  const endpoint = `/projects/${orgId}/${project.slug}/`;
-
-  ProjectActions.removeProject(project);
-  return api
-    .requestPromise(endpoint, {
-      method: 'DELETE',
-    })
-    .then(
-      () => {
-        ProjectActions.removeProjectSuccess(project);
-        addSuccessMessage(
-          tct('[project] was successfully removed', {project: project.slug})
-        );
-      },
-      err => {
-        ProjectActions.removeProjectError(project);
-        addErrorMessage(tct('Error removing [project]', {project: project.slug}));
-        throw err;
-      }
-    );
 }
 
 export function transferProject(
@@ -207,16 +178,7 @@ export function transferProject(
 }
 
 /**
- * Associate a team with a project
- */
-
-/**
  *  Adds a team to a project
- *
- * @param api API Client
- * @param orgSlug Organization Slug
- * @param projectSlug Project Slug
- * @param team Team data object
  */
 export function addTeamToProject(
   api: Client,
@@ -227,7 +189,6 @@ export function addTeamToProject(
   const endpoint = `/projects/${orgSlug}/${projectSlug}/teams/${team.slug}/`;
 
   addLoadingMessage();
-  ProjectActions.addTeam(team);
 
   return api
     .requestPromise(endpoint, {
@@ -241,8 +202,8 @@ export function addTeamToProject(
             project: projectSlug,
           })
         );
-        ProjectActions.addTeamSuccess(team, projectSlug);
-        ProjectActions.updateSuccess(project);
+        ProjectsStore.onAddTeam(team, projectSlug);
+        ProjectsStore.onUpdateSuccess(project);
       },
       err => {
         addErrorMessage(
@@ -251,7 +212,6 @@ export function addTeamToProject(
             project: projectSlug,
           })
         );
-        ProjectActions.addTeamError();
         throw err;
       }
     );
@@ -259,13 +219,8 @@ export function addTeamToProject(
 
 /**
  * Removes a team from a project
- *
- * @param api API Client
- * @param orgSlug Organization Slug
- * @param projectSlug Project Slug
- * @param teamSlug Team Slug
  */
-export function removeTeamFromProject(
+function removeTeamFromProject(
   api: Client,
   orgSlug: string,
   projectSlug: string,
@@ -274,7 +229,6 @@ export function removeTeamFromProject(
   const endpoint = `/projects/${orgSlug}/${projectSlug}/teams/${teamSlug}/`;
 
   addLoadingMessage();
-  ProjectActions.removeTeam(teamSlug);
 
   return api
     .requestPromise(endpoint, {
@@ -288,8 +242,8 @@ export function removeTeamFromProject(
             project: projectSlug,
           })
         );
-        ProjectActions.removeTeamSuccess(teamSlug, projectSlug);
-        ProjectActions.updateSuccess(project);
+        ProjectsStore.onRemoveTeam(teamSlug, projectSlug);
+        ProjectsStore.onUpdateSuccess(project);
       },
       err => {
         addErrorMessage(
@@ -298,7 +252,6 @@ export function removeTeamFromProject(
             project: projectSlug,
           })
         );
-        ProjectActions.removeTeamError(err);
         throw err;
       }
     );
@@ -306,102 +259,126 @@ export function removeTeamFromProject(
 
 /**
  * Change a project's slug
- *
- * @param prev Previous slug
- * @param next New slug
  */
 export function changeProjectSlug(prev: string, next: string) {
-  ProjectActions.changeSlug(prev, next);
+  ProjectsStore.onChangeSlug(prev, next);
 }
 
 /**
- * Send a sample event
- *
- * @param api API Client
- * @param orgSlug Organization Slug
- * @param projectSlug Project Slug
+ * Deletes a project
  */
-export function sendSampleEvent(api: Client, orgSlug: string, projectSlug: string) {
-  const endpoint = `/projects/${orgSlug}/${projectSlug}/create-sample/`;
-
-  return api.requestPromise(endpoint, {
-    method: 'POST',
+export async function removeProject({
+  api,
+  orgSlug,
+  projectSlug,
+  origin,
+}: {
+  api: Client;
+  orgSlug: string;
+  origin: 'onboarding' | 'settings' | 'getting_started';
+  projectSlug: Project['slug'];
+}) {
+  const response = await api.requestPromise(`/projects/${orgSlug}/${projectSlug}/`, {
+    method: 'DELETE',
+    data: {origin},
   });
-}
+  ProjectsStore.onDeleteProject(projectSlug);
 
-/**
- * Creates a project
- *
- * @param api API Client
- * @param orgSlug Organization Slug
- * @param team The team slug to assign the project to
- * @param name Name of the project
- * @param platform The platform key of the project
- * @param options Additional options such as creating default alert rules
- */
-export function createProject(
-  api: Client,
-  orgSlug: string,
-  team: string,
-  name: string,
-  platform: string,
-  options: {defaultRules?: boolean} = {}
-) {
-  return api.requestPromise(`/teams/${orgSlug}/${team}/projects/`, {
-    method: 'POST',
-    data: {name, platform, default_rules: options.defaultRules},
-  });
-}
-
-/**
- * Load platform documentation specific to the project. The DSN and various
- * other project specific secrets will be included in the documentation.
- *
- * @param api API Client
- * @param orgSlug Organization Slug
- * @param projectSlug Project Slug
- * @param platform Project platform.
- */
-export function loadDocs(
-  api: Client,
-  orgSlug: string,
-  projectSlug: string,
-  platform: PlatformKey
-) {
-  return api.requestPromise(`/projects/${orgSlug}/${projectSlug}/docs/${platform}/`);
+  return response;
 }
 
 /**
  * Load the counts of my projects and all projects for the current user
- *
- * @param api API Client
- * @param orgSlug Organization Slug
  */
 export function fetchProjectsCount(api: Client, orgSlug: string) {
   return api.requestPromise(`/organizations/${orgSlug}/projects-count/`);
 }
 
-/**
- * Check if there are any releases in the last 90 days.
- * Used for checking if project is using releases.
- *
- * @param api API Client
- * @param orgSlug Organization Slug
- * @param projectId Project Id
- */
-export async function fetchAnyReleaseExistence(
-  api: Client,
-  orgSlug: string,
-  projectId: number | string
-) {
-  const data = await api.requestPromise(`/organizations/${orgSlug}/releases/stats/`, {
-    method: 'GET',
-    query: {
-      statsPeriod: '90d',
-      project: projectId,
-      per_page: 1,
-    },
-  });
+function makeProjectTeamsQueryKey({
+  orgSlug,
+  projectSlug,
+  cursor,
+}: {
+  orgSlug: string;
+  projectSlug: string;
+  cursor?: string;
+}): ApiQueryKey {
+  return [
+    getApiUrl('/projects/$organizationIdOrSlug/$projectIdOrSlug/teams/', {
+      path: {
+        organizationIdOrSlug: orgSlug,
+        projectIdOrSlug: projectSlug,
+      },
+    }),
+    {query: {cursor}},
+  ];
+}
 
-  return data.length > 0;
+export function useFetchProjectTeams({
+  orgSlug,
+  projectSlug,
+  cursor,
+}: {
+  orgSlug: string;
+  projectSlug: string;
+  cursor?: string;
+}) {
+  return useApiQuery<Team[]>(makeProjectTeamsQueryKey({orgSlug, projectSlug, cursor}), {
+    staleTime: 0,
+    retry: false,
+    enabled: Boolean(orgSlug && projectSlug),
+  });
+}
+
+export function useAddTeamToProject({
+  orgSlug,
+  projectSlug,
+  cursor,
+}: {
+  orgSlug: string;
+  projectSlug: string;
+  cursor?: string;
+}) {
+  const api = useApi();
+  const queryClient = useQueryClient();
+
+  return useCallback(
+    async (team: Team) => {
+      await addTeamToProject(api, orgSlug, projectSlug, team);
+
+      setApiQueryData<Team[]>(
+        queryClient,
+        makeProjectTeamsQueryKey({orgSlug, projectSlug, cursor}),
+        prevData => (Array.isArray(prevData) ? [team, ...prevData] : [team])
+      );
+    },
+    [api, orgSlug, projectSlug, cursor, queryClient]
+  );
+}
+
+export function useRemoveTeamFromProject({
+  orgSlug,
+  projectSlug,
+  cursor,
+}: {
+  orgSlug: string;
+  projectSlug: string;
+  cursor?: string;
+}) {
+  const api = useApi();
+  const queryClient = useQueryClient();
+
+  return useCallback(
+    async (teamSlug: string) => {
+      await removeTeamFromProject(api, orgSlug, projectSlug, teamSlug);
+
+      setApiQueryData<Team[]>(
+        queryClient,
+        makeProjectTeamsQueryKey({orgSlug, projectSlug, cursor}),
+        prevData =>
+          Array.isArray(prevData) ? prevData.filter(team => team?.slug !== teamSlug) : []
+      );
+    },
+    [api, orgSlug, projectSlug, cursor, queryClient]
+  );
 }

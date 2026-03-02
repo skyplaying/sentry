@@ -1,14 +1,17 @@
-from sentry.models import GroupAssignee
+from sentry.models.groupassignee import GroupAssignee
 from sentry.rules.filters.assigned_to import AssignedToFilter
 from sentry.testutils.cases import RuleTestCase
+from sentry.testutils.skips import requires_snuba
+
+pytestmark = [requires_snuba]
 
 
-class AssignedToFilter(RuleTestCase):
+class AssignedToFilterTest(RuleTestCase):
     rule_cls = AssignedToFilter
 
-    def test_assigned_to_member_passes(self):
+    def test_assigned_to_member_passes(self) -> None:
         event = self.get_event()
-        GroupAssignee.objects.create(user=self.user, group=event.group, project=self.project)
+        GroupAssignee.objects.create(user_id=self.user.id, group=event.group, project=self.project)
 
         data = {
             "targetType": "Member",
@@ -17,10 +20,10 @@ class AssignedToFilter(RuleTestCase):
         rule = self.get_rule(data=data)
         self.assertPasses(rule, event)
 
-    def test_assigned_to_member_fails(self):
+    def test_assigned_to_member_fails(self) -> None:
         event = self.get_event()
         user = self.create_user()
-        GroupAssignee.objects.create(user=user, group=event.group, project=self.project)
+        GroupAssignee.objects.create(user_id=user.id, group=event.group, project=self.project)
 
         data = {
             "targetType": "Member",
@@ -29,7 +32,7 @@ class AssignedToFilter(RuleTestCase):
         rule = self.get_rule(data=data)
         self.assertDoesNotPass(rule, event)
 
-    def test_assigned_to_team_passes(self):
+    def test_assigned_to_team_passes(self) -> None:
         event = self.get_event()
         GroupAssignee.objects.create(team=self.team, group=event.group, project=self.project)
 
@@ -40,7 +43,7 @@ class AssignedToFilter(RuleTestCase):
         rule = self.get_rule(data=data)
         self.assertPasses(rule, event)
 
-    def test_assigned_to_team_fails(self):
+    def test_assigned_to_team_fails(self) -> None:
         event = self.get_event()
         team = self.create_team(self.organization)
         GroupAssignee.objects.create(team=team, group=event.group, project=self.project)
@@ -52,7 +55,7 @@ class AssignedToFilter(RuleTestCase):
         rule = self.get_rule(data=data)
         self.assertDoesNotPass(rule, event)
 
-    def test_assigned_to_no_one_passes(self):
+    def test_assigned_to_no_one_passes(self) -> None:
         event = self.get_event()
 
         data = {
@@ -61,9 +64,9 @@ class AssignedToFilter(RuleTestCase):
         rule = self.get_rule(data=data)
         self.assertPasses(rule, event)
 
-    def test_assigned_to_no_one_fails(self):
+    def test_assigned_to_no_one_fails(self) -> None:
         event = self.get_event()
-        GroupAssignee.objects.create(user=self.user, group=event.group, project=self.project)
+        GroupAssignee.objects.create(user_id=self.user.id, group=event.group, project=self.project)
 
         data = {
             "targetType": "Unassigned",

@@ -1,63 +1,67 @@
 import pick from 'lodash/pick';
-import Reflux from 'reflux';
+import {createStore} from 'reflux';
 
-import {mergeGroups} from 'app/actionCreators/group';
+import {mergeGroups} from 'sentry/actionCreators/group';
 import {
   addErrorMessage,
   addLoadingMessage,
   addSuccessMessage,
-} from 'app/actionCreators/indicator';
-import GroupingActions from 'app/actions/groupingActions';
-import {Client} from 'app/api';
-import {Group, Organization, Project} from 'app/types';
-import {Event} from 'app/types/event';
+} from 'sentry/actionCreators/indicator';
+import {Client} from 'sentry/api';
+import type {Event} from 'sentry/types/event';
+import type {Group} from 'sentry/types/group';
+import type {Organization} from 'sentry/types/organization';
+import type {Project} from 'sentry/types/project';
+import toArray from 'sentry/utils/array/toArray';
+
+import type {StrictStoreDefinition} from './types';
 
 // Between 0-100
 const MIN_SCORE = 0.6;
 
-// @param score: {[key: string]: number}
-const checkBelowThreshold = (scores = {}) => {
-  const scoreKeys = Object.keys(scores);
-  return !scoreKeys.map(key => scores[key]).find(score => score >= MIN_SCORE);
+const checkBelowThreshold = (scores: ScoreMap = {}) => {
+  return !Object.values(scores).some(score => Number(score) >= MIN_SCORE);
 };
 
 type State = {
+  // "Compare" button state
+  enableFingerprintCompare: boolean;
+  error: boolean;
+  filteredSimilarItems: SimilarItem[];
+  loading: boolean;
+  mergeDisabled: boolean;
+  mergeList: string[];
+  mergeState: Map<any, Readonly<{busy?: boolean; checked?: boolean}>>;
   // List of fingerprints that belong to issue
-  mergedItems: [];
-  // Map of {[fingerprint]: Array<fingerprint, event id>} that is selected to be unmerged
-  unmergeList: Map<any, any>;
-  // Map of state for each fingerprint (i.e. "collapsed")
-  unmergeState: Map<any, any>;
+  mergedItems: Fingerprint[];
+  mergedLinks: string;
+  similarItems: SimilarItem[];
+  similarLinks: string;
   // Disabled state of "Unmerge" button in "Merged" tab (for Issues)
   unmergeDisabled: boolean;
   // If "Collapse All" was just used, this will be true
   unmergeLastCollapsed: boolean;
-  // "Compare" button state
-  enableFingerprintCompare: boolean;
-  similarItems: [];
-  filteredSimilarItems: [];
-  similarLinks: string;
-  mergeState: Map<any, any>;
-  mergeList: Array<string>;
-  mergedLinks: string;
-  mergeDisabled: boolean;
-  loading: boolean;
-  error: boolean;
+  // Map of {[fingerprint]: Array<fingerprint, event id>} that is selected to be unmerged
+  unmergeList: Map<any, any>;
+  // Map of state for each fingerprint (i.e. "collapsed")
+  unmergeState: Readonly<
+    Map<any, Readonly<{busy?: boolean; checked?: boolean; collapsed?: boolean}>>
+  >;
 };
 
-type ScoreMap = Record<string, number | null>;
+type ScoreMap = Record<string, number | null | string>;
 
 type ApiFingerprint = {
   id: string;
   latestEvent: Event;
-  state?: string;
-  lastSeen?: string;
-  eventCount?: number;
-  parentId?: string;
-  label?: string;
-  parentLabel?: string;
   childId?: string;
   childLabel?: string;
+  eventCount?: number;
+  label?: string;
+  lastSeen?: string;
+  parentId?: string;
+  parentLabel?: string;
+  state?: string;
 };
 
 type ChildFingerprint = {
@@ -69,25 +73,42 @@ type ChildFingerprint = {
 };
 
 export type Fingerprint = {
+  children: ChildFingerprint[];
+  eventCount: number;
   id: string;
   latestEvent: Event;
-  eventCount: number;
-  children: Array<ChildFingerprint>;
-  state?: string;
-  lastSeen?: string;
-  parentId?: string;
   label?: string;
+  lastSeen?: string;
+  mergedBySeer?: boolean;
+  parentId?: string;
   parentLabel?: string;
+  state?: string;
+};
+
+export type SimilarItem = {
+  isBelowThreshold: boolean;
+  issue: Group;
+  aggregate?: {
+    exception: number;
+    message: number;
+    shouldBeGrouped?: string;
+  };
+  score?: Record<string, number | null>;
+  scoresByInterface?: {
+    exception: Array<[string, number | null]>;
+    message: Array<[string, any | null]>;
+    shouldBeGrouped?: Array<[string, string | null]>;
+  };
 };
 
 type ResponseProcessors = {
   merged: (item: ApiFingerprint[]) => Fingerprint[];
   similar: (data: [Group, ScoreMap]) => {
+    aggregate: Record<string, number | string>;
+    isBelowThreshold: boolean;
     issue: Group;
     score: ScoreMap;
     scoresByInterface: Record<string, Array<[string, number | null]>>;
-    aggregate: Record<string, number>;
-    isBelowThreshold: boolean;
   };
 };
 
@@ -98,8 +119,8 @@ type ResultsAsArrayDataMerged = Parameters<ResponseProcessors['merged']>[0];
 type ResultsAsArrayDataSimilar = Array<Parameters<ResponseProcessors['similar']>[0]>;
 
 type ResultsAsArray = Array<{
-  dataKey: DataKey;
   data: ResultsAsArrayDataMerged | ResultsAsArrayDataSimilar;
+  dataKey: DataKey;
   links: string | null;
 }>;
 
@@ -109,78 +130,84 @@ type IdState = {
   collapsed?: boolean;
 };
 
-type GroupingStoreInterface = Reflux.StoreDefinition & {
-  init: () => void;
-  getInitialState: () => State;
-  setStateForId: (
-    map: Map<string, IdState>,
-    idOrIds: Array<string> | string,
-    newState: IdState
-  ) => Array<IdState>;
-  isAllUnmergedSelected: () => boolean;
-  onFetch: (
-    toFetchArray?: Array<{
+type UnmergeResponse = Pick<
+  State,
+  | 'unmergeDisabled'
+  | 'unmergeState'
+  | 'unmergeList'
+  | 'enableFingerprintCompare'
+  | 'unmergeLastCollapsed'
+>;
+
+interface GroupingStoreDefinition extends StrictStoreDefinition<State> {
+  api: Client;
+  getInitialState(): State;
+  init(): void;
+  isAllUnmergedSelected(): boolean;
+  onFetch(
+    toFetchArray: Array<{
       dataKey: DataKey;
       endpoint: string;
       queryParams?: Record<string, any>;
     }>
-  ) => Promise<any>;
-  onToggleMerge: (id: string) => void;
-  onToggleUnmerge: (props: [string, string] | string) => void;
-  onUnmerge: (props: {
+  ): Promise<any>;
+  onMerge(props: {
+    projectId: Project['id'];
+    params?: {
+      groupId: Group['id'];
+      orgId: Organization['id'];
+    };
+    query?: string;
+  }): undefined | Promise<any>;
+  onToggleCollapseFingerprint(fingerprint: string): void;
+  onToggleCollapseFingerprints(): void;
+  onToggleMerge(id: string): void;
+  onToggleUnmerge(props: [string, string] | string): void;
+  onUnmerge(props: {
     groupId: Group['id'];
+    orgSlug: Organization['slug'];
+    errorMessage?: string;
     loadingMessage?: string;
     successMessage?: string;
-    errorMessage?: string;
-  }) => void;
-  onMerge: (props: {
-    params?: {
-      orgId: Organization['id'];
-      projectId: Project['id'];
-      groupId: Group['id'];
-    };
-    projectId?: Project['id'];
-    query?: string;
-  }) => undefined | Promise<any>;
-  onToggleCollapseFingerprints: () => void;
-  onToggleCollapseFingerprint: (fingerprint: string) => void;
-  triggerFetchState: () => Pick<
-    State,
-    | 'similarItems'
-    | 'filteredSimilarItems'
-    | 'mergedItems'
-    | 'mergedLinks'
-    | 'similarLinks'
-    | 'mergeState'
-    | 'unmergeState'
-    | 'loading'
-    | 'error'
+  }): Promise<UnmergeResponse>;
+  /**
+   * Updates mergeState
+   */
+  setStateForId(
+    stateProperty: 'mergeState' | 'unmergeState',
+    idOrIds: string[] | string,
+    newState: IdState
+  ): void;
+  triggerFetchState(): Readonly<
+    Pick<
+      State,
+      | 'similarItems'
+      | 'filteredSimilarItems'
+      | 'mergedItems'
+      | 'mergedLinks'
+      | 'similarLinks'
+      | 'mergeState'
+      | 'unmergeState'
+      | 'loading'
+      | 'error'
+    >
   >;
-  triggerUnmergeState: () => Pick<
-    State,
-    | 'unmergeDisabled'
-    | 'unmergeState'
-    | 'unmergeList'
-    | 'enableFingerprintCompare'
-    | 'unmergeLastCollapsed'
+  triggerMergeState(): Readonly<
+    Pick<State, 'mergeState' | 'mergeDisabled' | 'mergeList'>
   >;
-  triggerMergeState: () => Pick<State, 'mergeState' | 'mergeDisabled' | 'mergeList'>;
-};
+  triggerUnmergeState(): Readonly<UnmergeResponse>;
+}
 
-type Internals = {
-  api: Client;
-};
-
-const storeConfig: Reflux.StoreDefinition & Internals & GroupingStoreInterface = {
-  listenables: [GroupingActions],
+const storeConfig: GroupingStoreDefinition = {
+  // This will be populated on init
+  state: {} as State,
   api: new Client(),
 
   init() {
-    const state = this.getInitialState();
+    // XXX: Do not use `this.listenTo` in this store. We avoid usage of reflux
+    // listeners due to their leaky nature in tests.
 
-    Object.entries(state).forEach(([key, value]) => {
-      this[key] = value;
-    });
+    this.state = this.getInitialState();
   },
 
   getInitialState() {
@@ -209,43 +236,41 @@ const storeConfig: Reflux.StoreDefinition & Internals & GroupingStoreInterface =
     };
   },
 
-  setStateForId(map, idOrIds, newState) {
-    const ids = Array.isArray(idOrIds) ? idOrIds : [idOrIds];
+  setStateForId(stateProperty, idOrIds, newState) {
+    const ids = toArray(idOrIds);
+    const newMap = new Map(this.state[stateProperty]);
 
-    return ids.map(id => {
-      const state = (map.has(id) && map.get(id)) || {};
+    ids.forEach(id => {
+      const state = newMap.get(id) ?? {};
       const mergedState = {...state, ...newState};
-      map.set(id, mergedState);
-      return mergedState;
+      newMap.set(id, mergedState);
     });
+    this.state = {...this.state, [stateProperty]: newMap};
   },
 
   isAllUnmergedSelected() {
     const lockedItems =
-      (Array.from(this.unmergeState.values()) as Array<IdState>).filter(
+      (Array.from(this.state.unmergeState.values()) as IdState[]).filter(
         ({busy}) => busy
       ) || [];
     return (
-      this.unmergeList.size ===
-      this.mergedItems.filter(({latestEvent}) => !!latestEvent).length -
+      this.state.unmergeList.size ===
+      this.state.mergedItems.filter(({latestEvent}) => !!latestEvent).length -
         lockedItems.length
     );
   },
 
   // Fetches data
   onFetch(toFetchArray) {
-    const requests = toFetchArray || this.toFetchArray;
-
     // Reset state and trigger update
     this.init();
     this.triggerFetchState();
 
-    const promises = requests.map(
-      ({endpoint, queryParams, dataKey}) =>
+    const promises = toFetchArray.map(
+      ({endpoint, dataKey}) =>
         new Promise((resolve, reject) => {
           this.api.request(endpoint, {
             method: 'GET',
-            data: queryParams,
             success: (data, _, resp) => {
               resolve({
                 dataKey,
@@ -255,6 +280,7 @@ const storeConfig: Reflux.StoreDefinition & Internals & GroupingStoreInterface =
             },
             error: err => {
               const error = err.responseJSON?.detail || true;
+              // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
               reject(error);
             },
           });
@@ -277,7 +303,7 @@ const storeConfig: Reflux.StoreDefinition & Internals & GroupingStoreInterface =
               ...item,
             };
             // Check for locked items
-            this.setStateForId(this.unmergeState, item.id, {
+            this.setStateForId('unmergeState', item.id, {
               busy: item.state === 'locked',
             });
 
@@ -285,7 +311,7 @@ const storeConfig: Reflux.StoreDefinition & Internals & GroupingStoreInterface =
             newItems.push(newItem);
           }
 
-          const newItem = newItemsMap[item.id];
+          const newItem = newItemsMap[item.id]!;
           const {childId, childLabel, eventCount, lastSeen, latestEvent} = item;
 
           if (eventCount) {
@@ -306,39 +332,53 @@ const storeConfig: Reflux.StoreDefinition & Internals & GroupingStoreInterface =
         return newItems;
       },
       similar: ([issue, scoreMap]) => {
+        // Check which similarity endpoint is being used
+        const hasSimilarityEmbeddingsFeature = toFetchArray[0]?.endpoint.includes(
+          'similar-issues-embeddings'
+        );
+
         // Hide items with a low scores
-        const isBelowThreshold = checkBelowThreshold(scoreMap);
+        const isBelowThreshold = hasSimilarityEmbeddingsFeature
+          ? false
+          : checkBelowThreshold(scoreMap);
 
         // List of scores indexed by interface (i.e., exception and message)
         // Note: for v2, the interface is always "similarity". When v2 is
         // rolled out we can get rid of this grouping entirely.
-        const scoresByInterface = Object.keys(scoreMap)
-          .map(scoreKey => [scoreKey, scoreMap[scoreKey]])
-          .reduce((acc, [scoreKey, score]) => {
+        const scoresByInterface = Object.entries(scoreMap).reduce(
+          (acc, [scoreKey, score]) => {
             // v1 layout: '<interface>:...'
-            const [interfaceName] = String(scoreKey).split(':');
+            const [interfaceName] = String(scoreKey).split(':') as [string];
 
+            // @ts-expect-error TS(7053): Element implicitly has an 'any' type because expre... Remove this comment to see the full error message
             if (!acc[interfaceName]) {
+              // @ts-expect-error TS(7053): Element implicitly has an 'any' type because expre... Remove this comment to see the full error message
               acc[interfaceName] = [];
             }
+            // @ts-expect-error TS(7053): Element implicitly has an 'any' type because expre... Remove this comment to see the full error message
             acc[interfaceName].push([scoreKey, score]);
 
             return acc;
-          }, {});
+          },
+          {}
+        );
 
         // Aggregate score by interface
-        const aggregate = Object.keys(scoresByInterface)
-          .map(interfaceName => [interfaceName, scoresByInterface[interfaceName]])
-          .reduce((acc, [interfaceName, allScores]) => {
+        const aggregate = Object.entries(scoresByInterface).reduce(
+          (acc, [interfaceName, allScores]) => {
             // `null` scores means feature was not present in both issues, do not
             // include in aggregate
+            // @ts-expect-error TS(7031): Binding element 'score' implicitly has an 'any' ty... Remove this comment to see the full error message
             const scores = allScores.filter(([, score]) => score !== null);
 
-            const avg = scores.reduce((sum, [, score]) => sum + score, 0) / scores.length;
-
-            acc[interfaceName] = avg;
+            const avg =
+              scores.reduce((sum: any, [, score]: any) => sum + score, 0) / scores.length;
+            // @ts-expect-error TS(7053): Element implicitly has an 'any' type because expre... Remove this comment to see the full error message
+            acc[interfaceName] = hasSimilarityEmbeddingsFeature ? scores[0][1] : avg;
             return acc;
-          }, {});
+          },
+          {}
+        );
 
         return {
           issue,
@@ -350,10 +390,6 @@ const storeConfig: Reflux.StoreDefinition & Internals & GroupingStoreInterface =
       },
     };
 
-    if (toFetchArray) {
-      this.toFetchArray = toFetchArray;
-    }
-
     return Promise.all(promises).then(
       resultsArray => {
         (resultsArray as ResultsAsArray).forEach(({dataKey, data, links}) => {
@@ -362,18 +398,22 @@ const storeConfig: Reflux.StoreDefinition & Internals & GroupingStoreInterface =
               ? (data as ResultsAsArrayDataSimilar).map(responseProcessors[dataKey])
               : responseProcessors[dataKey](data as ResultsAsArrayDataMerged);
 
-          this[`${dataKey}Items`] = items;
-          this[`${dataKey}Links`] = links;
+          this.state = {
+            ...this.state,
+            // Types here are pretty rough
+            [`${dataKey}Items`]: items,
+            [`${dataKey}Links`]: links,
+          };
         });
 
-        this.loading = false;
-        this.error = false;
+        this.state = {...this.state, loading: false, error: false};
         this.triggerFetchState();
+        return resultsArray;
       },
       () => {
-        this.loading = false;
-        this.error = true;
+        this.state = {...this.state, loading: false, error: true};
         this.triggerFetchState();
+        return [];
       }
     );
   },
@@ -383,22 +423,25 @@ const storeConfig: Reflux.StoreDefinition & Internals & GroupingStoreInterface =
     let checked = false;
 
     // Don't do anything if item is busy
-    const state = this.mergeState.has(id) ? this.mergeState.get(id) : undefined;
+    const state = this.state.mergeState.has(id)
+      ? this.state.mergeState.get(id)
+      : undefined;
 
     if (state?.busy === true) {
       return;
     }
 
-    if (this.mergeList.includes(id)) {
-      this.mergeList = this.mergeList.filter(item => item !== id);
+    if (this.state.mergeList.includes(id)) {
+      this.state = {
+        ...this.state,
+        mergeList: this.state.mergeList.filter(item => item !== id),
+      };
     } else {
-      this.mergeList = [...this.mergeList, id];
+      this.state = {...this.state, mergeList: [...this.state.mergeList, id]};
       checked = true;
     }
 
-    this.setStateForId(this.mergeState, id, {
-      checked,
-    });
+    this.setStateForId('mergeState', id, {checked});
 
     this.triggerMergeState();
   },
@@ -408,37 +451,39 @@ const storeConfig: Reflux.StoreDefinition & Internals & GroupingStoreInterface =
     let checked = false;
 
     // Uncheck an item to unmerge
-    const state = this.unmergeState.get(fingerprint);
+    const state = this.state.unmergeState.get(fingerprint);
 
     if (state?.busy === true) {
       return;
     }
 
-    if (this.unmergeList.has(fingerprint)) {
-      this.unmergeList.delete(fingerprint);
+    const newUnmergeList = new Map(this.state.unmergeList);
+    if (newUnmergeList.has(fingerprint)) {
+      newUnmergeList.delete(fingerprint);
     } else {
-      this.unmergeList.set(fingerprint, eventId);
+      newUnmergeList.set(fingerprint, eventId);
       checked = true;
     }
+    this.state = {...this.state, unmergeList: newUnmergeList};
 
     // Update "checked" state for row
-    this.setStateForId(this.unmergeState, fingerprint, {
-      checked,
-    });
+    this.setStateForId('unmergeState', fingerprint!, {checked});
 
     // Unmerge should be disabled if 0 or all items are selected, or if there's
     // only one item to select
-    this.unmergeDisabled =
-      this.mergedItems.size <= 1 ||
-      this.unmergeList.size === 0 ||
+    const unmergeDisabled =
+      this.state.mergedItems.length === 1 ||
+      this.state.unmergeList.size === 0 ||
       this.isAllUnmergedSelected();
-    this.enableFingerprintCompare = this.unmergeList.size === 2;
+
+    const enableFingerprintCompare = this.state.unmergeList.size === 2;
+    this.state = {...this.state, unmergeDisabled, enableFingerprintCompare};
 
     this.triggerUnmergeState();
   },
 
-  onUnmerge({groupId, loadingMessage, successMessage, errorMessage}) {
-    const ids = Array.from(this.unmergeList.keys()) as Array<string>;
+  onUnmerge({groupId, loadingMessage, orgSlug, successMessage, errorMessage}) {
+    const grouphashIds = Array.from(this.state.unmergeList.keys()) as string[];
 
     return new Promise((resolve, reject) => {
       if (this.isAllUnmergedSelected()) {
@@ -447,40 +492,32 @@ const storeConfig: Reflux.StoreDefinition & Internals & GroupingStoreInterface =
       }
 
       // Disable unmerge button
-      this.unmergeDisabled = true;
+      this.state = {...this.state, unmergeDisabled: true};
 
       // Disable rows
-      this.setStateForId(this.unmergeState, ids, {
-        checked: false,
-        busy: true,
-      });
+      this.setStateForId('unmergeState', grouphashIds, {checked: false, busy: true});
       this.triggerUnmergeState();
       addLoadingMessage(loadingMessage);
 
-      this.api.request(`/issues/${groupId}/hashes/`, {
-        method: 'DELETE',
+      this.api.request(`/organizations/${orgSlug}/issues/${groupId}/hashes/`, {
+        method: 'PUT',
         query: {
-          id: ids,
+          id: grouphashIds,
         },
         success: () => {
           addSuccessMessage(successMessage);
 
           // Busy rows after successful Unmerge
-          this.setStateForId(this.unmergeState, ids, {
-            checked: false,
-            busy: true,
-          });
-          this.unmergeList.clear();
+          this.setStateForId('unmergeState', grouphashIds, {checked: false, busy: true});
+          this.state.unmergeList.clear();
         },
-        error: () => {
+        error: error => {
+          errorMessage = error?.responseJSON?.detail || errorMessage;
           addErrorMessage(errorMessage);
-          this.setStateForId(this.unmergeState, ids, {
-            checked: true,
-            busy: false,
-          });
+          this.setStateForId('unmergeState', grouphashIds, {checked: true, busy: false});
         },
         complete: () => {
-          this.unmergeDisabled = false;
+          this.state = {...this.state, unmergeDisabled: false};
           resolve(this.triggerUnmergeState());
         },
       });
@@ -494,13 +531,11 @@ const storeConfig: Reflux.StoreDefinition & Internals & GroupingStoreInterface =
       return undefined;
     }
 
-    const ids = this.mergeList;
+    const ids = this.state.mergeList;
 
-    this.mergeDisabled = true;
+    this.state = {...this.state, mergeDisabled: true};
 
-    this.setStateForId(this.mergeState, ids as Array<string>, {
-      busy: true,
-    });
+    this.setStateForId('mergeState', ids, {busy: true});
 
     this.triggerMergeState();
 
@@ -512,8 +547,8 @@ const storeConfig: Reflux.StoreDefinition & Internals & GroupingStoreInterface =
         this.api,
         {
           orgId,
-          projectId: projectId || params.projectId,
-          itemIds: [...ids, groupId] as Array<number>,
+          projectId,
+          itemIds: [...ids, groupId],
           query,
         },
         {
@@ -525,20 +560,14 @@ const storeConfig: Reflux.StoreDefinition & Internals & GroupingStoreInterface =
             }
 
             // Hide rows after successful merge
-            this.setStateForId(this.mergeState, ids as Array<string>, {
-              checked: false,
-              busy: true,
-            });
-            this.mergeList = [];
+            this.setStateForId('mergeState', ids, {checked: false, busy: true});
+            this.state = {...this.state, mergeList: []};
           },
           error: () => {
-            this.setStateForId(this.mergeState, ids as Array<string>, {
-              checked: true,
-              busy: false,
-            });
+            this.setStateForId('mergeState', ids, {checked: true, busy: false});
           },
           complete: () => {
-            this.mergeDisabled = false;
+            this.state = {...this.state, mergeDisabled: false};
             resolve(this.triggerMergeState());
           },
         }
@@ -551,54 +580,46 @@ const storeConfig: Reflux.StoreDefinition & Internals & GroupingStoreInterface =
   // Toggle collapsed state of all fingerprints
   onToggleCollapseFingerprints() {
     this.setStateForId(
-      this.unmergeState,
-      this.mergedItems.map(({id}) => id),
+      'unmergeState',
+      this.state.mergedItems.map(({id}) => id),
       {
-        collapsed: !this.unmergeLastCollapsed,
+        collapsed: !this.state.unmergeLastCollapsed,
       }
     );
 
-    this.unmergeLastCollapsed = !this.unmergeLastCollapsed;
+    this.state = {
+      ...this.state,
+      unmergeLastCollapsed: !this.state.unmergeLastCollapsed,
+    };
 
     this.trigger({
-      unmergeLastCollapsed: this.unmergeLastCollapsed,
-      unmergeState: this.unmergeState,
+      unmergeLastCollapsed: this.state.unmergeLastCollapsed,
+      unmergeState: this.state.unmergeState,
     });
   },
 
   onToggleCollapseFingerprint(fingerprint) {
-    const collapsed =
-      this.unmergeState.has(fingerprint) && this.unmergeState.get(fingerprint).collapsed;
-    this.setStateForId(this.unmergeState, fingerprint, {collapsed: !collapsed});
-    this.trigger({
-      unmergeState: this.unmergeState,
-    });
+    const collapsed = this.state.unmergeState.get(fingerprint)?.collapsed;
+    this.setStateForId('unmergeState', fingerprint, {collapsed: !collapsed});
+    this.trigger({unmergeState: this.state.unmergeState});
   },
 
   triggerFetchState() {
-    const state = {
-      similarItems: this.similarItems.filter(({isBelowThreshold}) => !isBelowThreshold),
-      filteredSimilarItems: this.similarItems.filter(
+    this.state = {
+      ...this.state,
+      similarItems: this.state.similarItems.filter(
+        ({isBelowThreshold}) => !isBelowThreshold
+      ),
+      filteredSimilarItems: this.state.similarItems.filter(
         ({isBelowThreshold}) => isBelowThreshold
       ),
-      ...pick(this, [
-        'mergedItems',
-        'mergedLinks',
-        'similarLinks',
-        'mergeState',
-        'unmergeState',
-        'loading',
-        'error',
-        'enableFingerprintCompare',
-        'unmergeList',
-      ]),
     };
-    this.trigger(state);
-    return state;
+    this.trigger(this.state);
+    return this.state;
   },
 
   triggerUnmergeState() {
-    const state = pick(this, [
+    const state = pick(this.state, [
       'unmergeDisabled',
       'unmergeState',
       'unmergeList',
@@ -610,13 +631,15 @@ const storeConfig: Reflux.StoreDefinition & Internals & GroupingStoreInterface =
   },
 
   triggerMergeState() {
-    const state = pick(this, ['mergeDisabled', 'mergeState', 'mergeList']);
+    const state = pick(this.state, ['mergeDisabled', 'mergeState', 'mergeList']);
     this.trigger(state);
     return state;
   },
+
+  getState(): State {
+    return this.state;
+  },
 };
 
-const GroupingStore = Reflux.createStore(storeConfig) as Reflux.Store &
-  GroupingStoreInterface;
-
+const GroupingStore = createStore(storeConfig);
 export default GroupingStore;

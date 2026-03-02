@@ -1,26 +1,28 @@
-import * as React from 'react';
+import {useEffect} from 'react';
+import {Outlet} from 'react-router-dom';
 import styled from '@emotion/styled';
 
-import Link from 'app/components/links/link';
-import Panel from 'app/components/panels/panel';
-import {IconSentry} from 'app/icons';
-import space from 'app/styles/space';
+import {Link} from '@sentry/scraps/link';
+
+import Panel from 'sentry/components/panels/panel';
+import {IconSentry} from 'sentry/icons';
+import {space} from 'sentry/styles/space';
+import {AppBodyContent} from 'sentry/views/app/appBodyContent';
 
 const BODY_CLASSES = ['narrow'];
 
-class Layout extends React.Component {
-  componentDidMount() {
+/**
+ * Content component for auth-style layout.
+ */
+export function AuthLayoutContent({children}: {children: React.ReactNode}) {
+  useEffect(() => {
     document.body.classList.add(...BODY_CLASSES);
-  }
+    return () => document.body.classList.remove(...BODY_CLASSES);
+  }, []);
 
-  componentWillUnmount() {
-    document.body.classList.remove(...BODY_CLASSES);
-  }
-
-  render() {
-    const {children} = this.props;
-    return (
-      <div className="app">
+  return (
+    <div className="app">
+      <AppBodyContent>
         <AuthContainer>
           <div className="pattern-bg" />
           <AuthPanel>
@@ -30,9 +32,20 @@ class Layout extends React.Component {
             <div>{children}</div>
           </AuthPanel>
         </AuthContainer>
-      </div>
-    );
-  }
+      </AppBodyContent>
+    </div>
+  );
+}
+
+/**
+ * Route component version that renders children via Outlet.
+ */
+export default function AuthLayoutRoute() {
+  return (
+    <AuthLayoutContent>
+      <Outlet />
+    </AuthLayoutContent>
+  );
 }
 
 const AuthContainer = styled('div')`
@@ -53,7 +66,7 @@ const AuthSidebar = styled('div')`
   justify-content: center;
   align-items: flex-start;
   padding: ${space(3)};
-  border-radius: ${p => p.theme.borderRadius} 0 0 ${p => p.theme.borderRadius};
+  border-radius: ${p => p.theme.radius.md} 0 0 ${p => p.theme.radius.md};
   margin: -1px;
   margin-right: 0;
   background: #564f64;
@@ -67,7 +80,7 @@ const AuthSidebar = styled('div')`
 const SentryButton = styled(
   (p: Omit<React.ComponentPropsWithoutRef<typeof Link>, 'to'>) => (
     <Link to="/" {...p}>
-      <IconSentry size="24px" />
+      <IconSentry size="lg" />
     </Link>
   )
 )`
@@ -78,5 +91,3 @@ const SentryButton = styled(
     color: #fff;
   }
 `;
-
-export default Layout;

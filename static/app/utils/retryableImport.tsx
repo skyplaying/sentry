@@ -1,17 +1,16 @@
-import {isWebpackChunkLoadingError} from 'app/utils';
+import {isWebpackChunkLoadingError} from 'sentry/utils';
 
 const MAX_RETRIES = 2;
 
-export default async function retryableImport<T>(
+export default function retryableImport<T>(
   fn: () => Promise<{default: T}>
-): Promise<T> {
+): Promise<{default: T}> {
   let retries = 0;
   const tryLoad = async () => {
     try {
-      const module = await fn();
-      return module.default ?? module;
+      return await fn();
     } catch (err) {
-      if (isWebpackChunkLoadingError(err) && retries < MAX_RETRIES) {
+      if (isWebpackChunkLoadingError(err as Error) && retries < MAX_RETRIES) {
         retries++;
         return tryLoad();
       }

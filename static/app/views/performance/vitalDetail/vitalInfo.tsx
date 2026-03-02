@@ -1,45 +1,67 @@
-import {Location} from 'history';
+import type {Location} from 'history';
 
-import {WebVital} from 'app/utils/discover/fields';
-import VitalsCardDiscoverQuery from 'app/utils/performance/vitals/vitalsCardsDiscoverQuery';
+import type {Organization} from 'sentry/types/organization';
+import toArray from 'sentry/utils/array/toArray';
+import type EventView from 'sentry/utils/discover/eventView';
+import type {WebVital} from 'sentry/utils/fields';
+import VitalsCardDiscoverQuery from 'sentry/utils/performance/vitals/vitalsCardsDiscoverQuery';
+import {VitalBar} from 'sentry/views/performance/landing/vitalsCards';
 
-import {VitalBar} from '../landing/vitalsCards';
+type ViewProps = Pick<
+  EventView,
+  'environment' | 'project' | 'start' | 'end' | 'statsPeriod'
+>;
 
-type Props = {
+type Props = ViewProps & {
   location: Location;
+  orgSlug: Organization['slug'];
   vital: WebVital | WebVital[];
   hideBar?: boolean;
+  hideDurationDetail?: boolean;
   hideStates?: boolean;
   hideVitalPercentNames?: boolean;
-  hideDurationDetail?: boolean;
+  hideVitalThresholds?: boolean;
+  isLoading?: boolean;
+  p75AllTransactions?: number;
+  queryExtras?: Record<string, string>;
 };
 
-export default function vitalInfo(props: Props) {
-  const {
+function VitalInfo({
+  vital,
+  location,
+  isLoading,
+  hideBar,
+  hideStates,
+  hideVitalPercentNames,
+  hideVitalThresholds,
+  hideDurationDetail,
+  queryExtras,
+}: Props) {
+  const vitals = toArray(vital);
+  const contentCommonProps = {
     vital,
-    location,
-    hideBar,
-    hideStates,
-    hideVitalPercentNames,
-    hideDurationDetail,
-  } = props;
+    showBar: !hideBar,
+    showStates: !hideStates,
+    showVitalPercentNames: !hideVitalPercentNames,
+    showVitalThresholds: !hideVitalThresholds,
+    showDurationDetail: !hideDurationDetail,
+  };
 
   return (
     <VitalsCardDiscoverQuery
       location={location}
-      vitals={Array.isArray(vital) ? vital : [vital]}
+      vitals={vitals}
+      queryExtras={queryExtras}
     >
-      {({isLoading, vitalsData}) => (
+      {({isLoading: loading, vitalsData}) => (
         <VitalBar
-          isLoading={isLoading}
+          {...contentCommonProps}
+          isLoading={isLoading || loading}
           data={vitalsData}
-          vital={vital}
-          showBar={!hideBar}
-          showStates={!hideStates}
-          showVitalPercentNames={!hideVitalPercentNames}
-          showDurationDetail={!hideDurationDetail}
         />
       )}
     </VitalsCardDiscoverQuery>
   );
 }
+
+export default VitalInfo;

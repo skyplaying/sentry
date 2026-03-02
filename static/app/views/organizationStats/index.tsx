@@ -1,81 +1,110 @@
-import {Component, Fragment} from 'react';
-import {RouteComponentProps} from 'react-router';
+import {Component} from 'react';
 import styled from '@emotion/styled';
-import {LocationDescriptorObject} from 'history';
+import type {Location, LocationDescriptorObject} from 'history';
 import omit from 'lodash/omit';
 import pick from 'lodash/pick';
-import moment from 'moment';
+import moment from 'moment-timezone';
 
-import {DateTimeObject} from 'app/components/charts/utils';
-import DropdownControl, {DropdownItem} from 'app/components/dropdownControl';
-import ErrorBoundary from 'app/components/errorBoundary';
-import {getParams} from 'app/components/organizations/globalSelectionHeader/getParams';
-import {ChangeData} from 'app/components/organizations/timeRangeSelector';
-import PageHeading from 'app/components/pageHeading';
-import PageTimeRangeSelector from 'app/components/pageTimeRangeSelector';
-import SentryDocumentTitle from 'app/components/sentryDocumentTitle';
-import {DEFAULT_RELATIVE_PERIODS, DEFAULT_STATS_PERIOD} from 'app/constants';
-import {t} from 'app/locale';
-import {PageContent, PageHeader} from 'app/styles/organization';
-import space from 'app/styles/space';
-import {
-  DataCategory,
-  DataCategoryName,
-  DateString,
-  Organization,
-  Project,
-  RelativePeriod,
-} from 'app/types';
-import withOrganization from 'app/utils/withOrganization';
+import {CompactSelect} from '@sentry/scraps/compactSelect';
+import {Flex} from '@sentry/scraps/layout';
+import {OverlayTrigger} from '@sentry/scraps/overlayTrigger';
 
-import {CHART_OPTIONS_DATACATEGORY, ChartDataTransform} from './usageChart';
+import type {DateTimeObject} from 'sentry/components/charts/utils';
+import ErrorBoundary from 'sentry/components/errorBoundary';
+import HookOrDefault from 'sentry/components/hookOrDefault';
+import * as Layout from 'sentry/components/layouts/thirds';
+import NoProjectMessage from 'sentry/components/noProjectMessage';
+import PageFiltersContainer from 'sentry/components/pageFilters/container';
+import {DatePageFilter} from 'sentry/components/pageFilters/date/datePageFilter';
+import PageFilterBar from 'sentry/components/pageFilters/pageFilterBar';
+import {normalizeDateTimeParams} from 'sentry/components/pageFilters/parse';
+import {ProjectPageFilter} from 'sentry/components/pageFilters/project/projectPageFilter';
+import usePageFilters from 'sentry/components/pageFilters/usePageFilters';
+import SentryDocumentTitle from 'sentry/components/sentryDocumentTitle';
+import {DATA_CATEGORY_INFO, DEFAULT_STATS_PERIOD} from 'sentry/constants';
+import {t} from 'sentry/locale';
+import ConfigStore from 'sentry/stores/configStore';
+import {DataCategory, type DataCategoryInfo, type PageFilters} from 'sentry/types/core';
+import type {Organization} from 'sentry/types/organization';
+import type {Project} from 'sentry/types/project';
+import {decodeScalar} from 'sentry/utils/queryString';
+import {useLocation} from 'sentry/utils/useLocation';
+import {useNavigate, type ReactRouter3Navigate} from 'sentry/utils/useNavigate';
+import useOrganization from 'sentry/utils/useOrganization';
+import {canUseMetricsStatsUI} from 'sentry/views/explore/metrics/metricsFlags';
+import HeaderTabs from 'sentry/views/organizationStats/header';
+import {getPerformanceBaseUrl} from 'sentry/views/performance/utils';
+import {makeProjectsPathname} from 'sentry/views/projects/pathname';
+import SettingsPageHeader from 'sentry/views/settings/components/settingsPageHeader';
+
+import type {ChartDataTransform} from './usageChart';
+import {CHART_OPTIONS_DATACATEGORY} from './usageChart';
 import UsageStatsOrg from './usageStatsOrg';
-import UsageStatsProjects from './usageStatsProjects';
+import {UsageStatsProjects} from './usageStatsProjects';
 
-const PAGE_QUERY_PARAMS = [
-  'pageStatsPeriod',
-  'pageStart',
-  'pageEnd',
-  'pageUtc',
+const HookHeader = HookOrDefault({hookName: 'component:org-stats-banner'});
+const HookOrgStatsProfilingBanner = HookOrDefault({
+  hookName: 'component:org-stats-profiling-banner',
+});
+
+export const PAGE_QUERY_PARAMS = [
+  // From DatePageFilter
+  'statsPeriod',
+  'start',
+  'end',
+  'utc',
+  // From data category selector
   'dataCategory',
+  // From UsageOrganizationStats
   'transform',
+  // From UsageProjectStats
   'sort',
   'query',
   'cursor',
+  'spikeCursor',
+  // From show data discarded on client toggle
+  'clientDiscard',
 ];
 
-type Props = {
+export type OrganizationStatsProps = {
+  location: Location;
+  navigate: ReactRouter3Navigate;
   organization: Organization;
-} & RouteComponentProps<{orgId: string}, {}>;
+  selection: PageFilters;
+};
 
-export class OrganizationStats extends Component<Props> {
-  get dataCategory(): DataCategory {
-    const dataCategory = this.props.location?.query?.dataCategory;
+export class OrganizationStatsInner extends Component<OrganizationStatsProps> {
+  get dataCategoryInfo(): DataCategoryInfo {
+    const dataCategoryPlural = this.props.location?.query?.dataCategory;
 
-    switch (dataCategory) {
-      case DataCategory.ERRORS:
-      case DataCategory.TRANSACTIONS:
-      case DataCategory.ATTACHMENTS:
-        return dataCategory as DataCategory;
-      default:
-        return DataCategory.ERRORS;
-    }
+    const categories = Object.values(DATA_CATEGORY_INFO);
+    const info = categories.find(c => c.plural === dataCategoryPlural);
+
+    // Default to errors
+    return info ?? DATA_CATEGORY_INFO.error;
   }
 
-  get dataCategoryName(): string {
-    const dataCategory = this.dataCategory;
-    return DataCategoryName[dataCategory] ?? t('Unknown Data Category');
+  get dataCategory() {
+    return this.dataCategoryInfo.plural;
+  }
+
+  get dataCategoryName() {
+    return this.dataCategoryInfo.titleName;
+  }
+
+  get dataCategoryApiName() {
+    return this.dataCategoryInfo.name;
   }
 
   get dataDatetime(): DateTimeObject {
-    const query = this.props.location?.query ?? {};
+    const params = this.props.selection.datetime;
 
     const {
       start,
       end,
       statsPeriod,
       utc: utcString,
-    } = getParams(query, {
+    } = normalizeDateTimeParams(params, {
       allowEmptyPeriod: true,
       allowAbsoluteDatetime: true,
       allowAbsolutePageDatetime: true,
@@ -108,22 +137,35 @@ export class OrganizationStats extends Component<Props> {
     return {period: DEFAULT_STATS_PERIOD};
   }
 
+  get clientDiscard(): boolean {
+    return this.props.location?.query?.clientDiscard === 'true';
+  }
+
   // Validation and type-casting should be handled by chart
   get chartTransform(): string | undefined {
-    return this.props.location?.query?.transform;
+    return decodeScalar(this.props.location?.query?.transform);
   }
 
   // Validation and type-casting should be handled by table
   get tableSort(): string | undefined {
-    return this.props.location?.query?.sort;
+    return decodeScalar(this.props.location?.query?.sort);
   }
 
   get tableQuery(): string | undefined {
-    return this.props.location?.query?.query;
+    return decodeScalar(this.props.location?.query?.query);
   }
 
   get tableCursor(): string | undefined {
-    return this.props.location?.query?.cursor;
+    return decodeScalar(this.props.location?.query?.cursor);
+  }
+
+  // Project selection from GlobalSelectionHeader
+  get projectIds(): number[] {
+    return this.props.selection.projects;
+  }
+
+  get isSingleProject(): boolean {
+    return this.projectIds.length === 1 && !this.projectIds.includes(-1);
   }
 
   getNextLocations = (project: Project): Record<string, LocationDescriptorObject> => {
@@ -142,11 +184,14 @@ export class OrganizationStats extends Component<Props> {
     return {
       performance: {
         ...nextLocation,
-        pathname: `/organizations/${organization.slug}/performance/`,
+        pathname: getPerformanceBaseUrl(organization.slug),
       },
       projectDetail: {
         ...nextLocation,
-        pathname: `/organizations/${organization.slug}/projects/${project.slug}/`,
+        pathname: makeProjectsPathname({
+          path: `/${project.slug}/`,
+          organization,
+        }),
       },
       issueList: {
         ...nextLocation,
@@ -158,44 +203,17 @@ export class OrganizationStats extends Component<Props> {
     };
   };
 
-  handleUpdateDatetime = (datetime: ChangeData): LocationDescriptorObject => {
-    const {start, end, relative, utc} = datetime;
-
-    if (start && end) {
-      const parser = utc ? moment.utc : moment;
-
-      return this.setStateOnUrl({
-        pageStatsPeriod: undefined,
-        pageStart: parser(start).format(),
-        pageEnd: parser(end).format(),
-        pageUtc: utc ?? undefined,
-      });
-    }
-
-    return this.setStateOnUrl({
-      pageStatsPeriod: (relative as RelativePeriod) || undefined,
-      pageStart: undefined,
-      pageEnd: undefined,
-      pageUtc: undefined,
-    });
-  };
-
   /**
-   * TODO: Enable user to set dateStart/dateEnd
-   *
    * See PAGE_QUERY_PARAMS for list of accepted keys on nextState
    */
   setStateOnUrl = (
     nextState: {
-      dataCategory?: DataCategory;
-      pageStatsPeriod?: RelativePeriod;
-      pageStart?: DateString;
-      pageEnd?: DateString;
-      pageUtc?: boolean | null;
-      transform?: ChartDataTransform;
-      sort?: string;
-      query?: string;
+      clientDiscard?: boolean;
       cursor?: string;
+      dataCategory?: DataCategory;
+      query?: string;
+      sort?: string;
+      transform?: ChartDataTransform;
     },
     options: {
       willUpdateRouter?: boolean;
@@ -203,7 +221,7 @@ export class OrganizationStats extends Component<Props> {
       willUpdateRouter: true,
     }
   ): LocationDescriptorObject => {
-    const {location, router} = this.props;
+    const {location, navigate} = this.props;
     const nextQueryParams = pick(nextState, PAGE_QUERY_PARAMS);
 
     const nextLocation = {
@@ -215,160 +233,214 @@ export class OrganizationStats extends Component<Props> {
     };
 
     if (options.willUpdateRouter) {
-      router.push(nextLocation);
+      navigate(nextLocation);
     }
 
     return nextLocation;
   };
 
-  renderPageControl = () => {
+  renderProjectPageControl = () => {
     const {organization} = this.props;
 
-    const {start, end, period, utc} = this.dataDatetime;
+    const isSelfHostedErrorsOnly = ConfigStore.get('isSelfHostedErrorsOnly');
+
+    const hasProfiling = organization.features.includes('continuous-profiling');
+    const hasProfilingStats = organization.features.includes(
+      'continuous-profiling-stats'
+    );
+
+    const options = CHART_OPTIONS_DATACATEGORY.filter(opt => {
+      if (isSelfHostedErrorsOnly) {
+        return opt.value === DataCategory.ERRORS;
+      }
+      if (opt.value === DataCategory.REPLAYS) {
+        return organization.features.includes('session-replay');
+      }
+      if (opt.value === DataCategory.SPANS) {
+        return organization.features.includes('span-stats');
+      }
+      if (opt.value === DataCategory.TRANSACTIONS) {
+        return !organization.features.includes('spans-usage-tracking');
+      }
+      if ([DataCategory.SEER_AUTOFIX, DataCategory.SEER_SCANNER].includes(opt.value)) {
+        return (
+          organization.features.includes('seer-billing') &&
+          organization.features.includes('seer-added')
+        );
+      }
+      if ([DataCategory.LOG_BYTE].includes(opt.value)) {
+        return organization.features.includes('ourlogs-enabled');
+      }
+      if ([DataCategory.LOG_ITEM].includes(opt.value)) {
+        return organization.features.includes('ourlogs-stats');
+      }
+      if ([DataCategory.TRACE_METRICS].includes(opt.value)) {
+        return canUseMetricsStatsUI(organization);
+      }
+      if (
+        [DataCategory.PROFILE_DURATION, DataCategory.PROFILE_DURATION_UI].includes(
+          opt.value
+        )
+      ) {
+        return hasProfiling || hasProfilingStats;
+      }
+      if (opt.value === DataCategory.PROFILES) {
+        return !hasProfilingStats;
+      }
+      if (opt.value === DataCategory.SIZE_ANALYSIS) {
+        return organization.features.includes('expose-category-size-analysis');
+      }
+      if (opt.value === DataCategory.INSTALLABLE_BUILD) {
+        return organization.features.includes('expose-category-installable-build');
+      }
+      return true;
+    }).map(opt => {
+      if ((hasProfiling || hasProfilingStats) && opt.value === DataCategory.PROFILES) {
+        return {...opt, label: `${opt.label} (legacy)`};
+      }
+      return opt;
+    });
 
     return (
-      <Fragment>
-        <StyledPageTimeRangeSelector
-          organization={organization}
-          relative={period ?? ''}
-          start={start ?? null}
-          end={end ?? null}
-          utc={utc ?? null}
-          onUpdate={this.handleUpdateDatetime}
-          relativeOptions={omit(DEFAULT_RELATIVE_PERIODS, ['1h'])}
-        />
-
-        <DropdownDataCategory
-          label={
-            <DropdownLabel>
-              <span>{t('Event Type: ')}</span>
-              <span>{this.dataCategoryName}</span>
-            </DropdownLabel>
-          }
-        >
-          {CHART_OPTIONS_DATACATEGORY.map(option => (
-            <DropdownItem
-              key={option.value}
-              eventKey={option.value}
-              onSelect={(val: string) =>
-                this.setStateOnUrl({dataCategory: val as DataCategory})
-              }
-            >
-              {option.label}
-            </DropdownItem>
-          ))}
-        </DropdownDataCategory>
-      </Fragment>
+      <PageControl>
+        <PageFilterBar>
+          <ProjectPageFilter />
+          <DropdownDataCategory
+            trigger={triggerProps => (
+              <OverlayTrigger.Button {...triggerProps} prefix={t('Category')} />
+            )}
+            value={this.dataCategory}
+            options={options}
+            onChange={opt =>
+              this.setStateOnUrl({dataCategory: opt.value as DataCategory})
+            }
+          />
+          <DatePageFilter />
+        </PageFilterBar>
+      </PageControl>
     );
   };
 
+  /**
+   * This method is replaced by the hook "component:enhanced-org-stats"
+   */
+  renderUsageStatsOrg() {
+    const {organization} = this.props;
+    return (
+      <UsageStatsOrg
+        projectIds={this.projectIds}
+        organization={organization}
+        dataCategory={this.dataCategory}
+        dataCategoryName={this.dataCategoryName}
+        dataCategoryApiName={this.dataCategoryApiName}
+        dataDatetime={this.dataDatetime}
+        chartTransform={this.chartTransform}
+        clientDiscard={this.clientDiscard}
+        handleChangeState={this.setStateOnUrl}
+      />
+    );
+  }
+
   render() {
     const {organization} = this.props;
+    const hasTeamInsights = organization.features.includes('team-insights');
+    const showProfilingBanner = this.dataCategory === 'profiles';
+
+    const noTeamInsightsHeader = (
+      <SettingsPageHeader
+        title={t('Stats & Usage')}
+        subtitle={t(
+          'A view of the usage data that Sentry has received across your entire organization.'
+        )}
+      />
+    );
 
     return (
-      <SentryDocumentTitle title="Usage Stats">
-        <PageContent>
-          <PageHeader>
-            <PageHeading>{t('Organization Usage Stats')}</PageHeading>
-          </PageHeader>
-
-          <p>
-            {t(
-              'We collect usage metrics on three types of events: errors, transactions, and attachments. The charts below reflect events that Sentry has received across your entire organization. You can also find them broken down by project in the table.'
+      <SentryDocumentTitle title={t('Usage Stats')} orgSlug={organization.slug}>
+        <NoProjectMessage organization={organization}>
+          <PageFiltersContainer>
+            {hasTeamInsights ? (
+              <HeaderTabs organization={organization} activeTab="stats" />
+            ) : (
+              noTeamInsightsHeader
             )}
-          </p>
-
-          <PageGrid>
-            {this.renderPageControl()}
-
-            <ErrorBoundary mini>
-              <UsageStatsOrg
-                organization={organization}
-                dataCategory={this.dataCategory}
-                dataCategoryName={this.dataCategoryName}
-                dataDatetime={this.dataDatetime}
-                chartTransform={this.chartTransform}
-                handleChangeState={this.setStateOnUrl}
-              />
-            </ErrorBoundary>
-            <ErrorBoundary mini>
-              <UsageStatsProjects
-                organization={organization}
-                dataCategory={this.dataCategory}
-                dataCategoryName={this.dataCategoryName}
-                dataDatetime={this.dataDatetime}
-                tableSort={this.tableSort}
-                tableQuery={this.tableQuery}
-                tableCursor={this.tableCursor}
-                handleChangeState={this.setStateOnUrl}
-                getNextLocations={this.getNextLocations}
-              />
-            </ErrorBoundary>
-          </PageGrid>
-        </PageContent>
+            <div>
+              <Layout.Main width="full">
+                <HookHeader organization={organization} />
+                <Flex justify="between" align="center" marginBottom="xl" gap="xs">
+                  {this.renderProjectPageControl()}
+                </Flex>
+                {showProfilingBanner && <HookOrgStatsProfilingBanner />}
+                <div>
+                  <ErrorBoundary mini>{this.renderUsageStatsOrg()}</ErrorBoundary>
+                </div>
+                <ErrorBoundary mini>
+                  <UsageStatsProjects
+                    dataCategory={this.dataCategoryInfo}
+                    dataCategoryName={this.dataCategoryInfo.titleName}
+                    isSingleProject={this.isSingleProject}
+                    projectIds={this.projectIds}
+                    dataDatetime={this.dataDatetime}
+                    tableSort={this.tableSort}
+                    tableQuery={this.tableQuery}
+                    tableCursor={this.tableCursor}
+                    handleChangeState={this.setStateOnUrl}
+                    getNextLocations={this.getNextLocations}
+                  />
+                </ErrorBoundary>
+              </Layout.Main>
+            </div>
+          </PageFiltersContainer>
+        </NoProjectMessage>
       </SentryDocumentTitle>
     );
   }
 }
 
-export default withOrganization(OrganizationStats);
+const HookOrgStats = HookOrDefault({
+  hookName: 'component:enhanced-org-stats',
+  defaultComponent: OrganizationStatsInner,
+});
 
-const PageGrid = styled('div')`
-  display: grid;
-  grid-template-columns: 1fr;
-  grid-gap: ${space(2)};
+export default function OrganizationStats() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const organization = useOrganization();
+  const pageFilters = usePageFilters();
+  return (
+    <HookOrgStats
+      location={location}
+      navigate={navigate}
+      organization={organization}
+      selection={pageFilters.selection}
+    />
+  );
+}
 
-  @media (min-width: ${p => p.theme.breakpoints[0]}) {
-    grid-template-columns: repeat(2, 1fr);
-  }
-  @media (min-width: ${p => p.theme.breakpoints[2]}) {
-    grid-template-columns: repeat(4, 1fr);
-  }
-`;
-
-const DropdownDataCategory = styled(DropdownControl)`
-  height: 42px;
+const DropdownDataCategory = styled(CompactSelect)`
+  width: auto;
+  position: relative;
   grid-column: auto / span 1;
-  justify-self: stretch;
-  align-self: stretch;
-  z-index: ${p => p.theme.zIndex.orgStats.dataCategory};
 
-  button {
+  button[aria-haspopup='listbox'] {
     width: 100%;
     height: 100%;
-
-    > span {
-      display: flex;
-      justify-content: space-between;
-    }
   }
 
-  @media (min-width: ${p => p.theme.breakpoints[0]}) {
+  @media (min-width: ${p => p.theme.breakpoints.sm}) {
     grid-column: auto / span 2;
   }
-  @media (min-width: ${p => p.theme.breakpoints[2]}) {
+  @media (min-width: ${p => p.theme.breakpoints.lg}) {
     grid-column: auto / span 1;
   }
 `;
 
-const StyledPageTimeRangeSelector = styled(PageTimeRangeSelector)`
-  grid-column: auto / span 1;
-  z-index: ${p => p.theme.zIndex.orgStats.timeRange};
+const PageControl = styled('div')`
+  display: grid;
 
-  @media (min-width: ${p => p.theme.breakpoints[0]}) {
-    grid-column: auto / span 2;
-  }
-  @media (min-width: ${p => p.theme.breakpoints[2]}) {
-    grid-column: auto / span 3;
-  }
-`;
-
-const DropdownLabel = styled('span')`
-  text-align: left;
-  font-weight: 600;
-  color: ${p => p.theme.textColor};
-
-  > span:last-child {
-    font-weight: 400;
+  margin-bottom: 0;
+  grid-template-columns: minmax(0, max-content);
+  @media (max-width: ${p => p.theme.breakpoints.sm}) {
+    grid-template-columns: minmax(0, 1fr);
   }
 `;

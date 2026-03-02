@@ -1,13 +1,15 @@
 from urllib.parse import urlencode
 
 import requests
-from django.conf.urls import url
-from django.utils.encoding import force_text
+from django.urls import re_path
+from django.utils.encoding import force_str
+from rest_framework.request import Request
 from rest_framework.response import Response
 
+from sentry.exceptions import PluginError
 from sentry.http import safe_urlopen, safe_urlread
-from sentry.integrations import FeatureDescription, IntegrationFeatures
-from sentry.plugins.bases.issue2 import IssueGroupActionEndpoint, IssuePlugin2, PluginError
+from sentry.integrations.base import FeatureDescription, IntegrationFeatures
+from sentry.plugins.bases.issue2 import IssueGroupActionEndpoint, IssuePlugin2
 from sentry.utils import json
 from sentry_plugins.base import CorePluginMixin
 from sentry_plugins.utils import get_secret_field_config
@@ -35,7 +37,7 @@ class PivotalPlugin(CorePluginMixin, IssuePlugin2):
         FeatureDescription(
             """
             Create and link Sentry issue groups directly to a Pivotal Tracker ticket in any of your
-            projects, providing a quick way to jump from a Sentry bug to tracked ticket!
+            projects, providing a quick way to jump from a Sentry bug to tracked ticket.
             """,
             IntegrationFeatures.ISSUE_BASIC,
         ),
@@ -49,16 +51,17 @@ class PivotalPlugin(CorePluginMixin, IssuePlugin2):
 
     def get_group_urls(self):
         return super().get_group_urls() + [
-            url(
+            re_path(
                 r"^autocomplete",
                 IssueGroupActionEndpoint.as_view(view_method_name="view_autocomplete", plugin=self),
+                name=f"sentry-api-0-plugins-{self.slug}-autocomplete",
             )
         ]
 
-    def is_configured(self, request, project, **kwargs):
+    def is_configured(self, project) -> bool:
         return all(self.get_option(k, project) for k in ("token", "project"))
 
-    def get_link_existing_issue_fields(self, request, group, event, **kwargs):
+    def get_link_existing_issue_fields(self, request: Request, group, event, **kwargs):
         return [
             {
                 "name": "issue_id",
@@ -73,23 +76,24 @@ class PivotalPlugin(CorePluginMixin, IssuePlugin2):
                 "label": "Comment",
                 "default": group.get_absolute_url(params={"referrer": "pivotal_plugin"}),
                 "type": "textarea",
-                "help": ("Leave blank if you don't want to " "add a comment to the Pivotal story."),
+                "help": ("Leave blank if you don't want to add a comment to the Pivotal story."),
                 "required": False,
             },
         ]
 
-    def handle_api_error(self, error):
+    def handle_api_error(self, error: Exception) -> Response:
         msg = "Error communicating with Pivotal Tracker"
         status = 400 if isinstance(error, PluginError) else 502
         return Response({"error_type": "validation", "errors": {"__all__": msg}}, status=status)
 
-    def view_autocomplete(self, request, group, **kwargs):
+    def view_autocomplete(self, request: Request, group, **kwargs):
         field = request.GET.get("autocomplete_field")
         query = request.GET.get("autocomplete_query")
         if field != "issue_id" or not query:
             return Response({"issue_id": []})
-        query = query.encode("utf-8")
-        _url = "{}?{}".format(self.build_api_url(group, "search"), urlencode({"query": query}))
+        _url = "{}?{}".format(
+            self.build_api_url(group, "search"), urlencode({"query": query.encode()})
+        )
         try:
             req = self.make_api_request(group.project, _url)
             body = safe_urlread(req)
@@ -108,7 +112,7 @@ class PivotalPlugin(CorePluginMixin, IssuePlugin2):
 
         return Response({field: issues})
 
-    def link_issue(self, request, group, form_data, **kwargs):
+    def link_issue(self, request: Request, group, form_data, **kwargs):
         comment = form_data.get("comment")
         if not comment:
             return
@@ -143,11 +147,11 @@ class PivotalPlugin(CorePluginMixin, IssuePlugin2):
         }
         return safe_urlopen(_url, json=json_data, headers=req_headers, allow_redirects=True)
 
-    def create_issue(self, request, group, form_data, **kwargs):
+    def create_issue(self, request: Request, group, form_data):
         json_data = {
             "story_type": "bug",
-            "name": force_text(form_data["title"], encoding="utf-8", errors="replace"),
-            "description": force_text(form_data["description"], encoding="utf-8", errors="replace"),
+            "name": force_str(form_data["title"], encoding="utf-8", errors="replace"),
+            "description": force_str(form_data["description"], encoding="utf-8", errors="replace"),
             "labels": ["sentry"],
         }
 
@@ -170,21 +174,13 @@ class PivotalPlugin(CorePluginMixin, IssuePlugin2):
 
         return json_resp["id"]
 
-    def get_issue_label(self, group, issue_id, **kwargs):
+    def get_issue_label(self, group, issue_id: str) -> str:
         return "#%s" % issue_id
 
-    def get_issue_url(self, group, issue_id, **kwargs):
+    def get_issue_url(self, group, issue_id: str) -> str:
         return "https://www.pivotaltracker.com/story/show/%s" % issue_id
 
-    def get_issue_title_by_id(self, request, group, issue_id):
-        _url = "{}/{}".format(self.build_api_url(group, "stories"), issue_id)
-        req = self.make_api_request(group.project, _url)
-
-        body = safe_urlread(req)
-        json_resp = json.loads(body)
-        return json_resp["name"]
-
-    def get_configure_plugin_fields(self, request, project, **kwargs):
+    def get_configure_plugin_fields(self, project, **kwargs):
         token = self.get_option("token", project)
         helptext = (
             "Enter your API Token (found on "

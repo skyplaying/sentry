@@ -1,306 +1,351 @@
-import * as React from 'react';
+import {Fragment, useCallback} from 'react';
 import styled from '@emotion/styled';
-import {Location} from 'history';
+import type {Location} from 'history';
 
-import Feature from 'app/components/acl/feature';
-import {GuideAnchor} from 'app/components/assistant/guideAnchor';
-import ButtonBar from 'app/components/buttonBar';
-import {CreateAlertFromViewButton} from 'app/components/createAlertButton';
-import FeatureBadge from 'app/components/featureBadge';
-import * as Layout from 'app/components/layouts/thirds';
-import ListLink from 'app/components/links/listLink';
-import NavTabs from 'app/components/navTabs';
-import {t} from 'app/locale';
-import {Organization, Project} from 'app/types';
-import {trackAnalyticsEvent} from 'app/utils/analytics';
-import EventView from 'app/utils/discover/eventView';
-import HasMeasurementsQuery from 'app/utils/performance/vitals/hasMeasurementsQuery';
-import {decodeScalar} from 'app/utils/queryString';
-import Breadcrumb from 'app/views/performance/breadcrumb';
+import {Grid} from '@sentry/scraps/layout';
+import {TabList} from '@sentry/scraps/tabs';
+import {Tooltip} from '@sentry/scraps/tooltip';
 
-import {getCurrentLandingDisplay, LandingDisplayField} from '../landing/utils';
+import Feature from 'sentry/components/acl/feature';
+import GuideAnchor from 'sentry/components/assistant/guideAnchor';
+import {CreateAlertFromViewButton} from 'sentry/components/createAlertButton';
+import FeedbackButton from 'sentry/components/feedbackButton/feedbackButton';
+import IdBadge from 'sentry/components/idBadge';
+import * as Layout from 'sentry/components/layouts/thirds';
+import ReplayCountBadge from 'sentry/components/replays/replayCountBadge';
+import {t} from 'sentry/locale';
+import type {Organization} from 'sentry/types/organization';
+import type {Project} from 'sentry/types/project';
+import {trackAnalytics} from 'sentry/utils/analytics';
+import type EventView from 'sentry/utils/discover/eventView';
+import type {MetricsCardinalityContext} from 'sentry/utils/performance/contexts/metricsCardinality';
+import {isProfilingSupportedOrProjectHasProfiles} from 'sentry/utils/profiling/platforms';
+import useReplayCountForTransactions from 'sentry/utils/replayCount/useReplayCountForTransactions';
+import projectSupportsReplay from 'sentry/utils/replays/projectSupportsReplay';
+import normalizeUrl from 'sentry/utils/url/normalizeUrl';
+import {useNavigate} from 'sentry/utils/useNavigate';
+import {deprecateTransactionAlerts} from 'sentry/views/insights/common/utils/hasEAPAlerts';
+import {BackendHeader} from 'sentry/views/insights/pages/backend/backendPageHeader';
+import {BACKEND_LANDING_SUB_PATH} from 'sentry/views/insights/pages/backend/settings';
+import {FrontendHeader} from 'sentry/views/insights/pages/frontend/frontendPageHeader';
+import {FRONTEND_LANDING_SUB_PATH} from 'sentry/views/insights/pages/frontend/settings';
+import {MobileHeader} from 'sentry/views/insights/pages/mobile/mobilePageHeader';
+import {MOBILE_LANDING_SUB_PATH} from 'sentry/views/insights/pages/mobile/settings';
+import {useDomainViewFilters} from 'sentry/views/insights/pages/useFilters';
+import Breadcrumb, {getTabCrumbs} from 'sentry/views/performance/breadcrumb';
+import {TAB_ANALYTICS} from 'sentry/views/performance/transactionSummary/pageLayout';
+import {eventsRouteWithQuery} from 'sentry/views/performance/transactionSummary/transactionEvents/utils';
+import {profilesRouteWithQuery} from 'sentry/views/performance/transactionSummary/transactionProfiles/utils';
+import {replaysRouteWithQuery} from 'sentry/views/performance/transactionSummary/transactionReplays/utils';
+import {tagsRouteWithQuery} from 'sentry/views/performance/transactionSummary/transactionTags/utils';
+import {transactionSummaryRouteWithQuery} from 'sentry/views/performance/transactionSummary/utils';
+import {getSelectedProjectPlatforms} from 'sentry/views/performance/utils';
 
-import {eventsRouteWithQuery} from './transactionEvents/utils';
-import {spansRouteWithQuery} from './transactionSpans/utils';
-import {tagsRouteWithQuery} from './transactionTags/utils';
-import {vitalsRouteWithQuery} from './transactionVitals/utils';
 import Tab from './tabs';
 import TeamKeyTransactionButton from './teamKeyTransactionButton';
 import TransactionThresholdButton from './transactionThresholdButton';
-import {TransactionThresholdMetric} from './transactionThresholdModal';
-import {transactionSummaryRouteWithQuery} from './utils';
-
-type AnalyticInfo = {
-  eventKey: string;
-  eventName: string;
-};
-
-const TAB_ANALYTICS: Partial<Record<Tab, AnalyticInfo>> = {
-  [Tab.WebVitals]: {
-    eventKey: 'performance_views.vitals.vitals_tab_clicked',
-    eventName: 'Performance Views: Vitals tab clicked',
-  },
-  [Tab.Tags]: {
-    eventKey: 'performance_views.tags.tags_tab_clicked',
-    eventName: 'Performance Views: Tags tab clicked',
-  },
-  [Tab.Events]: {
-    eventKey: 'performance_views.events.events_tab_clicked',
-    eventName: 'Performance Views: Events tab clicked',
-  },
-  [Tab.Spans]: {
-    eventKey: 'performance_views.spans.spans_tab_clicked',
-    eventName: 'Performance Views: Spans tab clicked',
-  },
-};
+import type {TransactionThresholdMetric} from './transactionThresholdModal';
 
 type Props = {
+  currentTab: Tab;
   eventView: EventView;
   location: Location;
   organization: Organization;
-  projects: Project[];
   projectId: string;
+  projects: Project[];
   transactionName: string;
-  currentTab: Tab;
-  hasWebVitals: 'maybe' | 'yes' | 'no';
+  metricsCardinality?: MetricsCardinalityContext;
   onChangeThreshold?: (threshold: number, metric: TransactionThresholdMetric) => void;
-  handleIncompatibleQuery: React.ComponentProps<
-    typeof CreateAlertFromViewButton
-  >['onIncompatibleQuery'];
 };
 
-class TransactionHeader extends React.Component<Props> {
-  trackAlertClick(errors?: Record<string, boolean>) {
-    const {organization} = this.props;
-    trackAnalyticsEvent({
-      eventKey: 'performance_views.summary.create_alert_clicked',
-      eventName: 'Performance Views: Create alert clicked',
-      organization_id: organization.id,
-      status: errors ? 'error' : 'success',
-      errors,
-      url: window.location.href,
-    });
-  }
+function TransactionHeader({
+  eventView,
+  organization,
+  projects,
+  projectId,
+  metricsCardinality,
+  location,
+  transactionName,
+  onChangeThreshold,
+  currentTab,
+}: Props) {
+  const {isInDomainView, view} = useDomainViewFilters();
+  const navigate = useNavigate();
 
-  trackTabClick = (tab: Tab) => () => {
-    const analyticKeys = TAB_ANALYTICS[tab];
-    if (!analyticKeys) {
-      return;
-    }
+  const getNewRoute = useCallback(
+    (newTab: Tab) => {
+      if (!transactionName) {
+        return {};
+      }
 
-    trackAnalyticsEvent({
-      ...analyticKeys,
-      organization_id: this.props.organization.id,
-    });
-  };
+      const routeQuery = {
+        organization,
+        transaction: transactionName,
+        projectID: projectId,
+        query: location.query,
+        view,
+      };
 
-  handleIncompatibleQuery: React.ComponentProps<
-    typeof CreateAlertFromViewButton
-  >['onIncompatibleQuery'] = (incompatibleAlertNoticeFn, errors) => {
-    this.trackAlertClick(errors);
-    this.props.handleIncompatibleQuery?.(incompatibleAlertNoticeFn, errors);
-  };
-
-  handleCreateAlertSuccess = () => {
-    this.trackAlertClick();
-  };
-
-  renderCreateAlertButton() {
-    const {eventView, organization, projects} = this.props;
-
-    return (
-      <CreateAlertFromViewButton
-        eventView={eventView}
-        organization={organization}
-        projects={projects}
-        onIncompatibleQuery={this.handleIncompatibleQuery}
-        onSuccess={this.handleCreateAlertSuccess}
-        referrer="performance"
-      />
-    );
-  }
-
-  renderKeyTransactionButton() {
-    const {eventView, organization, transactionName} = this.props;
-
-    return (
-      <TeamKeyTransactionButton
-        transactionName={transactionName}
-        eventView={eventView}
-        organization={organization}
-      />
-    );
-  }
-
-  renderSettingsButton() {
-    const {organization, transactionName, eventView, onChangeThreshold} = this.props;
-
-    return (
-      <GuideAnchor target="project_transaction_threshold_override" position="bottom">
-        <TransactionThresholdButton
-          organization={organization}
-          transactionName={transactionName}
-          eventView={eventView}
-          onChangeThreshold={onChangeThreshold}
-        />
-      </GuideAnchor>
-    );
-  }
-
-  renderWebVitalsTab() {
-    const {
-      organization,
-      eventView,
-      location,
-      projects,
-      transactionName,
-      currentTab,
-      hasWebVitals,
-    } = this.props;
-
-    const vitalsTarget = vitalsRouteWithQuery({
-      orgSlug: organization.slug,
-      transaction: transactionName,
-      projectID: decodeScalar(location.query.project),
-      query: location.query,
-    });
-
-    const tab = (
-      <ListLink
-        data-test-id="web-vitals-tab"
-        to={vitalsTarget}
-        isActive={() => currentTab === Tab.WebVitals}
-        onClick={this.trackTabClick(Tab.WebVitals)}
-      >
-        {t('Web Vitals')}
-      </ListLink>
-    );
-
-    switch (hasWebVitals) {
-      case 'maybe':
-        // need to check if the web vitals tab should be shown
-
-        // frontend projects should always show the web vitals tab
-        if (
-          getCurrentLandingDisplay(location, projects, eventView).field ===
-          LandingDisplayField.FRONTEND_PAGELOAD
-        ) {
-          return tab;
+      switch (newTab) {
+        case Tab.TAGS:
+          return tagsRouteWithQuery(routeQuery);
+        case Tab.EVENTS:
+          return eventsRouteWithQuery(routeQuery);
+        case Tab.REPLAYS:
+          return replaysRouteWithQuery(routeQuery);
+        case Tab.PROFILING: {
+          return profilesRouteWithQuery(routeQuery);
         }
+        case Tab.TRANSACTION_SUMMARY:
+        default:
+          return transactionSummaryRouteWithQuery(routeQuery);
+      }
+    },
+    [location.query, organization, projectId, transactionName, view]
+  );
 
-        // if it is not a frontend project, then we check to see if there
-        // are any web vitals associated with the transaction recently
-        return (
-          <HasMeasurementsQuery
-            location={location}
-            orgSlug={organization.slug}
+  const onTabChange = useCallback(
+    (newTab: string) => {
+      // Prevent infinite rerenders
+      if (newTab === currentTab) {
+        return;
+      }
+
+      // @ts-expect-error TS(7053): Element implicitly has an 'any' type because expre... Remove this comment to see the full error message
+      const analyticsKey = TAB_ANALYTICS[newTab];
+      if (analyticsKey) {
+        trackAnalytics(analyticsKey, {
+          organization,
+          project_platforms: getSelectedProjectPlatforms(location, projects),
+        });
+      }
+
+      navigate(normalizeUrl(getNewRoute(newTab as Tab)));
+    },
+    [getNewRoute, organization, location, projects, currentTab, navigate]
+  );
+
+  function handleCreateAlertSuccess() {
+    trackAnalytics('performance_views.summary.create_alert_clicked', {
+      organization,
+    });
+  }
+
+  const project = projects.find(p => p.id === projectId);
+
+  const hasSessionReplay =
+    organization.features.includes('session-replay') &&
+    project &&
+    projectSupportsReplay(project);
+
+  const hasProfiling =
+    project &&
+    organization.features.includes('profiling') &&
+    isProfilingSupportedOrProjectHasProfiles(project);
+
+  // Hard-code 90d for the replay tab to surface more interesting data.
+  const {getReplayCountForTransaction} = useReplayCountForTransactions({
+    statsPeriod: '90d',
+  });
+  const replaysCount = getReplayCountForTransaction(transactionName);
+
+  const tabList = (
+    <TabList
+      outerWrapStyles={{
+        gridColumn: '1 / -1',
+      }}
+    >
+      <TabList.Item key={Tab.TRANSACTION_SUMMARY}>{t('Overview')}</TabList.Item>
+      <TabList.Item key={Tab.EVENTS}>{t('Sampled Events')}</TabList.Item>
+      <TabList.Item key={Tab.TAGS}>{t('Tags')}</TabList.Item>
+      <TabList.Item key={Tab.REPLAYS} textValue={t('Replays')} hidden={!hasSessionReplay}>
+        {t('Replays')}
+        <ReplayCountBadge count={replaysCount} />
+      </TabList.Item>
+      <TabList.Item key={Tab.PROFILING} textValue={t('Profiling')} hidden={!hasProfiling}>
+        {t('Profiles')}
+      </TabList.Item>
+    </TabList>
+  );
+
+  if (isInDomainView) {
+    const headerProps = {
+      headerTitle: (
+        <Fragment>
+          {project && (
+            <IdBadge
+              project={project}
+              avatarSize={28}
+              hideName
+              avatarProps={{hasTooltip: true, tooltip: project.slug}}
+            />
+          )}
+          <Tooltip showOnlyOnOverflow skipWrapper title={transactionName}>
+            <TransactionName>{transactionName}</TransactionName>
+          </Tooltip>
+        </Fragment>
+      ),
+      hideDefaultTabs: true,
+      tabs: {
+        onTabChange,
+        tabList,
+        value: currentTab,
+      },
+      breadcrumbs: getTabCrumbs({
+        location,
+        organization,
+        transaction: {
+          name: transactionName,
+          project: projectId,
+        },
+        view,
+      }),
+      headerActions: (
+        <Fragment>
+          <Feature organization={organization} features="incidents">
+            {({hasFeature}) =>
+              hasFeature && !metricsCardinality?.isLoading ? (
+                <CreateAlertFromViewButton
+                  size="sm"
+                  eventView={eventView}
+                  organization={organization}
+                  projects={projects}
+                  onClick={handleCreateAlertSuccess}
+                  referrer="performance"
+                  alertType="trans_duration"
+                  aria-label={t('Create Alert')}
+                  disableMetricDataset={
+                    metricsCardinality?.outcome?.forceTransactionsOnly
+                  }
+                />
+              ) : null
+            }
+          </Feature>
+          <TeamKeyTransactionButton
             eventView={eventView}
-            transaction={transactionName}
-            type="web"
-          >
-            {({hasMeasurements}) => (hasMeasurements ? tab : null)}
-          </HasMeasurementsQuery>
-        );
-      case 'yes':
-        // always show the web vitals tab
-        return tab;
-      case 'no':
-      default:
-        // never show the web vitals tab
-        return null;
+            organization={organization}
+            transactionName={transactionName}
+          />
+          <GuideAnchor target="project_transaction_threshold_override" position="bottom">
+            <TransactionThresholdButton
+              organization={organization}
+              transactionName={transactionName}
+              eventView={eventView}
+              onChangeThreshold={onChangeThreshold}
+            />
+          </GuideAnchor>
+        </Fragment>
+      ),
+    };
+    if (view === FRONTEND_LANDING_SUB_PATH) {
+      return <FrontendHeader {...headerProps} />;
+    }
+    if (view === BACKEND_LANDING_SUB_PATH) {
+      return <BackendHeader {...headerProps} />;
+    }
+    if (view === MOBILE_LANDING_SUB_PATH) {
+      return <MobileHeader {...headerProps} />;
     }
   }
 
-  render() {
-    const {organization, location, projectId, transactionName, currentTab} = this.props;
-
-    const routeQuery = {
-      orgSlug: organization.slug,
-      transaction: transactionName,
-      projectID: projectId,
-      query: location.query,
-    };
-
-    const summaryTarget = transactionSummaryRouteWithQuery(routeQuery);
-    const tagsTarget = tagsRouteWithQuery(routeQuery);
-    const eventsTarget = eventsRouteWithQuery(routeQuery);
-    const spansTarget = spansRouteWithQuery(routeQuery);
-
-    return (
-      <Layout.Header>
-        <Layout.HeaderContent>
-          <Breadcrumb
+  return (
+    <Layout.Header>
+      <Layout.HeaderContent>
+        <Breadcrumb
+          organization={organization}
+          location={location}
+          transaction={{
+            project: projectId,
+            name: transactionName,
+          }}
+        />
+        <Layout.Title>
+          {project && (
+            <IdBadge
+              project={project}
+              avatarSize={28}
+              hideName
+              avatarProps={{hasTooltip: true, tooltip: project.slug}}
+            />
+          )}
+          <Tooltip showOnlyOnOverflow skipWrapper title={transactionName}>
+            <TransactionName>{transactionName}</TransactionName>
+          </Tooltip>
+        </Layout.Title>
+      </Layout.HeaderContent>
+      <Layout.HeaderActions>
+        <Grid flow="column" align="center" gap="md">
+          <Feature organization={organization} features="incidents">
+            {({hasFeature}) =>
+              hasFeature &&
+              !metricsCardinality?.isLoading &&
+              !deprecateTransactionAlerts(organization) ? (
+                <CreateAlertFromViewButton
+                  size="sm"
+                  eventView={eventView}
+                  organization={organization}
+                  projects={projects}
+                  onClick={handleCreateAlertSuccess}
+                  referrer="performance"
+                  alertType="trans_duration"
+                  aria-label={t('Create Alert')}
+                  disableMetricDataset={
+                    metricsCardinality?.outcome?.forceTransactionsOnly
+                  }
+                />
+              ) : null
+            }
+          </Feature>
+          <TeamKeyTransactionButton
+            transactionName={transactionName}
+            eventView={eventView}
             organization={organization}
-            location={location}
-            transaction={{
-              project: projectId,
-              name: transactionName,
-            }}
-            tab={currentTab}
           />
-          <Layout.Title>{transactionName}</Layout.Title>
-        </Layout.HeaderContent>
-        <Layout.HeaderActions>
-          <ButtonBar gap={1}>
-            <Feature organization={organization} features={['incidents']}>
-              {({hasFeature}) => hasFeature && this.renderCreateAlertButton()}
-            </Feature>
-            {this.renderKeyTransactionButton()}
-            {this.renderSettingsButton()}
-          </ButtonBar>
-        </Layout.HeaderActions>
-        <React.Fragment>
-          <StyledNavTabs>
-            <ListLink
-              to={summaryTarget}
-              isActive={() => currentTab === Tab.TransactionSummary}
-            >
-              {t('Overview')}
-            </ListLink>
-            {this.renderWebVitalsTab()}
-            <Feature features={['organizations:performance-tag-page']}>
-              <ListLink
-                to={tagsTarget}
-                isActive={() => currentTab === Tab.Tags}
-                onClick={this.trackTabClick(Tab.Tags)}
-              >
-                {t('Tags')}
-                <FeatureBadge type="new" noTooltip />
-              </ListLink>
-            </Feature>
-            <Feature features={['organizations:performance-events-page']}>
-              <ListLink
-                to={eventsTarget}
-                isActive={() => currentTab === Tab.Events}
-                onClick={this.trackTabClick(Tab.Events)}
-              >
-                {t('All Events')}
-              </ListLink>
-            </Feature>
-            <Feature
+          <GuideAnchor target="project_transaction_threshold_override" position="bottom">
+            <TransactionThresholdButton
               organization={organization}
-              features={['organizations:performance-suspect-spans-view']}
-            >
-              <ListLink
-                data-test-id="spans-tab"
-                to={spansTarget}
-                isActive={() => currentTab === Tab.Spans}
-                onClick={this.trackTabClick(Tab.Spans)}
-              >
-                {t('Spans')}
-              </ListLink>
-            </Feature>
-          </StyledNavTabs>
-        </React.Fragment>
-      </Layout.Header>
-    );
-  }
+              transactionName={transactionName}
+              eventView={eventView}
+              onChangeThreshold={onChangeThreshold}
+            />
+          </GuideAnchor>
+          <FeedbackButton />
+        </Grid>
+      </Layout.HeaderActions>
+      <TabList
+        outerWrapStyles={{
+          gridColumn: '1 / -1',
+        }}
+      >
+        <TabList.Item key={Tab.TRANSACTION_SUMMARY}>{t('Overview')}</TabList.Item>
+        <TabList.Item key={Tab.EVENTS}>{t('Sampled Events')}</TabList.Item>
+        <TabList.Item key={Tab.TAGS}>{t('Tags')}</TabList.Item>
+        <TabList.Item
+          key={Tab.REPLAYS}
+          textValue={t('Replays')}
+          hidden={!hasSessionReplay}
+        >
+          {t('Replays')}
+          <ReplayCountBadge count={replaysCount} />
+        </TabList.Item>
+        <TabList.Item
+          key={Tab.PROFILING}
+          textValue={t('Profiling')}
+          hidden={!hasProfiling}
+        >
+          {t('Profiles')}
+        </TabList.Item>
+      </TabList>
+    </Layout.Header>
+  );
 }
 
-const StyledNavTabs = styled(NavTabs)`
-  margin-bottom: 0;
-  /* Makes sure the tabs are pushed into another row */
+const TransactionName = styled('div')`
+  display: block;
   width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 `;
 
 export default TransactionHeader;

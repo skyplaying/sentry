@@ -1,34 +1,30 @@
 import styled from '@emotion/styled';
 
-import Button from 'app/components/button';
-import Clipboard from 'app/components/clipboard';
-import Confirm from 'app/components/confirm';
-import {
-  Panel,
-  PanelAlert,
-  PanelBody,
-  PanelHeader,
-  PanelItem,
-} from 'app/components/panels';
-import {IconCopy, IconDownload, IconPrint} from 'app/icons';
-import {t} from 'app/locale';
-import space from 'app/styles/space';
-import EmptyMessage from 'app/views/settings/components/emptyMessage';
+import {Button, LinkButton} from '@sentry/scraps/button';
+import {Grid} from '@sentry/scraps/layout';
+
+import Confirm from 'sentry/components/confirm';
+import {CopyToClipboardButton} from 'sentry/components/copyToClipboardButton';
+import EmptyMessage from 'sentry/components/emptyMessage';
+import Panel from 'sentry/components/panels/panel';
+import PanelAlert from 'sentry/components/panels/panelAlert';
+import PanelBody from 'sentry/components/panels/panelBody';
+import PanelHeader from 'sentry/components/panels/panelHeader';
+import PanelItem from 'sentry/components/panels/panelItem';
+import {IconDownload, IconPrint} from 'sentry/icons';
+import {t} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
 
 type Props = {
-  isEnrolled: boolean;
   codes: string[];
+  isEnrolled: boolean;
   onRegenerateBackupCodes: () => void;
   className?: string;
 };
 
-const RecoveryCodes = ({
-  className,
-  isEnrolled,
-  codes,
-  onRegenerateBackupCodes,
-}: Props) => {
+function RecoveryCodes({className, isEnrolled, codes, onRegenerateBackupCodes}: Props) {
   const printCodes = () => {
+    // @ts-expect-error TS(7015): Element implicitly has an 'any' type because index... Remove this comment to see the full error message
     // eslint-disable-next-line dot-notation
     const iframe = window.frames['printable'];
     iframe.document.write(codes.join('<br>'));
@@ -47,37 +43,39 @@ const RecoveryCodes = ({
       <PanelHeader hasButtons>
         {t('Unused Codes')}
 
-        <Actions>
-          <Clipboard hideUnsupported value={formattedCodes}>
-            <Button size="small" label={t('copy')}>
-              <IconCopy />
-            </Button>
-          </Clipboard>
-          <Button size="small" onClick={printCodes} label={t('print')}>
-            <IconPrint />
-          </Button>
+        <Grid flow="column" align="center" gap="md">
+          <CopyToClipboardButton
+            text={formattedCodes}
+            aria-label={t('Copy recovery codes to clipboard')}
+            size="xs"
+          />
           <Button
-            size="small"
+            size="xs"
+            onClick={printCodes}
+            aria-label={t('print')}
+            icon={<IconPrint />}
+          />
+          <LinkButton
+            size="xs"
             download="sentry-recovery-codes.txt"
             href={`data:text/plain;charset=utf-8,${formattedCodes}`}
-            label={t('download')}
-          >
-            <IconDownload />
-          </Button>
+            aria-label={t('download')}
+            icon={<IconDownload />}
+          />
           <Confirm
             onConfirm={onRegenerateBackupCodes}
             message={t(
               'Are you sure you want to regenerate recovery codes? Your old codes will no longer work.'
             )}
           >
-            <Button priority="danger" size="small">
+            <Button priority="danger" size="xs">
               {t('Regenerate Codes')}
             </Button>
           </Confirm>
-        </Actions>
+        </Grid>
       </PanelHeader>
       <PanelBody>
-        <PanelAlert type="warning">
+        <PanelAlert variant="warning">
           {t(
             'Make sure to save a copy of your recovery codes and store them in a safe place.'
           )}
@@ -87,10 +85,10 @@ const RecoveryCodes = ({
           <EmptyMessage>{t('You have no more recovery codes to use')}</EmptyMessage>
         )}
       </PanelBody>
-      <iframe name="printable" style={{display: 'none'}} />
+      <iframe data-test-id="frame" name="printable" style={{display: 'none'}} />
     </CodeContainer>
   );
-};
+}
 
 export default RecoveryCodes;
 
@@ -98,13 +96,7 @@ const CodeContainer = styled(Panel)`
   margin-top: ${space(4)};
 `;
 
-const Actions = styled('div')`
-  display: grid;
-  grid-auto-flow: column;
-  grid-gap: ${space(1)};
-`;
-
 const Code = styled(PanelItem)`
-  font-family: ${p => p.theme.text.familyMono};
+  font-family: ${p => p.theme.font.family.mono};
   padding: ${space(2)};
 `;

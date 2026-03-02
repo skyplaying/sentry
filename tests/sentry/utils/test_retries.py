@@ -1,8 +1,7 @@
-from unittest import TestCase
+from unittest import TestCase, mock
 
 import pytest
 
-from sentry.utils.compat import mock
 from sentry.utils.retries import ConditionalRetryPolicy, RetryException, TimedRetryPolicy
 
 
@@ -49,7 +48,7 @@ class ConditionalRetryPolicyTestCase(TestCase):
 
 
 class TimedRetryPolicyTestCase(TestCase):
-    def test_policy_success(self):
+    def test_policy_success(self) -> None:
         bomb = Exception("Boom!")
         callable = mock.MagicMock(side_effect=[bomb, mock.sentinel.OK])
 
@@ -61,7 +60,7 @@ class TimedRetryPolicyTestCase(TestCase):
         assert retry(callable) is mock.sentinel.OK
         assert callable.call_count == 2
 
-    def test_policy_failure(self):
+    def test_policy_failure(self) -> None:
         bomb = Exception("Boom!")
         callable = mock.MagicMock(side_effect=bomb)
 
@@ -70,21 +69,18 @@ class TimedRetryPolicyTestCase(TestCase):
         retry.clock.sleep = mock.MagicMock()
         retry.clock.time = mock.MagicMock(side_effect=[0, 0.15, 0.25])
 
-        try:
+        with pytest.raises(RetryException) as excinfo:
             retry(callable)
-        except RetryException as exception:
-            assert exception.exception is bomb
-        else:
-            self.fail(f"Expected {RetryException!r}!")
+        assert excinfo.value.exception is bomb
 
         assert callable.call_count == 2
 
-    def test_decorator(self):
+    def test_decorator(self) -> None:
         bomb = Exception("Boom!")
         callable = mock.MagicMock(side_effect=[bomb, mock.sentinel.OK])
 
         @TimedRetryPolicy.wrap(0.3, delay=lambda i: 0.1)
-        def retrying_func():
+        def retrying_func() -> mock._Sentinel:
             return callable()
 
         retrying_func.clock = mock.Mock()

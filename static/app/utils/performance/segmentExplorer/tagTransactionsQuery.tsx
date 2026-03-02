@@ -1,22 +1,22 @@
-import * as React from 'react';
-
-import {MetaType} from 'app/utils/discover/eventView';
-import GenericDiscoverQuery, {
+import type {MetaType} from 'sentry/utils/discover/eventView';
+import type {
   DiscoverQueryProps,
-} from 'app/utils/discover/genericDiscoverQuery';
-import withApi from 'app/utils/withApi';
+  GenericChildrenProps,
+} from 'sentry/utils/discover/genericDiscoverQuery';
+import {GenericDiscoverQuery} from 'sentry/utils/discover/genericDiscoverQuery';
 
-export type TableDataRow = {
+type TableDataRow = {
+  [key: string]: string | number;
   id: string;
-  [key: string]: React.ReactText;
 };
 
-export type TableData = {
-  data: Array<TableDataRow>;
+type TableData = {
+  data: TableDataRow[];
   meta?: MetaType;
 };
 
 type QueryProps = DiscoverQueryProps & {
+  children: (props: GenericChildrenProps<TableData>) => React.ReactNode;
   query: string;
 };
 
@@ -27,11 +27,11 @@ function shouldRefetchData(prevProps: QueryProps, nextProps: QueryProps) {
 function TagTransactionsQuery(props: QueryProps) {
   return (
     <GenericDiscoverQuery<TableData, QueryProps>
-      route="eventsv2"
+      route="events"
       shouldRefetchData={shouldRefetchData}
       {...props}
     />
   );
 }
 
-export default withApi(TagTransactionsQuery);
+export default TagTransactionsQuery;

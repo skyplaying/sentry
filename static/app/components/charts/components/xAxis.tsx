@@ -1,89 +1,103 @@
-import {EChartOption} from 'echarts';
+import type {Theme} from '@emotion/react';
+import type {XAXisComponentOption} from 'echarts';
 import merge from 'lodash/merge';
 
-import BaseChart from 'app/components/charts/baseChart';
-import {getFormattedDate, getTimeFormat} from 'app/utils/dates';
-import {Theme} from 'app/utils/theme';
+import type {BaseChartProps} from 'sentry/components/charts/baseChart';
+import {computeShortInterval, truncationFormatter} from 'sentry/components/charts/utils';
+import {getFormattedDate, getTimeFormat} from 'sentry/utils/dates';
 
-import {truncationFormatter, useShortInterval} from '../utils';
-
-type ChartProps = React.ComponentProps<typeof BaseChart>;
 type HelperProps =
   | 'isGroupedByDate'
   | 'useShortDate'
+  | 'useMultilineDate'
   | 'start'
   | 'end'
   | 'period'
+  | 'xAxis'
   | 'utc';
 
-type Props = ChartProps['xAxis'] & Pick<ChartProps, HelperProps> & {theme: Theme};
+export type XAxisProps = BaseChartProps['xAxis'] &
+  Pick<BaseChartProps, HelperProps> & {theme: Theme; addSecondsToTimeFormat?: boolean};
 
-export default function XAxis({
+function XAxis({
   isGroupedByDate,
   useShortDate,
+  useMultilineDate,
   theme,
-
   start,
   end,
   period,
   utc,
+  addSecondsToTimeFormat = false,
   ...props
-}: Props): EChartOption.XAxis {
-  const axisLabelFormatter = (value: string, index: number) => {
+}: XAxisProps): XAXisComponentOption {
+  const AxisLabelFormatter = (value: string | number, index: number) => {
+    const firstItem = index === 0;
+    // Always show the date of the first item. Otherwise check the interval duration
+    const showDate = firstItem ? true : !computeShortInterval({start, end, period});
+
     if (isGroupedByDate) {
-      const timeFormat = getTimeFormat();
-      const dateFormat = useShortDate ? 'MMM Do' : `MMM D ${timeFormat}`;
-      const firstItem = index === 0;
-      const format =
-        useShortInterval({start, end, period}) && !firstItem ? timeFormat : dateFormat;
-      return getFormattedDate(value, format, {local: !utc});
-    } else if (props.truncate) {
-      return truncationFormatter(value, props.truncate);
-    } else {
-      return undefined;
+      const dateFormat = useShortDate ? 'MMM Do' : `MMM D`;
+      const dateString = getFormattedDate(value, dateFormat, {local: !utc});
+
+      const timeFormat = getTimeFormat({seconds: addSecondsToTimeFormat});
+      const timeString = getFormattedDate(value, timeFormat, {local: !utc});
+
+      const delimiter = useMultilineDate ? '\n' : ' ';
+
+      return showDate ? `${dateString}${delimiter}${timeString}` : timeString;
     }
+
+    if (props.truncate) {
+      return truncationFormatter(value as string, props.truncate);
+    }
+
+    return '';
   };
 
-  return merge(
-    {
-      type: isGroupedByDate ? 'time' : 'category',
-      boundaryGap: false,
-      axisLine: {
-        lineStyle: {
-          color: theme.chartLabel,
-        },
-      },
-      axisTick: {
-        lineStyle: {
-          color: theme.chartLabel,
-        },
-      },
-      splitLine: {
-        show: false,
-      },
-      axisLabel: {
-        color: theme.chartLabel,
-        fontFamily: theme.text.family,
-        margin: 12,
-
-        // This was default with ChartZoom, we are making it default for all charts now
-        // Otherwise the xAxis can look congested when there is always a min/max label
-        showMaxLabel: false,
-        showMinLabel: false,
-
-        formatter: axisLabelFormatter,
-      },
-      axisPointer: {
-        show: true,
-        type: 'line',
-        label: {
-          show: false,
-        },
-        lineStyle: {
-          width: 0.5,
-        },
+  const defaults: XAXisComponentOption = {
+    type: isGroupedByDate ? 'time' : 'category',
+    splitNumber: 4,
+    axisLine: {
+      lineStyle: {
+        color: theme.tokens.content.secondary,
       },
     },
-    props
-  );
+    axisTick: {
+      lineStyle: {
+        color: theme.tokens.content.secondary,
+      },
+    },
+    splitLine: {
+      show: false,
+    },
+    axisLabel: {
+      hideOverlap: true,
+      color: theme.tokens.content.secondary,
+      fontFamily: theme.font.family.sans,
+      margin: 12,
+
+      // This was default with ChartZoom, we are making it default for all charts now
+      // Otherwise the xAxis can look congested when there is always a min/max label
+      showMaxLabel: false,
+      showMinLabel: false,
+
+      formatter: AxisLabelFormatter,
+    },
+    axisPointer: {
+      show: true,
+      type: 'line',
+      label: {
+        show: false,
+      },
+      lineStyle: {
+        type: 'solid',
+        width: 0.5,
+      },
+    },
+  };
+
+  return merge(defaults, props);
 }
+
+export default XAxis;

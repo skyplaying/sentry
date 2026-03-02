@@ -1,42 +1,113 @@
-import responses
+from unittest import mock
 
-from sentry.models import Activity
-from sentry.notifications.notifications.activity import NoteActivityNotification
+import orjson
+
+from sentry.models.activity import Activity
+from sentry.notifications.notifications.activity.note import NoteActivityNotification
+from sentry.testutils.cases import PerformanceIssueTestCase, SlackActivityNotificationTest
+from sentry.testutils.helpers.notifications import TEST_ISSUE_OCCURRENCE
+from sentry.testutils.skips import requires_snuba
 from sentry.types.activity import ActivityType
-from sentry.utils.compat import mock
 
-from . import SlackActivityNotificationTest, get_attachment, send_notification
+pytestmark = [requires_snuba]
 
 
-class SlackUnassignedNotificationTest(SlackActivityNotificationTest):
-    @responses.activate
-    @mock.patch("sentry.notifications.notify.notify", side_effect=send_notification)
-    def test_note(self, mock_func):
-        """
-        Test that a Slack message is sent with the expected payload when a comment is made on an issue
-        """
-        notification = NoteActivityNotification(
+class SlackNoteNotificationTest(SlackActivityNotificationTest, PerformanceIssueTestCase):
+    def create_notification(self, group):
+        return NoteActivityNotification(
             Activity(
                 project=self.project,
-                group=self.group,
-                user=self.user,
+                group=group,
+                user_id=self.user.id,
                 type=ActivityType.NOTE,
                 data={"text": "text", "mentions": []},
             )
         )
+
+    def test_note_block(self) -> None:
+        """
+        Tests that a Slack message is sent with the expected payload when a comment is made on an issue
+        with block kit enabled.
+        """
+        notification = self.create_notification(self.group)
         with self.tasks():
             notification.send()
 
-        attachment, text = get_attachment()
+        blocks = orjson.loads(self.mock_post.call_args.kwargs["blocks"])
+        fallback_text = self.mock_post.call_args.kwargs["text"]
 
-        assert text == f"New comment by {self.name}"
-        assert attachment["title"] == f"{self.group.title}"
+        assert fallback_text == f"New comment by {self.name}"
+        assert blocks[0]["text"]["text"] == fallback_text
+        notification_uuid = self.get_notification_uuid(blocks[1]["text"]["text"])
+        comment = notification.activity.data["text"]
         assert (
-            attachment["title_link"]
-            == f"http://testserver/organizations/{self.organization.slug}/issues/{self.group.id}/?referrer=NoteActivitySlack"
+            blocks[1]["text"]["text"]
+            == f"<http://testserver/organizations/{self.organization.slug}/issues/{self.group.id}/?referrer=note_activity-slack&notification_uuid={notification_uuid}|*{self.group.title}*>  \n{comment}"
         )
-        assert attachment["text"] == notification.activity.data["text"]
         assert (
-            attachment["footer"]
-            == f"{self.project.slug} | <http://testserver/settings/account/notifications/workflow/?referrer=NoteActivitySlack|Notification Settings>"
+            blocks[2]["elements"][0]["text"]
+            == f"{self.project.slug} | <http://testserver/settings/account/notifications/workflow/?referrer=note_activity-slack-user&notification_uuid={notification_uuid}&organizationId={self.organization.id}|Notification Settings>"
+        )
+
+    def test_note_performance_issue_block(self) -> None:
+        """
+        Tests that a Slack message is sent with the expected payload when a comment is made on a performance issue
+        with block kit enabled.
+        """
+        event = self.create_performance_issue()
+        assert event.group is not None
+        notification = self.create_notification(event.group)
+
+        with self.tasks():
+            notification.send()
+
+        blocks = orjson.loads(self.mock_post.call_args.kwargs["blocks"])
+        fallback_text = self.mock_post.call_args.kwargs["text"]
+
+        assert fallback_text == f"New comment by {self.name}"
+        assert blocks[0]["text"]["text"] == fallback_text
+        notification_uuid = self.get_notification_uuid(blocks[1]["text"]["text"])
+        comment = notification.activity.data["text"]
+        assert (
+            blocks[1]["text"]["text"]
+            == f"<http://testserver/organizations/{self.organization.slug}/issues/{event.group.id}/?referrer=note_activity-slack&notification_uuid={notification_uuid}|*N+1 Query*>  \n{comment}"
+        )
+        assert (
+            blocks[2]["elements"][0]["text"]
+            == f"{self.project.slug} | production | <http://testserver/settings/account/notifications/workflow/?referrer=note_activity-slack-user&notification_uuid={notification_uuid}&organizationId={self.organization.id}|Notification Settings>"
+        )
+
+    @mock.patch(
+        "sentry.services.eventstore.models.GroupEvent.occurrence",
+        return_value=TEST_ISSUE_OCCURRENCE,
+        new_callable=mock.PropertyMock,
+    )
+    def test_note_generic_issue_block(self, occurrence: mock.MagicMock) -> None:
+        """
+        Test that a Slack message is sent with the expected payload when a comment is made on a generic issue type
+        """
+        event = self.store_event(
+            data={"message": "Hellboy's world", "level": "error"}, project_id=self.project.id
+        )
+        group_event = event.for_group(event.groups[0])
+        notification = self.create_notification(group_event.group)
+
+        with self.tasks():
+            notification.send()
+
+        blocks = orjson.loads(self.mock_post.call_args.kwargs["blocks"])
+        fallback_text = self.mock_post.call_args.kwargs["text"]
+
+        assert fallback_text == f"New comment by {self.name}"
+        assert blocks[0]["text"]["text"] == fallback_text
+        notification_uuid = self.get_notification_uuid(blocks[1]["text"]["text"])
+        comment = notification.activity.data["text"]
+        assert event.group
+        assert (
+            blocks[1]["text"]["text"]
+            == f"<http://testserver/organizations/{self.organization.slug}/issues/{event.group.id}/?referrer=note_activity-slack&notification_uuid={notification_uuid}|*{TEST_ISSUE_OCCURRENCE.issue_title}*>  \n{comment}"
+        )
+        assert (
+            blocks[2]["elements"][0]["text"]
+            == f"{self.project.slug} | <http://testserver/settings/account/notifications/workflow/?referrer=note_activity-slack-user&notification_uuid={notification_uuid}&organizationId={self.organization.id}|Notification Settings>"
         )

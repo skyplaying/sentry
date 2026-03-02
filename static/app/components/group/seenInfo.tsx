@@ -1,132 +1,122 @@
-import * as React from 'react';
+import {Fragment} from 'react';
 import {css} from '@emotion/react';
 import styled from '@emotion/styled';
 
-import DateTime from 'app/components/dateTime';
-import {Body, Header, Hovercard} from 'app/components/hovercard';
-import TimeSince from 'app/components/timeSince';
-import Version from 'app/components/version';
-import VersionHoverCard from 'app/components/versionHoverCard';
-import {t} from 'app/locale';
-import overflowEllipsis from 'app/styles/overflowEllipsis';
-import space from 'app/styles/space';
-import {Organization, Release} from 'app/types';
-import {defined, toTitleCase} from 'app/utils';
-import theme from 'app/utils/theme';
+import {Flex} from '@sentry/scraps/layout';
+
+import {DateTime} from 'sentry/components/dateTime';
+import {Body, Header, Hovercard} from 'sentry/components/hovercard';
+import TimeSince from 'sentry/components/timeSince';
+import Version from 'sentry/components/version';
+import VersionHoverCard from 'sentry/components/versionHoverCard';
+import {t} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {Organization} from 'sentry/types/organization';
+import type {Release} from 'sentry/types/release';
+import {defined} from 'sentry/utils';
+import {toTitleCase} from 'sentry/utils/string/toTitleCase';
 
 type RelaxedDateType = React.ComponentProps<typeof TimeSince>['date'];
 
 type Props = {
-  organization: Organization;
-  projectSlug: string;
-  projectId: string;
-  hasRelease: boolean;
-  title: string;
   date: RelaxedDateType;
   dateGlobal: RelaxedDateType;
-  release?: Release;
+  organization: Organization;
+  projectId: string;
+  projectSlug: string;
   environment?: string;
+  release?: Release;
 };
 
-class SeenInfo extends React.Component<Props> {
-  shouldComponentUpdate(nextProps: Props) {
-    const {date, release} = this.props;
-
-    return release?.version !== nextProps.release?.version || date !== nextProps.date;
-  }
-
-  getReleaseTrackingUrl() {
-    const {organization, projectSlug} = this.props;
-    const orgSlug = organization.slug;
-
-    return `/settings/${orgSlug}/projects/${projectSlug}/release-tracking/`;
-  }
-
-  render() {
-    const {date, dateGlobal, environment, release, organization, projectSlug, projectId} =
-      this.props;
-
-    return (
-      <HovercardWrapper>
-        <StyledHovercard
-          header={
-            <div>
-              <TimeSinceWrapper>
-                {t('Any Environment')}
-                <TimeSince date={dateGlobal} disabledAbsoluteTooltip />
-              </TimeSinceWrapper>
-              {environment && (
-                <TimeSinceWrapper>
-                  {toTitleCase(environment)}
-                  {date ? (
-                    <TimeSince date={date} disabledAbsoluteTooltip />
-                  ) : (
-                    <span>{t('N/A')}</span>
-                  )}
-                </TimeSinceWrapper>
-              )}
-            </div>
-          }
-          body={
-            date ? (
-              <StyledDateTime date={date} />
-            ) : (
-              <NoEnvironment>{t(`N/A for ${environment}`)}</NoEnvironment>
-            )
-          }
-          position="top"
-          tipColor={theme.gray500}
-        >
-          <DateWrapper>
-            {date ? (
-              <TooltipWrapper>
-                <StyledTimeSince date={date} disabledAbsoluteTooltip />
-              </TooltipWrapper>
-            ) : dateGlobal && environment === '' ? (
-              <React.Fragment>
-                <TimeSince date={dateGlobal} disabledAbsoluteTooltip />
-                <StyledTimeSince date={dateGlobal} disabledAbsoluteTooltip />
-              </React.Fragment>
-            ) : (
-              <NoDateTime>{t('N/A')}</NoDateTime>
+function SeenInfo({
+  date,
+  dateGlobal,
+  environment,
+  release,
+  organization,
+  projectSlug,
+  projectId,
+}: Props) {
+  return (
+    <Flex align="baseline">
+      <StyledHovercard
+        showUnderline
+        header={
+          <div>
+            <Flex justify="between" marginBottom="xs">
+              {t('Any Environment')}
+              <TimeSince date={dateGlobal} disabledAbsoluteTooltip />
+            </Flex>
+            {environment && (
+              <Flex justify="between" marginBottom="xs">
+                {toTitleCase(environment)}
+                {date ? (
+                  <TimeSince date={date} disabledAbsoluteTooltip />
+                ) : (
+                  <span>{t('N/A')}</span>
+                )}
+              </Flex>
             )}
-          </DateWrapper>
-        </StyledHovercard>
+          </div>
+        }
+        body={
+          date ? (
+            <StyledDateTime date={date} />
+          ) : (
+            <NoEnvironment>{t('N/A for %s', environment)}</NoEnvironment>
+          )
+        }
+        position="top"
+      >
         <DateWrapper>
-          {defined(release) ? (
-            <React.Fragment>
-              {t('in release ')}
-              <VersionHoverCard
-                organization={organization}
-                projectSlug={projectSlug}
-                releaseVersion={release.version}
-              >
-                <span>
-                  <Version version={release.version} projectId={projectId} />
-                </span>
-              </VersionHoverCard>
-            </React.Fragment>
-          ) : null}
+          {date ? (
+            <TooltipWrapper>
+              <StyledTimeSince date={date} disabledAbsoluteTooltip />
+            </TooltipWrapper>
+          ) : dateGlobal && environment === '' ? (
+            <Fragment>
+              <TimeSince date={dateGlobal} disabledAbsoluteTooltip />
+              <StyledTimeSince date={dateGlobal} disabledAbsoluteTooltip />
+            </Fragment>
+          ) : (
+            <NoDateTime>{t('N/A')}</NoDateTime>
+          )}
         </DateWrapper>
-      </HovercardWrapper>
-    );
-  }
+      </StyledHovercard>
+      <DateWrapper>
+        {defined(release) && (
+          <Fragment>
+            {t('in release ')}
+            <VersionHoverCard
+              organization={organization}
+              projectSlug={projectSlug}
+              releaseVersion={release.version}
+            >
+              <span>
+                <Version version={release.version} projectId={projectId} />
+              </span>
+            </VersionHoverCard>
+          </Fragment>
+        )}
+      </DateWrapper>
+    </Flex>
+  );
 }
 
-const dateTimeCss = p => css`
-  color: ${p.theme.gray300};
-  font-size: ${p.theme.fontSizeMedium};
+const dateTimeCss = (p: any) => css`
+  color: ${p.theme.tokens.content.secondary};
+  font-size: ${p.theme.font.size.md};
   display: flex;
   justify-content: center;
 `;
 
-const HovercardWrapper = styled('div')`
-  display: flex;
-`;
-
 const DateWrapper = styled('div')`
-  margin-bottom: ${space(2)};
-  ${overflowEllipsis};
+  margin-bottom: 0;
+  display: block;
+  width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 `;
 
 const StyledDateTime = styled(DateTime)`
@@ -150,27 +140,16 @@ const TooltipWrapper = styled('span')`
   }
 `;
 
-const TimeSinceWrapper = styled('div')`
-  font-size: ${p => p.theme.fontSizeSmall};
-  margin-bottom: ${space(0.5)};
-  display: flex;
-  justify-content: space-between;
-`;
-
 const StyledTimeSince = styled(TimeSince)`
-  font-size: ${p => p.theme.fontSizeMedium};
+  font-size: ${p => p.theme.font.size.md};
+  line-height: 1.2;
 `;
 
 const StyledHovercard = styled(Hovercard)`
   width: 250px;
-  font-weight: normal;
-  border: 1px solid ${p => p.theme.gray500};
-  background: ${p => p.theme.gray500};
   ${Header} {
-    font-weight: normal;
-    color: ${p => p.theme.white};
-    background: ${p => p.theme.gray500};
-    border-bottom: 1px solid ${p => p.theme.gray400};
+    font-weight: ${p => p.theme.font.weight.sans.regular};
+    border-bottom: 1px solid ${p => p.theme.tokens.border.secondary};
   }
   ${Body} {
     padding: ${space(1.5)};

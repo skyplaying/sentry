@@ -1,8 +1,6 @@
-from sentry.rules import rules
-from sentry.utils.imports import import_submodules
+from sentry.integrations.msteams.spec import MsTeamsMessagingSpec
 
-from .notify_action import MsTeamsNotifyServiceAction
+from .handlers import MSTeamsActionHandler  # noqa: F401,F403
+from .notifications import *  # noqa: F401,F403
 
-import_submodules(globals(), __name__, __path__)
-
-rules.add(MsTeamsNotifyServiceAction)
+MsTeamsMessagingSpec().initialize()

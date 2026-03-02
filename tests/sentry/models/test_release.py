@@ -1,53 +1,70 @@
+from datetime import timedelta
+from unittest.mock import MagicMock, patch
+
 import pytest
+from django.core.exceptions import ValidationError
 from django.utils import timezone
-from freezegun import freeze_time
 
 from sentry.api.exceptions import InvalidRepository
 from sentry.api.release_search import INVALID_SEMVER_MESSAGE
 from sentry.exceptions import InvalidSearchQuery
-from sentry.models import (
-    Commit,
-    CommitAuthor,
-    Environment,
-    ExternalIssue,
-    Group,
-    GroupInbox,
-    GroupInboxReason,
-    GroupLink,
-    GroupRelease,
-    GroupResolution,
-    GroupStatus,
-    Integration,
-    OrganizationIntegration,
+from sentry.integrations.models.external_issue import ExternalIssue
+from sentry.models.commit import Commit
+from sentry.models.commitauthor import CommitAuthor
+from sentry.models.deploy import Deploy
+from sentry.models.distribution import Distribution
+from sentry.models.environment import Environment
+from sentry.models.group import Group, GroupStatus
+from sentry.models.groupenvironment import GroupEnvironment
+from sentry.models.grouphistory import GroupHistory
+from sentry.models.groupinbox import GroupInbox, GroupInboxReason, add_group_to_inbox
+from sentry.models.grouplink import GroupLink
+from sentry.models.grouprelease import GroupRelease
+from sentry.models.groupresolution import GroupResolution
+from sentry.models.latestreporeleaseenvironment import LatestRepoReleaseEnvironment
+from sentry.models.release import (
     Release,
-    ReleaseCommit,
-    ReleaseEnvironment,
-    ReleaseHeadCommit,
-    ReleaseProject,
-    ReleaseProjectEnvironment,
     ReleaseStatus,
-    Repository,
-    add_group_to_inbox,
     follows_semver_versioning_scheme,
+    get_previous_release,
 )
+from sentry.models.releaseactivity import ReleaseActivity
+from sentry.models.releasecommit import ReleaseCommit
+from sentry.models.releaseenvironment import ReleaseEnvironment
+from sentry.models.releaseheadcommit import ReleaseHeadCommit
+from sentry.models.releaseprojectenvironment import ReleaseProjectEnvironment
+from sentry.models.releases.release_project import ReleaseProject
+from sentry.models.repository import Repository
 from sentry.search.events.filter import parse_semver
-from sentry.testutils import SetRefsTestCase, TestCase
-from sentry.utils.compat.mock import patch
+from sentry.signals import receivers_raise_on_send
+from sentry.testutils.cases import SetRefsTestCase, TestCase
+from sentry.testutils.factories import Factories
+from sentry.testutils.helpers.datetime import freeze_time
 from sentry.utils.strings import truncatechars
 
 
 @pytest.mark.parametrize(
     "release_version",
     [
-        "1.0.0",
-        "1.0.0-alpha",
-        "1.0.0-alpha.1",
-        "1.0.0-alpha.beta",
-        "1.0.0-rc.1+43",
-        "org.example.FooApp@1.0+whatever",
+        "fake_package@1",  # Major version only
+        "fake_package@1.0",  # Major and minor version
+        "fake_package@1.0.0",  # Major, minor, and patch version
+        "fake_package@1.0.0-alpha",  # With prerelease
+        "fake_package@1.0.0-alpha.1",  # With prerelease and number
+        "fake_package@1.0.0-alpha.beta",  # With prerelease and text
+        "fake_package@1.0.0-rc.1+43",  # With prerelease and build
+        "fake_package@1-alpha+43",  # major only with prerelease and build
+        "org.example.FooApp@1.0+whatever",  # With build metadata
+        # Additional valid semver patterns
+        "fake_package@1.0.0.1",  # Four version components with revision (major.minor.patch.revision)
+        "fake_package@1.0.0-alpha.1.2",  # pre-release
+        "fake_package@1.0.0-beta+exp.sha.5114f85",  # pre-release and build
+        "fake_package@1.0.0+20130313144700",  # version and build
+        "fake_package@1.0.0-0.3.7",  # Prerelease starting with number
+        "fake_package@1.0.0.0-beta+exp.sha.5114f85",  # major, minor, patch, revision, pre-release, and build
     ],
 )
-def test_version_is_semver_valid(release_version):
+def test_version_is_semver_valid(release_version) -> None:
     assert Release.is_semver_version(release_version) is True
 
 
@@ -58,14 +75,29 @@ def test_version_is_semver_valid(release_version):
         "alpha@helloworld",
         "alpha@helloworld-1.0",
         "org.example.FooApp@9223372036854775808.1.2.3-r1+12345",
+        # Additional invalid semver patterns
+        "package@1a",  # Invalid character in version
+        "package@1.0.0.0.0",  # Too many version components
+        "package@1.0.0+",  # Incomplete build
+        "package@1.0.0-+",  # Empty prerelease and build
+        "package@1.0.0-@",  # Invalid character in prerelease
+        "package@1.0.0+@",  # Invalid character in build
+        "package@1.0.0-alpha.01",  # Leading zero in prerelease
+        "package@1.0.0-alpha..1",  # Empty prerelease component
+        "package@1.0.0-alpha.1.",  # Trailing dot in prerelease
+        "package@1.0.0+.1",  # Invalid build
+        "package@1.0.0+1.",  # Trailing dot in build
+        "package@1.0.0-alpha.1+1.",  # Trailing dot in build
+        "package@1.0.0-alpha.1+1..2",  # Empty build component
     ],
 )
-def test_version_is_semver_invalid(release_version):
+def test_version_is_semver_invalid(release_version) -> None:
     assert Release.is_semver_version(release_version) is False
 
 
 class MergeReleasesTest(TestCase):
-    def test_simple(self):
+    @receivers_raise_on_send()
+    def test_simple(self) -> None:
         org = self.create_organization()
         commit = Commit.objects.create(organization_id=org.id, repository_id=5)
         commit2 = Commit.objects.create(organization_id=org.id, repository_id=6)
@@ -194,8 +226,9 @@ class MergeReleasesTest(TestCase):
 
 
 class SetCommitsTestCase(TestCase):
-    def test_simple(self):
-        org = self.create_organization()
+    @receivers_raise_on_send()
+    def test_simple(self) -> None:
+        org = self.create_organization(owner=Factories.create_user())
         project = self.create_project(organization=org, name="foo")
         group = self.create_group(project=project)
         add_group_to_inbox(group, GroupInboxReason.MANUAL)
@@ -249,8 +282,9 @@ class SetCommitsTestCase(TestCase):
 
         assert not GroupInbox.objects.filter(group=group).exists()
 
-    def test_backfilling_commits(self):
-        org = self.create_organization()
+    @receivers_raise_on_send()
+    def test_backfilling_commits(self) -> None:
+        org = self.create_organization(owner=Factories.create_user())
         project = self.create_project(organization=org, name="foo")
         group = self.create_group(project=project)
         add_group_to_inbox(group, GroupInboxReason.MANUAL)
@@ -298,6 +332,7 @@ class SetCommitsTestCase(TestCase):
 
         commit_c = Commit.objects.get(repository_id=repo.id, organization_id=org.id, key="c" * 40)
         assert commit_c
+        assert commit_c.message is not None
         assert "fixes" in commit_c.message
         assert commit_c.author_id == author.id
 
@@ -336,8 +371,9 @@ class SetCommitsTestCase(TestCase):
         assert not GroupInbox.objects.filter(group=group).exists()
 
     @freeze_time()
-    def test_using_saved_data(self):
-        org = self.create_organization()
+    @receivers_raise_on_send()
+    def test_using_saved_data(self) -> None:
+        org = self.create_organization(owner=Factories.create_user())
         project = self.create_project(organization=org, name="foo")
 
         repo = Repository.objects.create(organization_id=org.id, name="test/repo")
@@ -346,12 +382,13 @@ class SetCommitsTestCase(TestCase):
             name="foo bar baz", email="foo@example.com", organization_id=org.id
         )
 
+        author.preload_users()
         Commit.objects.create(
             repository_id=repo.id,
             organization_id=org.id,
             key="b" * 40,
             author=author,
-            date_added="2019-03-01 12:00:00",
+            date_added="2019-03-01 12:00:00+00:00",
             message="fixed a thing",
         )
 
@@ -387,8 +424,9 @@ class SetCommitsTestCase(TestCase):
 
     @patch("sentry.models.Commit.update")
     @freeze_time()
-    def test_multiple_releases_only_updates_once(self, mock_update):
-        org = self.create_organization()
+    @receivers_raise_on_send()
+    def test_multiple_releases_only_updates_once(self, mock_update: MagicMock) -> None:
+        org = self.create_organization(owner=Factories.create_user())
         project = self.create_project(organization=org, name="foo")
 
         repo = Repository.objects.create(organization_id=org.id, name="test/repo")
@@ -406,7 +444,8 @@ class SetCommitsTestCase(TestCase):
         release.set_commits([{"id": "b" * 40, "repository": repo.name, "message": "new message"}])
         assert mock_update.call_count == 1
 
-    def test_resolution_support_full_featured(self):
+    @receivers_raise_on_send()
+    def test_resolution_support_full_featured(self) -> None:
         org = self.create_organization(owner=self.user)
         project = self.create_project(organization=org, name="foo")
         group = self.create_group(project=project)
@@ -416,6 +455,7 @@ class SetCommitsTestCase(TestCase):
         author = CommitAuthor.objects.create(
             organization_id=org.id, name="Foo Bar", email=self.user.email
         )
+        author.preload_users()
         commit = Commit.objects.create(
             organization_id=org.id,
             repository_id=repo.id,
@@ -440,6 +480,7 @@ class SetCommitsTestCase(TestCase):
             group_id=group.id, linked_type=GroupLink.LinkedType.commit, linked_id=commit.id
         ).exists()
 
+        # Pull the object from the DB again to test updated attributes
         resolution = GroupResolution.objects.get(group=group)
         assert resolution.status == GroupResolution.Status.resolved
         assert resolution.release == release
@@ -449,8 +490,9 @@ class SetCommitsTestCase(TestCase):
         assert Group.objects.get(id=group.id).status == GroupStatus.RESOLVED
         assert not GroupInbox.objects.filter(group=group).exists()
 
-    def test_resolution_support_without_author(self):
-        org = self.create_organization()
+    @receivers_raise_on_send()
+    def test_resolution_support_without_author(self) -> None:
+        org = self.create_organization(owner=Factories.create_user())
         project = self.create_project(organization=org, name="foo")
         group = self.create_group(project=project)
         add_group_to_inbox(group, GroupInboxReason.MANUAL)
@@ -480,21 +522,25 @@ class SetCommitsTestCase(TestCase):
         assert not GroupInbox.objects.filter(group=group).exists()
 
     @patch("sentry.integrations.example.integration.ExampleIntegration.sync_status_outbound")
-    def test_resolution_support_with_integration(self, mock_sync_status_outbound):
-        org = self.create_organization()
-        integration = Integration.objects.create(provider="example", name="Example")
-        integration.add_organization(org, self.user)
-
-        OrganizationIntegration.objects.filter(
-            integration_id=integration.id, organization_id=org.id
-        ).update(
-            config={
-                "sync_comments": True,
-                "sync_status_outbound": True,
-                "sync_status_inbound": True,
-                "sync_assignee_outbound": True,
-                "sync_assignee_inbound": True,
-            }
+    @receivers_raise_on_send()
+    def test_resolution_support_with_integration(
+        self, mock_sync_status_outbound: MagicMock
+    ) -> None:
+        org = self.create_organization(owner=Factories.create_user())
+        integration = self.create_integration(
+            organization=org,
+            external_id="example:1",
+            provider="example",
+            name="Example",
+            oi_params={
+                "config": {
+                    "sync_comments": True,
+                    "sync_status_outbound": True,
+                    "sync_status_inbound": True,
+                    "sync_assignee_outbound": True,
+                    "sync_assignee_inbound": True,
+                }
+            },
         )
         project = self.create_project(organization=org, name="foo")
         group = self.create_group(project=project)
@@ -541,8 +587,9 @@ class SetCommitsTestCase(TestCase):
         assert Group.objects.get(id=group.id).status == GroupStatus.RESOLVED
         assert not GroupInbox.objects.filter(group=group).exists()
 
-    def test_long_email(self):
-        org = self.create_organization()
+    @receivers_raise_on_send()
+    def test_long_email(self) -> None:
+        org = self.create_organization(owner=Factories.create_user())
         project = self.create_project(organization=org, name="foo")
 
         repo = Repository.objects.create(organization_id=org.id, name="test/repo")
@@ -562,17 +609,97 @@ class SetCommitsTestCase(TestCase):
             ]
         )
         commit = Commit.objects.get(repository_id=repo.id, organization_id=org.id, key="a" * 40)
+        assert commit.author is not None
         assert commit.author.email == truncatechars(commit_email, 75)
+
+    @receivers_raise_on_send()
+    def test_multiple_authors(self) -> None:
+        """Test that multiple unique authors are created and existing authors are reused."""
+        org = self.create_organization(owner=Factories.create_user())
+        project = self.create_project(organization=org, name="foo")
+        repo = Repository.objects.create(organization_id=org.id, name="test/repo")
+
+        # Pre-create one author to test reuse
+        existing_author = CommitAuthor.objects.create(
+            organization_id=org.id,
+            email="existing@example.com",
+            name="Old Name",
+        )
+
+        release = Release.objects.create(version="abcdabc", organization=org)
+        release.add_project(project)
+        release.set_commits(
+            [
+                {
+                    "id": "a" * 40,
+                    "repository": repo.name,
+                    "author_email": "author1@example.com",
+                    "author_name": "Author One",
+                    "message": "commit 1",
+                },
+                {
+                    "id": "b" * 40,
+                    "repository": repo.name,
+                    "author_email": "author2@example.com",
+                    "author_name": "Author Two",
+                    "message": "commit 2",
+                },
+                {
+                    "id": "c" * 40,
+                    "repository": repo.name,
+                    "author_email": "EXISTING@example.com",  # Test case-insensitive reuse
+                    "author_name": "New Name",  # Test name update
+                    "message": "commit 3",
+                },
+                {
+                    "id": "d" * 40,
+                    "repository": repo.name,
+                    # No author_email - should handle gracefully
+                    "message": "commit 4",
+                },
+            ]
+        )
+
+        # Verify new authors were created
+        assert CommitAuthor.objects.filter(
+            organization_id=org.id, email="author1@example.com"
+        ).exists()
+        assert CommitAuthor.objects.filter(
+            organization_id=org.id, email="author2@example.com"
+        ).exists()
+
+        # Verify existing author was reused (not duplicated) and name was updated
+        assert (
+            CommitAuthor.objects.filter(
+                organization_id=org.id, email="existing@example.com"
+            ).count()
+            == 1
+        )
+        existing_author.refresh_from_db()
+        assert existing_author.name == "New Name"
+
+        # Verify commits have correct authors
+        commit_a = Commit.objects.get(repository_id=repo.id, key="a" * 40)
+        assert commit_a.author is not None
+        assert commit_a.author.email == "author1@example.com"
+
+        commit_c = Commit.objects.get(repository_id=repo.id, key="c" * 40)
+        assert commit_c.author is not None
+        assert commit_c.author.id == existing_author.id
+
+        commit_d = Commit.objects.get(repository_id=repo.id, key="d" * 40)
+        assert commit_d.author is None
 
 
 class SetRefsTest(SetRefsTestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         super().setUp()
         self.release = Release.objects.create(version="abcdabc", organization=self.org)
         self.release.add_project(self.project)
 
     @patch("sentry.tasks.commits.fetch_commits")
-    def test_simple(self, mock_fetch_commit):
+    @receivers_raise_on_send()
+    def test_simple(self, mock_fetch_commit: MagicMock) -> None:
         refs = [
             {
                 "repository": "test/repo",
@@ -586,7 +713,7 @@ class SetRefsTest(SetRefsTestCase):
             },
         ]
 
-        self.release.set_refs(refs, self.user, True)
+        self.release.set_refs(refs, self.user.id, True)
 
         commits = Commit.objects.all().order_by("id")
         self.assert_commit(commits[0], refs[0]["commit"])
@@ -598,7 +725,8 @@ class SetRefsTest(SetRefsTestCase):
         self.assert_fetch_commits(mock_fetch_commit, None, self.release.id, refs)
 
     @patch("sentry.tasks.commits.fetch_commits")
-    def test_invalid_repos(self, mock_fetch_commit):
+    @receivers_raise_on_send()
+    def test_invalid_repos(self, mock_fetch_commit: MagicMock) -> None:
         refs = [
             {
                 "repository": "unknown-repository-name",
@@ -613,13 +741,14 @@ class SetRefsTest(SetRefsTestCase):
         ]
 
         with pytest.raises(InvalidRepository):
-            self.release.set_refs(refs, self.user)
+            self.release.set_refs(refs, self.user.id)
 
         assert len(Commit.objects.all()) == 0
         assert len(ReleaseHeadCommit.objects.all()) == 0
 
     @patch("sentry.tasks.commits.fetch_commits")
-    def test_handle_commit_ranges(self, mock_fetch_commit):
+    @receivers_raise_on_send()
+    def test_handle_commit_ranges(self, mock_fetch_commit: MagicMock) -> None:
         refs = [
             {
                 "repository": "test/repo",
@@ -634,7 +763,7 @@ class SetRefsTest(SetRefsTestCase):
             {"repository": "test/repo", "commit": "previous-commit-id-3..current-commit-id-3"},
         ]
 
-        self.release.set_refs(refs, self.user, True)
+        self.release.set_refs(refs, self.user.id, True)
 
         commits = Commit.objects.all().order_by("id")
         self.assert_commit(commits[0], "current-commit-id")
@@ -647,7 +776,8 @@ class SetRefsTest(SetRefsTestCase):
         self.assert_fetch_commits(mock_fetch_commit, None, self.release.id, refs)
 
     @patch("sentry.tasks.commits.fetch_commits")
-    def test_fetch_false(self, mock_fetch_commit):
+    @receivers_raise_on_send()
+    def test_fetch_false(self, mock_fetch_commit: MagicMock) -> None:
         refs = [
             {
                 "repository": "test/repo",
@@ -661,7 +791,7 @@ class SetRefsTest(SetRefsTestCase):
             },
         ]
 
-        self.release.set_refs(refs, self.user, False)
+        self.release.set_refs(refs, self.user.id, False)
 
         commits = Commit.objects.all().order_by("id")
         self.assert_commit(commits[0], refs[0]["commit"])
@@ -672,15 +802,23 @@ class SetRefsTest(SetRefsTestCase):
 
         assert len(mock_fetch_commit.method_calls) == 0
 
-    def test_invalid_version(self):
-        release = Release.objects.create(organization=self.org)
-        assert not release.is_valid_version(None)
+    def test_invalid_version_none_value(self) -> None:
+        assert not Release.is_valid_version(None)
 
-    @staticmethod
-    def test_invalid_chars_in_version():
+    def test_invalid_version(self) -> None:
+        cases = ["", "latest", ".", "..", "\t", "\n", "  "]
+
+        for case in cases:
+            with pytest.raises(ValidationError):
+                Release.objects.create(version=case, organization=self.org)
+
+        with pytest.raises(ValidationError):
+            Release.objects.create(organization=self.org)
+
+    # @staticmethod
+    def test_invalid_chars_in_version(self) -> None:
         version = (
-            "\n> rfrontend@0.1.0 release:version\n> echo "
-            "'dev-19be1b7e-dirty'\n\ndev-19be1b7e-dirty"
+            "\n> rfrontend@0.1.0 release:version\n> echo 'dev-19be1b7e-dirty'\n\ndev-19be1b7e-dirty"
         )
         assert not Release.is_valid_version(version)
 
@@ -702,12 +840,29 @@ class SetRefsTest(SetRefsTestCase):
         version = "\\ hello world again"
         assert not Release.is_valid_version(version)
 
+    def test_get_previous_release(self) -> None:
+        project = self.create_project()
+        release1 = Release.objects.create(version="1", organization=self.org)
+        release1.add_project(project)
+
+        # Other release is assigned to a different project.
+        release = get_previous_release(self.release)
+        assert release is None
+
+        release2 = Release.objects.create(version="2", organization=self.org)
+        release2.add_project(self.project)
+
+        # Other release is assigned to a matching project.
+        release = get_previous_release(self.release)
+        assert release is not None
+        assert release.id == release2.id
+
 
 class SemverReleaseParseTestCase(TestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         self.org = self.create_organization()
 
-    def test_parse_release_into_semver_cols(self):
+    def test_parse_release_into_semver_cols(self) -> None:
         """
         Test that ensures that release version is parsed into the semver cols on Release model
         and that if build code can be parsed as a 64 bit integer then it is stored in build_number
@@ -723,7 +878,7 @@ class SemverReleaseParseTestCase(TestCase):
         assert release.build_number == 20200101100
         assert release.package == "org.example.FooApp"
 
-    def test_parse_release_into_semver_cols_using_custom_get_or_create(self):
+    def test_parse_release_into_semver_cols_using_custom_get_or_create(self) -> None:
         """
         Test that ensures that release version is parsed into the semver cols on Release model
         when using the custom `Release.get_or_create` method
@@ -740,7 +895,7 @@ class SemverReleaseParseTestCase(TestCase):
         assert release.build_number == 20200101100
         assert release.package == "org.example.FooApp"
 
-    def test_parse_release_into_semver_cols_with_non_int_build_code(self):
+    def test_parse_release_into_semver_cols_with_non_int_build_code(self) -> None:
         """
         Test that ensures that if the build_code passed as part of the semver version cannot be
         parsed as a 64 bit integer due to non int release then build number is left empty
@@ -756,7 +911,7 @@ class SemverReleaseParseTestCase(TestCase):
         assert release.build_number is None
         assert release.package == "org.example.FooApp"
 
-    def test_parse_release_into_semver_cols_with_int_build_code_gt_64_int(self):
+    def test_parse_release_into_semver_cols_with_int_build_code_gt_64_int(self) -> None:
         """
         Test that ensures that if the build_code passed as part of the semver version cannot be
         parsed as a 64 bit integer due to bigger than 64 bit integer then build number is left empty
@@ -772,7 +927,7 @@ class SemverReleaseParseTestCase(TestCase):
         assert release.build_number is None
         assert release.package == "org.example.FooApp"
 
-    def test_parse_release_into_semver_cols_with_negative_build_code(self):
+    def test_parse_release_into_semver_cols_with_negative_build_code(self) -> None:
         """
         Test that ensures that if the build_code passed as part of the semver version can be
         parsed as a 64 bit integer but has a negative sign then build number is left
@@ -789,7 +944,7 @@ class SemverReleaseParseTestCase(TestCase):
         assert release.build_number is None
         assert release.package == "org.example.FooApp"
 
-    def test_parse_release_into_semver_cols_with_no_prerelease(self):
+    def test_parse_release_into_semver_cols_with_no_prerelease(self) -> None:
         """
         Test that ensures that prerelease is stores as an empty string if not included
         in the version.
@@ -805,7 +960,7 @@ class SemverReleaseParseTestCase(TestCase):
         assert release.build_number is None
         assert release.package == "org.example.FooApp"
 
-    def test_parse_non_semver_should_not_fail(self):
+    def test_parse_non_semver_should_not_fail(self) -> None:
         """
         Test that ensures nothing breaks when sending a non semver compatible release
         """
@@ -813,7 +968,7 @@ class SemverReleaseParseTestCase(TestCase):
         release = Release.objects.create(organization=self.org, version=version)
         assert release.version == "hello world"
 
-    def test_parse_release_overflow_bigint(self):
+    def test_parse_release_overflow_bigint(self) -> None:
         """
         Tests that we don't error if we have a version component that is larger than
         a postgres bigint.
@@ -830,7 +985,7 @@ class SemverReleaseParseTestCase(TestCase):
         assert release.build_number is None
         assert release.package is None
 
-    def test_parse_release_into_semver_cols_with_get_or_create(self):
+    def test_parse_release_into_semver_cols_with_get_or_create(self) -> None:
         """
         Test that ensures get_or_create populates semver fields
         """
@@ -847,7 +1002,7 @@ class SemverReleaseParseTestCase(TestCase):
         assert release.build_number is None
         assert release.package == "org.example.FooApp"
 
-    def test_parse_release_into_semver_cols_on_pre_save(self):
+    def test_parse_release_into_semver_cols_on_pre_save(self) -> None:
         """
         Test that ensures that calling save on a new Release instance parses version into semver
         columns
@@ -864,7 +1019,7 @@ class SemverReleaseParseTestCase(TestCase):
         assert release.build_number is None
         assert release.package == "org.example.FooApp"
 
-    def test_does_not_parse_release_into_semver_cols_on_pre_save_for_existing_release(self):
+    def test_does_not_parse_release_into_semver_cols_on_pre_save_for_existing_release(self) -> None:
         """
         Test that ensures that calling save on an existing Release instance does not re-parse
         version into semver columns
@@ -886,7 +1041,7 @@ class SemverReleaseParseTestCase(TestCase):
 
 
 class ReleaseFilterBySemverTest(TestCase):
-    def test_invalid_query(self):
+    def test_invalid_query(self) -> None:
         with pytest.raises(
             InvalidSearchQuery,
             match=INVALID_SEMVER_MESSAGE,
@@ -902,7 +1057,7 @@ class ReleaseFilterBySemverTest(TestCase):
             )
         ) == set(expected_releases)
 
-    def test(self):
+    def test(self) -> None:
         release = self.create_release(version="test@1.2.3")
         release_2 = self.create_release(version="test@1.2.4")
         self.run_test(">", "1.2.3", [release_2])
@@ -911,7 +1066,7 @@ class ReleaseFilterBySemverTest(TestCase):
         self.run_test("<=", "1.2.3", [release])
         self.run_test("!=", "1.2.3", [release_2])
 
-    def test_prerelease(self):
+    def test_prerelease(self) -> None:
         # Prerelease has weird sorting rules, where an empty string is higher priority
         # than a non-empty string. Make sure this sorting works
         release = self.create_release(version="test@1.2.3-alpha")
@@ -927,7 +1082,7 @@ class ReleaseFilterBySemverTest(TestCase):
         )
         self.run_test("<", "1.2.3", [release_1, release])
 
-    def test_granularity(self):
+    def test_granularity(self) -> None:
         self.create_release(version="test@1.0.0.0")
         release_2 = self.create_release(version="test@1.2.0.0")
         release_3 = self.create_release(version="test@1.2.3.0")
@@ -943,7 +1098,7 @@ class ReleaseFilterBySemverTest(TestCase):
         self.run_test(">", "1.2.3.4", [release_5])
         self.run_test(">", "2", [])
 
-    def test_wildcard(self):
+    def test_wildcard(self) -> None:
         release_1 = self.create_release(version="test@1.0.0.0")
         release_2 = self.create_release(version="test@1.2.0.0")
         release_3 = self.create_release(version="test@1.2.3.0")
@@ -960,13 +1115,13 @@ class ReleaseFilterBySemverTest(TestCase):
         self.run_test("=", "1.2.3.4", [release_4])
         self.run_test("=", "2.*", [release_5])
 
-    def test_package(self):
+    def test_package(self) -> None:
         release = self.create_release(version="test@1.2.3")
         release_2 = self.create_release(version="test2@1.2.3")
         self.run_test(">=", "test@1.2.3", [release])
         self.run_test(">=", "test2@1.2.3", [release_2])
 
-    def test_project(self):
+    def test_project(self) -> None:
         project_2 = self.create_project()
         release = self.create_release(version="test@1.2.3")
         release_2 = self.create_release(version="test@1.2.4")
@@ -993,13 +1148,13 @@ class ReleaseFilterBySemverBuildTest(TestCase):
             )
         ) == set(expected_releases)
 
-    def test_no_build(self):
+    def test_no_build(self) -> None:
         self.create_release(version="test@1.2.3")
         self.create_release(version="test@1.2.4")
         self.run_test("gt", "100", [])
         self.run_test("exact", "105aab", [])
 
-    def test_numeric(self):
+    def test_numeric(self) -> None:
         release_1 = self.create_release(version="test@1.2.3+123")
         release_2 = self.create_release(version="test@1.2.4+456")
         self.create_release(version="test@1.2.4+123abc")
@@ -1007,7 +1162,7 @@ class ReleaseFilterBySemverBuildTest(TestCase):
         self.run_test("lte", "123", [release_1])
         self.run_test("exact", "123", [release_1])
 
-    def test_large_numeric(self):
+    def test_large_numeric(self) -> None:
         release_1 = self.create_release(version="test@1.2.3+9223372036854775808")
         self.create_release(version="test@1.2.3+9223372036854775809")
 
@@ -1015,7 +1170,7 @@ class ReleaseFilterBySemverBuildTest(TestCase):
         # so should fall back to an exact string match instead.
         self.run_test("gt", "9223372036854775808", [release_1])
 
-    def test_text(self):
+    def test_text(self) -> None:
         release_1 = self.create_release(version="test@1.2.3+123")
         release_2 = self.create_release(version="test@1.2.4+1234")
         release_3 = self.create_release(version="test@1.2.4+123abc")
@@ -1029,7 +1184,7 @@ class ReleaseFilterBySemverBuildTest(TestCase):
 
 
 class FollowsSemverVersioningSchemeTestCase(TestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         self.org = self.create_organization()
         self.fake_package = "_fake_package_prj_"
 
@@ -1038,7 +1193,7 @@ class FollowsSemverVersioningSchemeTestCase(TestCase):
         for i in range(10):
             self.create_release(version=f"fake_package-ahmed@1.1.{i}", project=self.proj_1)
 
-    def test_follows_semver_with_all_releases_semver_and_semver_release_version(self):
+    def test_follows_semver_with_all_releases_semver_and_semver_release_version(self) -> None:
         """
         Test that ensures that when the last 10 releases and the release version passed in as an arg
         follow semver versioning, then True should be returned
@@ -1050,7 +1205,22 @@ class FollowsSemverVersioningSchemeTestCase(TestCase):
             is True
         )
 
-    def test_follows_semver_with_all_releases_semver_and_no_release_version(self):
+    def test_follows_semver_all_releases_semver_and_missing_package_semver_release_version(
+        self,
+    ) -> None:
+        """
+        Test that ensures that even if a project is following semver, then if the release_version
+        supplied lacks a package, then for that specific release we opt the project out of being
+        considered a semver project
+        """
+        assert (
+            follows_semver_versioning_scheme(
+                org_id=self.org.id, project_id=self.proj_1.id, release_version="2.0.0"
+            )
+            is False
+        )
+
+    def test_follows_semver_with_all_releases_semver_and_no_release_version(self) -> None:
         """
         Test that ensures that when the last 10 releases follow semver versioning and no release
         version is passed in as an argument, then True should be returned
@@ -1059,7 +1229,7 @@ class FollowsSemverVersioningSchemeTestCase(TestCase):
             follows_semver_versioning_scheme(org_id=self.org.id, project_id=self.proj_1.id) is True
         )
 
-    def test_follows_semver_with_all_releases_semver_and_non_semver_release_version(self):
+    def test_follows_semver_with_all_releases_semver_and_non_semver_release_version(self) -> None:
         """
         Test that ensures that even if the last 10 releases follow semver but the passed in
         release_version doesn't then we should return False because we should not follow semver
@@ -1072,7 +1242,7 @@ class FollowsSemverVersioningSchemeTestCase(TestCase):
             is False
         )
 
-    def test_follows_semver_user_accidentally_stopped_using_semver_a_few_times(self):
+    def test_follows_semver_user_accidentally_stopped_using_semver_a_few_times(self) -> None:
         """
         Test that ensures that when a user accidentally stops using semver versioning for a few
         times but there exists at least one semver compliant release in the last 3 releases and
@@ -1095,7 +1265,7 @@ class FollowsSemverVersioningSchemeTestCase(TestCase):
             is True
         )
 
-    def test_follows_semver_user_stops_using_semver(self):
+    def test_follows_semver_user_stops_using_semver(self) -> None:
         """
         Test that ensures that if a user stops using semver and so the last 3 releases in the last
         10 releases are all non-semver releases, then the project does not follow semver anymore
@@ -1117,7 +1287,7 @@ class FollowsSemverVersioningSchemeTestCase(TestCase):
             is False
         )
 
-    def test_follows_semver_user_accidentally_uses_semver_a_few_times(self):
+    def test_follows_semver_user_accidentally_uses_semver_a_few_times(self) -> None:
         """
         Test that ensures that if user accidentally uses semver compliant versions for a few
         times then the project will not be considered to be using semver
@@ -1137,7 +1307,7 @@ class FollowsSemverVersioningSchemeTestCase(TestCase):
             is False
         )
 
-    def test_follows_semver_user_starts_using_semver(self):
+    def test_follows_semver_user_starts_using_semver(self) -> None:
         """
         Test that ensures if a user starts using semver by having at least the last 3 releases
         using semver then we consider the project to be using semver
@@ -1157,7 +1327,9 @@ class FollowsSemverVersioningSchemeTestCase(TestCase):
             is True
         )
 
-    def test_follows_semver_user_starts_using_semver_with_less_than_10_recent_releases(self):
+    def test_follows_semver_user_starts_using_semver_with_less_than_10_recent_releases(
+        self,
+    ) -> None:
         """
         Test that ensures that a project with only 5 (<10) releases and at least one semver
         release in the most recent releases is considered to be following semver
@@ -1176,7 +1348,7 @@ class FollowsSemverVersioningSchemeTestCase(TestCase):
             is True
         )
 
-    def test_follows_semver_check_when_project_only_has_two_releases(self):
+    def test_follows_semver_check_when_project_only_has_two_releases(self) -> None:
         """
         Test that ensures that when a project has only two releases, then we consider project to
         be semver or not based on if the most recent release follows semver or not
@@ -1205,10 +1377,35 @@ class FollowsSemverVersioningSchemeTestCase(TestCase):
             is False
         )
 
+    def test_follows_semver_check_with_archived_non_semver_releases(self) -> None:
+        """
+        Test that ensures that when a project has a mix of archived non-semver releases and active semver releases,
+        then we consider the project to be following semver.
+        """
+        proj = self.create_project(organization=self.org)
+
+        # Create semver releases that are not archived
+        for i in range(4):
+            self.create_release(version=f"{self.fake_package}@1.0.{i}", project=proj)
+
+        # Create non-semver releases and archive them
+        for i in range(6):
+            release = self.create_release(version=f"notsemver-{i}", project=proj)
+            release.update(status=ReleaseStatus.ARCHIVED)
+
+        assert (
+            follows_semver_versioning_scheme(
+                org_id=self.org.id,
+                project_id=proj.id,
+            )
+            is True
+        )
+
 
 class ClearCommitsTestCase(TestCase):
-    def test_simple(self):
-        org = self.create_organization()
+    @receivers_raise_on_send()
+    def test_simple(self) -> None:
+        org = self.create_organization(owner=Factories.create_user())
         project = self.create_project(organization=org, name="foo")
         group = self.create_group(project=project)
 
@@ -1222,11 +1419,13 @@ class ClearCommitsTestCase(TestCase):
             name="foo bar boo", email="baroo@example.com", organization_id=org.id
         )
 
+        author.preload_users()
+        author2.preload_users()
         commit = Commit.objects.create(
             organization_id=org.id,
             repository_id=repo.id,
             author=author,
-            date_added="2019-03-01 12:00:00",
+            date_added="2019-03-01 12:00:00+00:00",
             message="fixes %s" % (group.qualified_short_id),
             key="alksdflskdfjsldkfajsflkslk",
         )
@@ -1234,7 +1433,7 @@ class ClearCommitsTestCase(TestCase):
             organization_id=org.id,
             repository_id=repo.id,
             author=author2,
-            date_added="2019-03-01 12:02:00",
+            date_added="2019-03-01 12:02:00+00:00",
             message="i fixed something",
             key="lskfslknsdkcsnlkdflksfdkls",
         )
@@ -1278,3 +1477,552 @@ class ClearCommitsTestCase(TestCase):
         assert Commit.objects.filter(
             id=commit2.id, organization_id=org.id, repository_id=repo.id
         ).exists()
+
+    @receivers_raise_on_send()
+    def test_clear_commits_with_multiple_repositories(self) -> None:
+        """
+        Test that clear_commits works correctly when a release has commits
+        from multiple repositories, which creates multiple ReleaseHeadCommit objects.
+
+        This test would fail on master with .get() raising MultipleObjectsReturned,
+        but passes with the fix using .filter().
+        """
+        org = self.create_organization(owner=Factories.create_user())
+        project = self.create_project(organization=org, name="foo")
+
+        # Create multiple repositories
+        repo1 = Repository.objects.create(organization_id=org.id, name="test/repo1")
+        repo2 = Repository.objects.create(organization_id=org.id, name="test/repo2")
+
+        # Create commits in each repository
+        commit1 = Commit.objects.create(
+            organization_id=org.id,
+            repository_id=repo1.id,
+            key="commit1key",
+            message="First commit",
+        )
+        commit2 = Commit.objects.create(
+            organization_id=org.id,
+            repository_id=repo2.id,
+            key="commit2key",
+            message="Second commit",
+        )
+
+        release = Release.objects.create(version="multi-repo-release", organization=org)
+        release.add_project(project)
+
+        # Set commits from both repositories
+        release.set_commits(
+            [
+                {"id": commit1.key, "repository": repo1.name},
+                {"id": commit2.key, "repository": repo2.name},
+            ]
+        )
+
+        # Verify we have multiple ReleaseHeadCommit objects for this release
+        head_commits = ReleaseHeadCommit.objects.filter(organization_id=org.id, release=release)
+        assert head_commits.count() == 2
+        assert ReleaseHeadCommit.objects.filter(
+            release_id=release.id, commit_id=commit1.id, repository_id=repo1.id
+        ).exists()
+        assert ReleaseHeadCommit.objects.filter(
+            release_id=release.id, commit_id=commit2.id, repository_id=repo2.id
+        ).exists()
+
+        # Verify ReleaseCommit objects exist
+        assert ReleaseCommit.objects.filter(commit=commit1, release=release).exists()
+        assert ReleaseCommit.objects.filter(commit=commit2, release=release).exists()
+
+        # Now clear the commits - this would fail on master with .get()
+        release.clear_commits()
+
+        # Verify all ReleaseHeadCommit objects are deleted
+        assert (
+            ReleaseHeadCommit.objects.filter(organization_id=org.id, release=release).count() == 0
+        )
+
+        # Verify all ReleaseCommit objects are deleted
+        assert not ReleaseCommit.objects.filter(release=release).exists()
+
+        # Verify release fields are cleared
+        assert release.commit_count == 0
+        assert release.authors == []
+        assert not release.last_commit_id
+
+        # Commits should still exist in their repositories
+        assert Commit.objects.filter(id=commit1.id).exists()
+        assert Commit.objects.filter(id=commit2.id).exists()
+
+
+class ReleaseGetUnusedFilterTestCase(TestCase):
+    """Test the Release.get_unused_filter() method logic"""
+
+    def setUp(self):
+        self.organization = self.create_organization()
+        self.project = self.create_project(organization=self.organization)
+        self.cutoff_date = timezone.now() - timedelta(days=30)
+
+    def test_get_unused_filter_includes_old_releases_without_dependencies(self):
+        """Old releases with no dependencies should be included in unused filter"""
+        old_release = self.create_release(
+            project=self.project,
+            version="1.0.0",
+            date_added=timezone.now() - timedelta(days=35),
+        )
+
+        unused_filter = Release.get_unused_filter(self.cutoff_date)
+        unused_releases = Release.objects.filter(unused_filter)
+
+        assert old_release in unused_releases
+
+    def test_get_unused_filter_excludes_recently_added_releases(self):
+        """Recently added releases should be excluded from unused filter"""
+        recent_release = self.create_release(
+            project=self.project,
+            version="2.0.0",
+            date_added=timezone.now() - timedelta(days=10),  # Within cutoff
+        )
+
+        unused_filter = Release.get_unused_filter(self.cutoff_date)
+        unused_releases = Release.objects.filter(unused_filter)
+
+        assert recent_release not in unused_releases
+
+    def test_get_unused_filter_excludes_releases_with_groups(self):
+        """Releases referenced by groups should be excluded from unused filter"""
+        old_release = self.create_release(
+            project=self.project,
+            version="1.0.0",
+            date_added=timezone.now() - timedelta(days=35),
+        )
+        self.create_group(project=self.project, first_release=old_release)
+
+        unused_filter = Release.get_unused_filter(self.cutoff_date)
+        unused_releases = Release.objects.filter(unused_filter)
+
+        assert old_release not in unused_releases
+
+    def test_get_unused_filter_excludes_releases_with_group_environments(self):
+        """Releases referenced by GroupEnvironment should be excluded from unused filter"""
+        old_release = self.create_release(
+            project=self.project,
+            version="1.0.0",
+            date_added=timezone.now() - timedelta(days=35),
+        )
+        group = self.create_group(project=self.project)
+        environment = self.create_environment(project=self.project)
+        GroupEnvironment.objects.create(
+            group=group,
+            environment=environment,
+            first_release=old_release,
+        )
+
+        unused_filter = Release.get_unused_filter(self.cutoff_date)
+        unused_releases = Release.objects.filter(unused_filter)
+
+        assert old_release not in unused_releases
+
+    def test_get_unused_filter_excludes_releases_with_group_history(self):
+        """Releases referenced by GroupHistory should be excluded from unused filter"""
+        old_release = self.create_release(
+            project=self.project,
+            version="1.0.0",
+            date_added=timezone.now() - timedelta(days=35),
+        )
+        group = self.create_group(project=self.project)
+        GroupHistory.objects.create(
+            organization=self.organization,
+            group=group,
+            project=self.project,
+            release=old_release,
+        )
+
+        unused_filter = Release.get_unused_filter(self.cutoff_date)
+        unused_releases = Release.objects.filter(unused_filter)
+
+        assert old_release not in unused_releases
+
+    def test_get_unused_filter_excludes_releases_with_group_resolutions(self):
+        """Releases referenced by GroupResolution should be excluded from unused filter"""
+        old_release = self.create_release(
+            project=self.project,
+            version="1.0.0",
+            date_added=timezone.now() - timedelta(days=35),
+        )
+        group = self.create_group(project=self.project)
+        GroupResolution.objects.create(
+            group=group,
+            release=old_release,
+        )
+
+        unused_filter = Release.get_unused_filter(self.cutoff_date)
+        unused_releases = Release.objects.filter(unused_filter)
+
+        assert old_release not in unused_releases
+
+    def test_get_unused_filter_excludes_releases_with_distributions(self):
+        """Releases with distributions should be excluded from unused filter"""
+        old_release = self.create_release(
+            project=self.project,
+            version="1.0.0",
+            date_added=timezone.now() - timedelta(days=35),
+        )
+        Distribution.objects.create(
+            release=old_release,
+            name="android",
+            organization_id=self.organization.id,
+        )
+
+        unused_filter = Release.get_unused_filter(self.cutoff_date)
+        unused_releases = Release.objects.filter(unused_filter)
+
+        assert old_release not in unused_releases
+
+    def test_get_unused_filter_excludes_releases_with_deploys(self):
+        """Releases with deploys should be excluded from unused filter"""
+        old_release = self.create_release(
+            project=self.project,
+            version="1.0.0",
+            date_added=timezone.now() - timedelta(days=35),
+        )
+        environment = self.create_environment(project=self.project)
+        Deploy.objects.create(
+            release=old_release,
+            environment_id=environment.id,
+            organization_id=self.organization.id,
+        )
+
+        unused_filter = Release.get_unused_filter(self.cutoff_date)
+        unused_releases = Release.objects.filter(unused_filter)
+
+        assert old_release not in unused_releases
+
+    def test_get_unused_filter_ignores_safe_child_relations(self):
+        """Safe child relations should not prevent inclusion in unused filter"""
+        old_release = self.create_release(
+            project=self.project,
+            version="1.0.0",
+            date_added=timezone.now() - timedelta(days=35),
+        )
+        environment = self.create_environment(project=self.project)
+
+        # Create safe child relations that would be deleted during cleanup
+        ReleaseEnvironment.objects.create(
+            release=old_release,
+            environment=environment,
+            organization_id=self.organization.id,
+        )
+        ReleaseProjectEnvironment.objects.create(
+            release=old_release,
+            project=self.project,
+            environment=environment,
+            last_seen=timezone.now()
+            - timedelta(days=40),  # Old activity, shouldn't prevent cleanup
+        )
+        ReleaseActivity.objects.create(
+            release=old_release,
+            type=1,
+        )
+
+        unused_filter = Release.get_unused_filter(self.cutoff_date)
+        unused_releases = Release.objects.filter(unused_filter)
+
+        # These relations should not prevent the release from being considered unused
+        assert old_release in unused_releases
+
+    def test_get_unused_filter_multiple_releases_mixed_dependencies(self):
+        """Test filter correctly handles multiple releases with different dependency patterns"""
+        # Create various releases with different dependency patterns
+        unused_old_release = self.create_release(
+            project=self.project,
+            version="1.0.0",
+            date_added=timezone.now() - timedelta(days=35),
+        )
+
+        recent_release = self.create_release(
+            project=self.project,
+            version="2.0.0",
+            date_added=timezone.now() - timedelta(days=10),  # Recent
+        )
+
+        release_with_group = self.create_release(
+            project=self.project,
+            version="3.0.0",
+            date_added=timezone.now() - timedelta(days=35),
+        )
+        self.create_group(project=self.project, first_release=release_with_group)
+
+        release_with_deploy = self.create_release(
+            project=self.project,
+            version="4.0.0",
+            date_added=timezone.now() - timedelta(days=35),
+        )
+        environment = self.create_environment(project=self.project)
+        Deploy.objects.create(
+            release=release_with_deploy,
+            environment_id=environment.id,
+            organization_id=self.organization.id,
+        )
+
+        unused_filter = Release.get_unused_filter(self.cutoff_date)
+        unused_releases = Release.objects.filter(unused_filter)
+
+        # Only the old release without dependencies should be in the unused filter
+        assert unused_old_release in unused_releases
+        assert recent_release not in unused_releases
+        assert release_with_group not in unused_releases
+        assert release_with_deploy not in unused_releases
+
+    def test_get_unused_filter_with_latest_repo_release_environment(self):
+        """Test that LatestRepoReleaseEnvironment subquery works correctly"""
+        old_release = self.create_release(
+            project=self.project,
+            version="1.0.0",
+            date_added=timezone.now() - timedelta(days=35),
+        )
+        repo = self.create_repo(project=self.project)
+        environment = self.create_environment(project=self.project)
+
+        # Release should be unused initially
+        unused_filter = Release.get_unused_filter(self.cutoff_date)
+        unused_releases = Release.objects.filter(unused_filter)
+        assert old_release in unused_releases
+
+        # Create LatestRepoReleaseEnvironment - now should be excluded
+        LatestRepoReleaseEnvironment.objects.create(
+            repository_id=repo.id,
+            environment_id=environment.id,
+            release_id=old_release.id,
+        )
+
+        unused_filter = Release.get_unused_filter(self.cutoff_date)
+        unused_releases = Release.objects.filter(unused_filter)
+        assert old_release not in unused_releases
+
+    def test_get_unused_filter_with_recent_activity(self):
+        """Test that ReleaseProjectEnvironment last_seen subquery works correctly"""
+        old_release = self.create_release(
+            project=self.project,
+            version="1.0.0",
+            date_added=timezone.now() - timedelta(days=35),
+        )
+        environment = self.create_environment(project=self.project)
+
+        # Release should be unused initially
+        unused_filter = Release.get_unused_filter(self.cutoff_date)
+        unused_releases = Release.objects.filter(unused_filter)
+        assert old_release in unused_releases
+
+        # Create ReleaseProjectEnvironment with recent activity - now should be excluded
+        ReleaseProjectEnvironment.objects.create(
+            release=old_release,
+            project=self.project,
+            environment=environment,
+            last_seen=timezone.now() - timedelta(days=10),  # Recent activity
+        )
+
+        unused_filter = Release.get_unused_filter(self.cutoff_date)
+        unused_releases = Release.objects.filter(unused_filter)
+        assert old_release not in unused_releases
+
+    def test_get_unused_filter_excludes_release_that_is_first_release_of_group(self):
+        """Test that a release is not considered unused if it is the first_release of any group"""
+        old_release = self.create_release(
+            project=self.project,
+            version="1.0.0",
+            date_added=timezone.now() - timedelta(days=35),
+        )
+
+        # Release should be unused initially (not the first_release of any group)
+        unused_filter = Release.get_unused_filter(self.cutoff_date)
+        unused_releases = Release.objects.filter(unused_filter)
+        assert old_release in unused_releases
+
+        # Create a Group with this release as first_release
+        self.create_group(project=self.project, first_release=old_release)
+
+        # Now release should not be considered unused (it is the first_release of a group)
+        unused_filter = Release.get_unused_filter(self.cutoff_date)
+        unused_releases = Release.objects.filter(unused_filter)
+        assert old_release not in unused_releases
+
+        # Verify that the release is the first_release of a group
+        from sentry.models.group import Group
+
+        assert Group.objects.filter(first_release=old_release).exists() is True
+
+    def test_get_unused_filter_excludes_releases_with_recent_deploys(self):
+        """Test that releases with recent deploys are not considered unused"""
+        old_release = self.create_release(
+            project=self.project,
+            version="1.0.0",
+            date_added=timezone.now() - timedelta(days=35),
+        )
+
+        # Release should be unused initially
+        unused_filter = Release.get_unused_filter(self.cutoff_date)
+        unused_releases = Release.objects.filter(unused_filter)
+        assert old_release in unused_releases
+
+        # Create a recent deploy (within cutoff) - should keep the release
+        from sentry.models.deploy import Deploy
+
+        environment = self.create_environment(project=self.project)
+        Deploy.objects.create(
+            organization_id=self.organization.id,
+            release=old_release,
+            environment_id=environment.id,
+            date_finished=timezone.now() - timedelta(days=10),  # Recent deploy
+        )
+
+        unused_filter = Release.get_unused_filter(self.cutoff_date)
+        unused_releases = Release.objects.filter(unused_filter)
+        assert old_release not in unused_releases
+
+    def test_get_unused_filter_allows_cleanup_with_old_deploys(self):
+        """Test that releases with old deploys can be cleaned up"""
+        old_release = self.create_release(
+            project=self.project,
+            version="1.0.0",
+            date_added=timezone.now() - timedelta(days=35),
+        )
+
+        # Create an old deploy (before cutoff) - should allow cleanup
+        from sentry.models.deploy import Deploy
+
+        environment = self.create_environment(project=self.project)
+        Deploy.objects.create(
+            organization_id=self.organization.id,
+            release=old_release,
+            environment_id=environment.id,
+            date_finished=timezone.now() - timedelta(days=100),  # Old deploy
+        )
+
+        unused_filter = Release.get_unused_filter(self.cutoff_date)
+        unused_releases = Release.objects.filter(unused_filter)
+        assert old_release in unused_releases
+
+    def test_get_unused_filter_excludes_releases_with_recent_distributions(self):
+        """Test that releases with recent distributions are not considered unused"""
+        old_release = self.create_release(
+            project=self.project,
+            version="1.0.0",
+            date_added=timezone.now() - timedelta(days=35),
+        )
+
+        # Release should be unused initially
+        unused_filter = Release.get_unused_filter(self.cutoff_date)
+        unused_releases = Release.objects.filter(unused_filter)
+        assert old_release in unused_releases
+
+        # Create a recent distribution (within cutoff) - should keep the release
+        from sentry.models.distribution import Distribution
+
+        Distribution.objects.create(
+            organization_id=self.organization.id,
+            release=old_release,
+            name="recent-dist",
+            date_added=timezone.now() - timedelta(days=10),  # Recent distribution
+        )
+
+        unused_filter = Release.get_unused_filter(self.cutoff_date)
+        unused_releases = Release.objects.filter(unused_filter)
+        assert old_release not in unused_releases
+
+    def test_get_unused_filter_allows_cleanup_with_old_distributions(self):
+        """Test that releases with old distributions can be cleaned up"""
+        old_release = self.create_release(
+            project=self.project,
+            version="1.0.0",
+            date_added=timezone.now() - timedelta(days=35),
+        )
+
+        # Create an old distribution (before cutoff) - should allow cleanup
+        from sentry.models.distribution import Distribution
+
+        Distribution.objects.create(
+            organization_id=self.organization.id,
+            release=old_release,
+            name="old-dist",
+            date_added=timezone.now() - timedelta(days=100),  # Old distribution
+        )
+
+        unused_filter = Release.get_unused_filter(self.cutoff_date)
+        unused_releases = Release.objects.filter(unused_filter)
+        assert old_release in unused_releases
+
+    def test_get_unused_filter_excludes_releases_with_recent_group_releases(self):
+        """Test that releases with recent group releases are not considered unused"""
+        old_release = self.create_release(
+            project=self.project,
+            version="1.0.0",
+            date_added=timezone.now() - timedelta(days=35),
+        )
+
+        # Release should be unused initially
+        unused_filter = Release.get_unused_filter(self.cutoff_date)
+        unused_releases = Release.objects.filter(unused_filter)
+        assert old_release in unused_releases
+
+        # Create a recent group release (within cutoff) - should keep the release
+        from sentry.models.grouprelease import GroupRelease
+
+        group = self.create_group(project=self.project)
+        GroupRelease.objects.create(
+            project_id=self.project.id,
+            group_id=group.id,
+            release_id=old_release.id,
+            environment="",
+            first_seen=timezone.now() - timedelta(days=100),  # Old first_seen (not used in filter)
+            last_seen=timezone.now() - timedelta(days=10),  # Recent last_seen (used in filter)
+        )
+
+        unused_filter = Release.get_unused_filter(self.cutoff_date)
+        unused_releases = Release.objects.filter(unused_filter)
+        assert old_release not in unused_releases
+
+    def test_get_unused_filter_allows_cleanup_with_old_group_releases(self):
+        """Test that releases with old group releases can be cleaned up"""
+        old_release = self.create_release(
+            project=self.project,
+            version="1.0.0",
+            date_added=timezone.now() - timedelta(days=35),
+        )
+
+        # Create an old group release (before cutoff) - should allow cleanup
+        from sentry.models.grouprelease import GroupRelease
+
+        group = self.create_group(project=self.project)
+        GroupRelease.objects.create(
+            project_id=self.project.id,
+            group_id=group.id,
+            release_id=old_release.id,
+            environment="",
+            first_seen=timezone.now()
+            - timedelta(days=10),  # Recent first_seen (not used in filter)
+            last_seen=timezone.now() - timedelta(days=100),  # Old last_seen (used in filter)
+        )
+
+        unused_filter = Release.get_unused_filter(self.cutoff_date)
+        unused_releases = Release.objects.filter(unused_filter)
+        assert old_release in unused_releases
+
+    def test_get_unused_filter_excludes_releases_with_old_group_resolutions(self):
+        """Test that releases with old GroupResolutions are still protected"""
+        old_release = self.create_release(
+            project=self.project,
+            version="1.0.0",
+            date_added=timezone.now() - timedelta(days=35),
+        )
+        group = self.create_group(project=self.project)
+
+        # Even old GroupResolutions should protect the release
+        GroupResolution.objects.create(
+            group=group,
+            release=old_release,
+            datetime=timezone.now() - timedelta(days=100),
+        )
+
+        unused_filter = Release.get_unused_filter(self.cutoff_date)
+        unused_releases = Release.objects.filter(unused_filter)
+        assert old_release not in unused_releases

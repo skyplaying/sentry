@@ -7,24 +7,12 @@ from django.contrib.staticfiles import finders
 from django.http import Http404, HttpResponseNotFound
 from django.views import static
 
-FOREVER_CACHE = "max-age=315360000"
-
-# See
-# https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control#requiring_revalidation
-# This means that clients *CAN* cache the resource, but they must revalidate
-# before using it This means we will have a small HTTP request overhead to
-# verify that the local resource is not outdated
-#
-# Note that the above docs state that "no-cache" is the same as "max-age=0,
-# must-revalidate", but some CDNs will not treat them as the same
-NO_CACHE = "max-age=0, must-revalidate"
-
-# no-store means that the response should not be stored in *ANY* cache
-NEVER_CACHE = "max-age=0, no-cache, no-store, must-revalidate"
+from sentry.web.constants import FOREVER_CACHE, NEVER_CACHE, NO_CACHE
+from sentry.web.frontend.base import all_silo_view
 
 
 def dev_favicon(request, extension):
-    document_root, path = resolve("sentry/images/favicon_dev.png")
+    document_root, path = resolve("sentry/images/favicon-dev.png")
     return static.serve(request, path, document_root=document_root)
 
 
@@ -45,6 +33,7 @@ def resolve(path):
     return os.path.split(absolute_path)
 
 
+@all_silo_view
 def frontend_app_static_media(request, **kwargs):
     """
     Serve static files that should not have any versioned paths/filenames.
@@ -64,6 +53,7 @@ def frontend_app_static_media(request, **kwargs):
     return response
 
 
+@all_silo_view
 def static_media(request, **kwargs):
     """
     Serve static files below a given point in the directory structure.
@@ -82,24 +72,23 @@ def static_media(request, **kwargs):
         # for static files, rather than our full blown HTML.
         return HttpResponseNotFound("", content_type="text/plain")
 
+    response = None
+
     if (
         "gzip" in request.META.get("HTTP_ACCEPT_ENCODING", "")
         and not path.endswith(".gz")
         and not settings.DEBUG
     ):
-        paths = (path + ".gz", path)
-    else:
-        paths = (path,)
-
-    for p in paths:
         try:
-            response = static.serve(request, p, document_root=document_root)
-            break
+            response = static.serve(request, path + ".gz", document_root=document_root)
         except Http404:
-            # We don't need to handle this since `resolve()` is assuring to us that
-            # at least the non-gzipped version exists, so in theory, this can
-            # only happen on the first .gz path
-            continue
+            pass
+
+    if response is None:
+        # We don't need to handle Http404 since `resolve()` is assuring to us
+        # that at least the non-gzipped version exists, so in theory, this can
+        # only happen on the first .gz path
+        response = static.serve(request, path, document_root=document_root)
 
     # Make sure we Vary: Accept-Encoding for gzipped responses
     response["Vary"] = "Accept-Encoding"

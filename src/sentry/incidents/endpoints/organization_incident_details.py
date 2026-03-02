@@ -1,11 +1,17 @@
 from rest_framework import serializers
+from rest_framework.request import Request
 from rest_framework.response import Response
 
+from sentry.api.api_owners import ApiOwner
+from sentry.api.api_publish_status import ApiPublishStatus
+from sentry.api.base import region_silo_endpoint
 from sentry.api.bases.incident import IncidentEndpoint, IncidentPermission
 from sentry.api.serializers import serialize
-from sentry.api.serializers.models.incident import DetailedIncidentSerializer
+from sentry.incidents.endpoints.serializers.incident import DetailedIncidentSerializer
 from sentry.incidents.logic import update_incident_status
-from sentry.incidents.models import IncidentStatus, IncidentStatusMethod
+from sentry.incidents.models.incident import IncidentStatus, IncidentStatusMethod
+from sentry.models.organization import Organization
+from sentry.workflow_engine.utils.legacy_metric_tracking import track_alert_endpoint_execution
 
 
 class IncidentSerializer(serializers.Serializer):
@@ -17,17 +23,22 @@ class IncidentSerializer(serializers.Serializer):
             value = IncidentStatus(value)
         except Exception:
             raise serializers.ValidationError(
-                "Invalid value for status. Valid values: {}".format(
-                    [e.value for e in IncidentStatus]
-                )
+                f"Invalid value for status. Valid values: {[e.value for e in IncidentStatus]}"
             )
         return value
 
 
+@region_silo_endpoint
 class OrganizationIncidentDetailsEndpoint(IncidentEndpoint):
+    owner = ApiOwner.ISSUES
+    publish_status = {
+        "GET": ApiPublishStatus.PRIVATE,
+        "PUT": ApiPublishStatus.PRIVATE,
+    }
     permission_classes = (IncidentPermission,)
 
-    def get(self, request, organization, incident):
+    @track_alert_endpoint_execution("GET", "sentry-api-0-organization-incident-details")
+    def get(self, request: Request, organization, incident) -> Response:
         """
         Fetch an Incident.
         ``````````````````
@@ -37,7 +48,8 @@ class OrganizationIncidentDetailsEndpoint(IncidentEndpoint):
 
         return Response(data)
 
-    def put(self, request, organization, incident):
+    @track_alert_endpoint_execution("PUT", "sentry-api-0-organization-incident-details")
+    def put(self, request: Request, organization: Organization, incident) -> Response:
         serializer = IncidentSerializer(data=request.data)
         if serializer.is_valid():
             result = serializer.validated_data
@@ -45,8 +57,6 @@ class OrganizationIncidentDetailsEndpoint(IncidentEndpoint):
                 incident = update_incident_status(
                     incident=incident,
                     status=result["status"],
-                    user=request.user,
-                    comment=result.get("comment"),
                     status_method=IncidentStatusMethod.MANUAL,
                 )
                 return Response(

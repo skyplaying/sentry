@@ -1,37 +1,77 @@
-import * as React from 'react';
+import ActorBadge, {type ActorBadgeProps} from './actorBadge';
+import type {BaseBadgeProps} from './baseBadge';
+import MemberBadge, {type MemberBadgeProps} from './memberBadge';
+import OrganizationBadge, {type OrganizationBadgeProps} from './organizationBadge';
+import ProjectBadge, {type ProjectBadgeProps} from './projectBadge';
+import {TeamBadge, type TeamBadgeProps} from './teamBadge';
+import UserBadge, {type UserBadgeProps} from './userBadge';
 
-import BaseBadge from 'app/components/idBadge/baseBadge';
-import MemberBadge from 'app/components/idBadge/memberBadge';
-import OrganizationBadge from 'app/components/idBadge/organizationBadge';
-import ProjectBadge from 'app/components/idBadge/projectBadge';
-import TeamBadge from 'app/components/idBadge/teamBadge/badge';
-import UserBadge from 'app/components/idBadge/userBadge';
-import {Member, User} from 'app/types';
+interface AddedBaseBadgeProps {
+  displayName?: React.ReactNode;
+}
 
-type BaseBadgeProps = React.ComponentProps<typeof BaseBadge>;
-type DisplayName = BaseBadgeProps['displayName'];
+interface GetOrganizationBadgeProps
+  extends
+    AddedBaseBadgeProps,
+    Omit<BaseBadgeProps, 'displayName' | 'organization'>,
+    OrganizationBadgeProps {}
 
-type Props = Omit<BaseBadgeProps, 'displayName'> & {
-  user?: User;
-  member?: Member;
-  displayName?: DisplayName;
-};
+interface GetMemberBadgeProps
+  extends
+    Omit<BaseBadgeProps, 'displayName' | 'member'>,
+    AddedBaseBadgeProps,
+    MemberBadgeProps {}
 
-function getBadge({organization, team, project, user, member, ...props}: Props) {
-  if (organization) {
-    return <OrganizationBadge organization={organization} {...props} />;
+interface GetUserBadgeProps
+  extends
+    Omit<BaseBadgeProps, 'displayName' | 'user'>,
+    UserBadgeProps,
+    AddedBaseBadgeProps {}
+
+interface GetTeamBadgeProps
+  extends
+    Omit<BaseBadgeProps, 'displayName' | 'team'>,
+    TeamBadgeProps,
+    AddedBaseBadgeProps {}
+
+interface GetProjectBadgeProps
+  extends
+    Omit<BaseBadgeProps, 'displayName' | 'project'>,
+    ProjectBadgeProps,
+    AddedBaseBadgeProps {}
+
+interface GetActorBadgeProps
+  extends
+    Omit<BaseBadgeProps, 'displayName' | 'actor'>,
+    ActorBadgeProps,
+    AddedBaseBadgeProps {}
+
+export type GetBadgeProps =
+  | GetOrganizationBadgeProps
+  | GetTeamBadgeProps
+  | GetProjectBadgeProps
+  | GetUserBadgeProps
+  | GetMemberBadgeProps
+  | GetActorBadgeProps;
+
+function getBadge(props: any): React.ReactElement | null {
+  if (props.organization) {
+    return <OrganizationBadge {...props} />;
   }
-  if (team) {
-    return <TeamBadge team={team} {...props} />;
+  if (props.team) {
+    return <TeamBadge {...props} />;
   }
-  if (project) {
-    return <ProjectBadge project={project} {...props} />;
+  if (props.project) {
+    return <ProjectBadge {...props} />;
   }
-  if (user) {
-    return <UserBadge user={user} {...props} />;
+  if (props.user) {
+    return <UserBadge {...props} />;
   }
-  if (member) {
-    return <MemberBadge member={member} {...props} />;
+  if (props.actor) {
+    return <ActorBadge {...props} />;
+  }
+  if (props.member) {
+    return <MemberBadge {...props} />;
   }
 
   return null;

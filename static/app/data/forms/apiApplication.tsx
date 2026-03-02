@@ -1,6 +1,6 @@
-import {convertMultilineFieldValue, extractMultilineFields} from 'app/utils';
-import getDynamicText from 'app/utils/getDynamicText';
-import {JsonFormObject} from 'app/views/settings/components/forms/type';
+import type {JsonFormObject} from 'sentry/components/forms/types';
+import {convertMultilineFieldValue, extractMultilineFields} from 'sentry/utils';
+import getDynamicText from 'sentry/utils/getDynamicText';
 
 const forms: JsonFormObject[] = [
   {
@@ -49,21 +49,23 @@ const forms: JsonFormObject[] = [
         name: 'redirectUris',
         type: 'string',
         multiline: true,
+        autosize: true,
         placeholder: 'e.g. https://example.com/oauth/complete',
         label: 'Authorized Redirect URIs',
         help: 'Separate multiple entries with a newline.',
-        getValue: val => extractMultilineFields(val),
-        setValue: val => convertMultilineFieldValue(val),
+        getValue: extractMultilineFields,
+        setValue: convertMultilineFieldValue,
       },
       {
         name: 'allowedOrigins',
         type: 'string',
         multiline: true,
+        autosize: true,
         placeholder: 'e.g. example.com',
         label: 'Authorized JavaScript Origins',
         help: 'Separate multiple entries with a newline.',
-        getValue: val => extractMultilineFields(val),
-        setValue: val => convertMultilineFieldValue(val),
+        getValue: extractMultilineFields,
+        setValue: convertMultilineFieldValue,
       },
     ],
   },

@@ -1,12 +1,14 @@
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
+from rest_framework.request import Request
 
 import sentry
 from sentry.exceptions import PluginError
-from sentry.integrations import FeatureDescription, IntegrationFeatures
+from sentry.integrations.base import FeatureDescription, IntegrationFeatures
 from sentry.plugins.bases.issue import IssuePlugin
 from sentry.utils import json
 from sentry.utils.http import absolute_uri
 from sentry_plugins.base import CorePluginMixin
+from sentry_plugins.utils import get_secret_field_config
 
 from .client import RedmineClient
 from .forms import RedmineNewIssueForm
@@ -35,7 +37,7 @@ class RedminePlugin(CorePluginMixin, IssuePlugin):
         FeatureDescription(
             """
             Create and link Sentry issue groups directly to an Redmine issue in any of your
-            projects, providing a quick way to jump from a Sentry bug to tracked ticket!
+            projects, providing a quick way to jump from a Sentry bug to tracked ticket.
             """,
             IntegrationFeatures.ISSUE_BASIC,
         ),
@@ -54,24 +56,24 @@ class RedminePlugin(CorePluginMixin, IssuePlugin):
         self.client_errors = []
         self.fields = []
 
-    def has_project_conf(self):
+    def has_project_conf(self) -> bool:
         return True
 
-    def is_configured(self, project, **kwargs):
+    def is_configured(self, project) -> bool:
         return all(self.get_option(k, project) for k in ("host", "key", "project_id"))
 
-    def get_new_issue_title(self, **kwargs):
+    def get_new_issue_title(self, **kwargs) -> str:
         return "Create Redmine Task"
 
-    def get_initial_form_data(self, request, group, event, **kwargs):
+    def get_initial_form_data(self, request: Request, group, event, **kwargs):
         return {
-            "description": self._get_group_description(request, group, event),
-            "title": self._get_group_title(request, group, event),
+            "description": self._get_group_description(group, event),
+            "title": self._get_group_title(group, event),
         }
 
-    def _get_group_description(self, request, group, event):
+    def _get_group_description(self, group, event):
         output = [absolute_uri(group.get_absolute_url())]
-        body = self._get_group_body(request, group, event)
+        body = self._get_group_body(group, event)
         if body:
             output.extend(["", "<pre>", body, "</pre>"])
         return "\n".join(output)
@@ -81,7 +83,7 @@ class RedminePlugin(CorePluginMixin, IssuePlugin):
             host=self.get_option("host", project), key=self.get_option("key", project)
         )
 
-    def create_issue(self, group, form_data, **kwargs):
+    def create_issue(self, request, group, form_data):
         """
         Create a Redmine issue
         """
@@ -108,11 +110,11 @@ class RedminePlugin(CorePluginMixin, IssuePlugin):
         response = client.create_issue(issue_dict)
         return response["issue"]["id"]
 
-    def get_issue_url(self, group, issue_id, **kwargs):
+    def get_issue_url(self, group, issue_id: str) -> str:
         host = self.get_option("host", group.project)
         return "{}/issues/{}".format(host.rstrip("/"), issue_id)
 
-    def build_config(self):
+    def build_config(self, project):
         host = {
             "name": "host",
             "label": "Host",
@@ -120,13 +122,13 @@ class RedminePlugin(CorePluginMixin, IssuePlugin):
             "help": "e.g. http://bugs.redmine.org",
             "required": True,
         }
-        key = {
-            "name": "key",
-            "label": "Key",
-            "type": "text",
-            "help": "Your API key is available on your account page after enabling the Rest API (Administration -> Settings -> Authentication)",
-            "required": True,
-        }
+        key = get_secret_field_config(
+            name="key",
+            label="Key",
+            secret=self.get_option("key", project),
+            help="Your API key is available on your account page after enabling the Rest API (Administration -> Settings -> Authentication)",
+            required=True,
+        )
         project_id = {
             "name": "project_id",
             "label": "Project*",
@@ -179,13 +181,14 @@ class RedminePlugin(CorePluginMixin, IssuePlugin):
                 initial[field] = value
         return initial
 
-    def get_config(self, project, **kwargs):
+    def get_config(self, project, user=None, initial=None, add_additional_fields: bool = False):
         self.client_errors = []
-        self.fields = self.build_config()
-        initial_args = kwargs.get("initial") or {}
+        self.fields = self.build_config(project)
+        initial_args = initial or {}
         initial = self.build_initial(initial_args, project)
 
         has_credentials = all(initial.get(k) for k in ("host", "key"))
+        client = None
         if has_credentials:
             client = RedmineClient(initial["host"], initial["key"])
             try:
@@ -202,7 +205,7 @@ class RedminePlugin(CorePluginMixin, IssuePlugin):
                 ]
                 self.add_choices("project_id", project_choices, choices_value)
 
-        if has_credentials:
+        if client is not None and has_credentials:
             try:
                 trackers = client.get_trackers()
             except Exception:
@@ -229,14 +232,14 @@ class RedminePlugin(CorePluginMixin, IssuePlugin):
 
         return self.fields
 
-    def validate_config(self, project, config, actor):
+    def validate_config(self, project, config, actor=None):
         super().validate_config(project, config, actor)
         self.client_errors = []
 
         for field in self.fields:
             if field["name"] in ["project_id", "tracker_id", "default_priority"]:
                 if not config[field["name"]]:
-                    self.logger.exception(str("{} required.".format(field["name"])))
+                    self.logger.warning(str("{} required.".format(field["name"])))
                     self.client_errors.append(field["name"])
 
         if self.client_errors:

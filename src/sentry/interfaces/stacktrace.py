@@ -1,14 +1,21 @@
-__all__ = ("Stacktrace",)
+import math
+from enum import Enum
 
-from typing import Optional
-
-from django.utils.translation import ugettext as _
+from django.utils.translation import gettext as _
 
 from sentry.app import env
-from sentry.interfaces.base import DataPath, Interface
-from sentry.models import UserOption
+from sentry.interfaces.base import Interface
+from sentry.users.services.user_option import get_option_from_list, user_option_service
 from sentry.utils.json import prune_empty_keys
 from sentry.web.helpers import render_to_string
+
+__all__ = ("Stacktrace",)
+
+
+class StacktraceOrder(str, Enum):
+    DEFAULT = "-1"  # Equivalent to `MOST_RECENT_FIRST`
+    MOST_RECENT_LAST = "1"
+    MOST_RECENT_FIRST = "2"
 
 
 def max_addr(cur, addr):
@@ -86,15 +93,21 @@ def get_context(lineno, context_line, pre_context=None, post_context=None):
 
 
 def is_newest_frame_first(event):
+    # TODO: Investigate if we should keep this special-casing for python, since we don't special
+    # case it anywhere else we check stacktrace order. If we do remove it, we might consider
+    # ditching this helper altogether, and just checking and using the option value directly in the
+    # one spot this helper is used.
+    # (See https://github.com/getsentry/sentry/pull/96719 for more context.)
     newest_first = event.platform not in ("python", None)
 
     if env.request and env.request.user.is_authenticated:
-        display = UserOption.objects.get_value(
-            user=env.request.user, key="stacktrace_order", default=None
+        options = user_option_service.get_many(
+            filter=dict(user_ids=[env.request.user.id], keys=["stacktrace_order"])
         )
-        if display == "1":
+        display = get_option_from_list(options, default=None)
+        if display == StacktraceOrder.MOST_RECENT_LAST:
             newest_first = False
-        elif display == "2":
+        elif display == StacktraceOrder.MOST_RECENT_FIRST:
             newest_first = True
 
     return newest_first
@@ -119,8 +132,7 @@ def handle_nan(value):
             return "<inf>"
         if value == float("-inf"):
             return "<-inf>"
-        # lol checking for float('nan')
-        if value != value:
+        if math.isnan(value):
             return "<nan>"
     return value
 
@@ -146,14 +158,17 @@ class Frame(Interface):
             "lineno",
             "module",
             "package",
+            "parent_index",
+            "sample_count",
             "platform",
             "post_context",
             "pre_context",
+            "source_link",
             "symbol",
             "symbol_addr",
             "trust",
             "vars",
-            "snapshot",
+            "lock",
         ):
             data.setdefault(key, None)
 
@@ -184,13 +199,21 @@ class Frame(Interface):
                 "errors": self.errors or None,
                 "lineno": self.lineno,
                 "colno": self.colno,
+                "parent_index": self.parent_index,
+                "sample_count": self.sample_count,
+                "lock": self.lock,
+                "source_link": self.source_link or None,
             }
         )
 
-    def get_api_context(self, is_public=False, pad_addr=None, platform=None):
-        from sentry.stacktraces.functions import get_function_name_for_frame
+    def get_api_context(self, is_public=False, platform=None, pad_addr=None):
+        from sentry.stacktraces.functions import (
+            get_function_name_for_frame,
+            get_source_link_for_frame,
+        )
 
         function = get_function_name_for_frame(self, platform)
+        source_link = get_source_link_for_frame(self)
         data = {
             "filename": self.filename,
             "absPath": self.abs_path,
@@ -210,10 +233,15 @@ class Frame(Interface):
             ),
             "lineNo": self.lineno,
             "colNo": self.colno,
+            "parentIndex": self.parent_index,
+            "sampleCount": self.sample_count,
             "inApp": self.in_app,
             "trust": self.trust,
             "errors": self.errors,
+            "lock": self.lock,
+            "sourceLink": source_link,
         }
+
         if not is_public:
             data["vars"] = self.vars
 
@@ -221,7 +249,7 @@ class Frame(Interface):
             data["addrMode"] = self.addr_mode
 
         # TODO(dcramer): abstract out this API
-        if self.data and "sourcemap" in data:
+        if self.data and "sourcemap" in self.data:
             data.update(
                 {
                     "map": self.data["sourcemap"].rsplit("/", 1)[-1],
@@ -237,12 +265,6 @@ class Frame(Interface):
         if self.data:
             if "symbolicator_status" in self.data:
                 data["symbolicatorStatus"] = self.data["symbolicator_status"]
-
-            if self.data.get("is_sentinel"):
-                data["isSentinel"] = True
-
-            if self.data.get("is_prefix"):
-                data["isPrefix"] = True
 
             if "min_grouping_level" in self.data:
                 data["minGroupingLevel"] = self.data["min_grouping_level"]
@@ -271,9 +293,13 @@ class Frame(Interface):
             ),
             "lineNo": meta.get("lineno"),
             "colNo": meta.get("colno"),
+            "parentIndex": meta.get("parent_index"),
+            "sampleCount": meta.get("sample_count"),
             "inApp": meta.get("in_app"),
             "trust": meta.get("trust"),
             "errors": meta.get("errors"),
+            "lock": meta.get("lock"),
+            "sourceLink": meta.get("source_link"),
         }
 
     def is_url(self):
@@ -312,7 +338,7 @@ class Frame(Interface):
         # queries and JSON data)
         return self.function.startswith(("lambda$", "[Anonymous"))
 
-    def to_string(self, event):
+    def to_string(self, event) -> str:
         if event.platform is not None:
             choices = [event.platform]
         else:
@@ -440,20 +466,18 @@ class Stacktrace(Interface):
         return iter(self.frames)
 
     @classmethod
-    def to_python(cls, data, datapath: Optional[DataPath] = None, **kwargs):
+    def to_python(cls, data, **kwargs):
         data = dict(data)
         frame_list = []
         for i, f in enumerate(data.get("frames") or []):
             # XXX(dcramer): handle PHP sending an empty array for a frame
-            frame_list.append(
-                Frame.to_python(f or {}, datapath=datapath + ["frames", i] if datapath else None)
-            )
+            frame_list.append(Frame.to_python(f or {}))
 
         data["frames"] = frame_list
         data.setdefault("registers", None)
         data.setdefault("frames_omitted", None)
 
-        return super().to_python(data, datapath=datapath, **kwargs)
+        return super().to_python(data, **kwargs)
 
     def get_has_system_frames(self):
         # This is a simplified logic from how the normalizer works.
@@ -512,7 +536,7 @@ class Stacktrace(Interface):
             }
         )
 
-    def to_string(self, event, is_public=False, **kwargs):
+    def to_string(self, event) -> str:
         return self.get_stacktrace(event, system_frames=False, max_frames=10)
 
     def get_stacktrace(

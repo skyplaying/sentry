@@ -1,77 +1,76 @@
-import * as React from 'react';
+import {css} from '@emotion/react';
 import styled from '@emotion/styled';
 
-import Button from 'app/components/button';
-import TextOverflow from 'app/components/textOverflow';
-import {IconDelete, IconEdit} from 'app/icons';
-import {t} from 'app/locale';
-import space from 'app/styles/space';
+import {Button} from '@sentry/scraps/button';
 
-import {MethodType, Rule, RuleType} from './types';
-import {getMethodLabel, getRuleLabel} from './utils';
+import ConfirmDelete from 'sentry/components/confirmDelete';
+import TextOverflow from 'sentry/components/textOverflow';
+import {IconDelete, IconEdit} from 'sentry/icons';
+import {t} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+
+import type {Rule} from './types';
+import {getRuleDescription} from './utils';
 
 type Props = {
-  rules: Array<Rule>;
-  onEditRule?: (id: Rule['id']) => () => void;
-  onDeleteRule?: (id: Rule['id']) => () => void;
+  rules: Rule[];
   disabled?: boolean;
+  onDeleteRule?: (id: Rule['id']) => void;
+  onEditRule?: (id: Rule['id']) => void;
+  ref?: React.Ref<HTMLUListElement>;
 };
 
-const getListItemDescription = (rule: Rule) => {
-  const {method, type, source} = rule;
-  const methodLabel = getMethodLabel(method);
-  const typeLabel = getRuleLabel(type);
-
-  const descriptionDetails: Array<string> = [];
-
-  descriptionDetails.push(`[${methodLabel.label}]`);
-
-  descriptionDetails.push(
-    rule.type === RuleType.PATTERN ? `[${rule.pattern}]` : `[${typeLabel}]`
-  );
-
-  if (rule.method === MethodType.REPLACE && rule.placeholder) {
-    descriptionDetails.push(` with [${rule.placeholder}]`);
-  }
-
-  return `${descriptionDetails.join(' ')} ${t('from')} [${source}]`;
-};
-
-const Rules = React.forwardRef(function RulesList(
-  {rules, onEditRule, onDeleteRule, disabled}: Props,
-  ref: React.Ref<HTMLUListElement>
-) {
+function Rules({ref, rules, onEditRule, onDeleteRule, disabled}: Props) {
   return (
     <List ref={ref} isDisabled={disabled} data-test-id="advanced-data-scrubbing-rules">
       {rules.map(rule => {
         const {id} = rule;
+        const ruleDescription = getRuleDescription(rule);
         return (
           <ListItem key={id}>
-            <TextOverflow>{getListItemDescription(rule)}</TextOverflow>
+            <TextOverflow>{ruleDescription}</TextOverflow>
             {onEditRule && (
               <Button
-                label={t('Edit Rule')}
-                size="small"
-                onClick={onEditRule(id)}
+                aria-label={t('Edit Rule')}
+                size="sm"
+                onClick={() => onEditRule(id)}
                 icon={<IconEdit />}
                 disabled={disabled}
+                tooltipProps={{
+                  title: disabled
+                    ? t('You do not have permission to edit rules')
+                    : undefined,
+                }}
               />
             )}
             {onDeleteRule && (
-              <Button
-                label={t('Delete Rule')}
-                size="small"
-                onClick={onDeleteRule(id)}
-                icon={<IconDelete />}
+              <ConfirmDelete
+                message={t('Are you sure you wish to delete this rule?')}
+                priority="danger"
+                onConfirm={() => onDeleteRule(id)}
+                confirmInput={ruleDescription}
                 disabled={disabled}
-              />
+                stopPropagation
+              >
+                <Button
+                  aria-label={t('Delete Rule')}
+                  size="sm"
+                  icon={<IconDelete />}
+                  disabled={disabled}
+                  tooltipProps={{
+                    title: disabled
+                      ? t('You do not have permission to delete rules')
+                      : undefined,
+                  }}
+                />
+              </ConfirmDelete>
             )}
           </ListItem>
         );
       })}
     </List>
   );
-});
+}
 
 export default Rules;
 
@@ -84,10 +83,10 @@ const List = styled('ul')<{
   margin-bottom: 0 !important;
   ${p =>
     p.isDisabled &&
-    `
-      color: ${p.theme.gray200};
-      background: ${p.theme.backgroundSecondary};
-  `}
+    css`
+      color: ${p.theme.colors.gray200};
+      background: ${p.theme.tokens.background.secondary};
+    `}
 `;
 
 const ListItem = styled('li')`
@@ -96,9 +95,10 @@ const ListItem = styled('li')`
   grid-column-gap: ${space(1)};
   align-items: center;
   padding: ${space(1)} ${space(2)};
-  border-bottom: 1px solid ${p => p.theme.border};
+  border-bottom: 1px solid ${p => p.theme.tokens.border.primary};
   &:hover {
-    background-color: ${p => p.theme.backgroundSecondary};
+    background-color: ${p =>
+      p.theme.tokens.interactive.transparent.neutral.background.hover};
   }
   &:last-child {
     border-bottom: 0;

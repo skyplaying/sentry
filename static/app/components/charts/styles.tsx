@@ -1,30 +1,20 @@
 import styled from '@emotion/styled';
 
-import space from 'app/styles/space';
-
-export const SubHeading = styled('h3')`
-  font-size: ${p => p.theme.fontSizeLarge};
-  font-weight: normal;
-  color: ${p => p.theme.textColor};
-  margin: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-`;
+import {space} from 'sentry/styles/space';
 
 export const SectionHeading = styled('h4')`
   display: inline-grid;
   grid-auto-flow: column;
-  grid-gap: ${space(1)};
+  gap: ${space(1)};
   align-items: center;
-  color: ${p => p.theme.subText};
-  font-size: ${p => p.theme.fontSizeMedium};
+  color: ${p => p.theme.tokens.content.secondary};
+  font-size: ${p => p.theme.font.size.md};
   margin: ${space(1)} 0;
 `;
 
 export const SectionValue = styled('span')`
-  color: ${p => p.theme.subText};
-  font-size: ${p => p.theme.fontSizeMedium};
+  color: ${p => p.theme.tokens.content.secondary};
+  font-size: ${p => p.theme.font.size.md};
   margin-right: ${space(1)};
 `;
 
@@ -32,17 +22,17 @@ export const InlineContainer = styled('div')`
   display: grid;
   align-items: center;
 
-  @media (min-width: ${p => p.theme.breakpoints[0]}) {
+  @media (min-width: ${p => p.theme.breakpoints.sm}) {
     grid-auto-flow: column;
     grid-column-gap: ${space(1)};
   }
 `;
 
 export const ChartControls = styled('div')`
-  padding: ${space(1)} ${space(3)};
-  border-top: 1px solid ${p => p.theme.border};
+  padding: ${space(1)} ${space(1)} ${space(1)} ${space(3)};
+  border-top: 1px solid ${p => p.theme.tokens.border.primary};
 
-  @media (min-width: ${p => p.theme.breakpoints[0]}) {
+  @media (min-width: ${p => p.theme.breakpoints.sm}) {
     display: flex;
     justify-content: space-between;
     flex-wrap: wrap;
@@ -50,20 +40,26 @@ export const ChartControls = styled('div')`
 `;
 
 // Header element for charts within panels.
+// @TODO(jonasbadalic) This should be a title component and not a div
 export const HeaderTitle = styled('div')`
   display: inline-grid;
   grid-auto-flow: column;
-  grid-gap: ${space(1)};
-  font-size: ${p => p.theme.fontSizeLarge};
-  color: ${p => p.theme.textColor};
+  gap: ${space(1)};
+
+  color: ${p => p.theme.tokens.content.primary};
   align-items: center;
+
+  /* @TODO(jonasbadalic) This should be a title component and not a div */
+  font-size: 1rem;
+  font-weight: ${p => p.theme.font.weight.sans.medium};
+  line-height: 1.2;
 `;
 
 // Header element for charts within panels
 // This header can be rendered while the chart is still loading
 export const HeaderTitleLegend = styled(HeaderTitle)`
-  background-color: ${p => p.theme.background};
-  border-bottom-right-radius: ${p => p.theme.borderRadius};
+  background-color: ${p => p.theme.tokens.background.primary};
+  border-bottom-right-radius: ${p => p.theme.radius.md};
   position: absolute;
   z-index: 1;
 `;
@@ -72,13 +68,13 @@ export const HeaderTitleLegend = styled(HeaderTitle)`
 export const HeaderValue = styled('div')`
   display: inline-grid;
   grid-auto-flow: column;
-  grid-gap: ${space(1)};
+  gap: ${space(1)};
   align-items: baseline;
-  background-color: ${p => p.theme.background};
+  background-color: ${p => p.theme.tokens.background.primary};
   position: absolute;
   top: 40px;
   z-index: 1;
-  font-size: ${p => p.theme.headerFontSize};
+  font-size: ${p => p.theme.font.size.xl};
 `;
 
 export const ChartContainer = styled('div')`

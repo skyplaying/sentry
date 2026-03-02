@@ -1,25 +1,55 @@
-import * as React from 'react';
-import ReactDOM from 'react-dom';
-import {browserHistory} from 'react-router';
+import {Fragment, useCallback, useEffect, useRef} from 'react';
+import {createPortal} from 'react-dom';
 import {css} from '@emotion/react';
 import styled from '@emotion/styled';
-import {createFocusTrap, FocusTrap} from 'focus-trap';
+import type {FocusTrap} from 'focus-trap';
+import {createFocusTrap} from 'focus-trap';
 import {AnimatePresence, motion} from 'framer-motion';
 
-import {closeModal as actionCloseModal} from 'app/actionCreators/modal';
-import {ROOT_ELEMENT} from 'app/constants';
-import ModalStore from 'app/stores/modalStore';
-import space from 'app/styles/space';
-import getModalPortal from 'app/utils/getModalPortal';
-import testableTransition from 'app/utils/testableTransition';
+import {Surface} from '@sentry/scraps/layout';
+import {TooltipContext} from '@sentry/scraps/tooltip';
+import {useScrollLock} from '@sentry/scraps/useScrollLock';
+
+import {useGlobalModal} from 'sentry/components/globalModal/useGlobalModal';
+import {ROOT_ELEMENT} from 'sentry/constants';
+import ModalStore from 'sentry/stores/modalStore';
+import {space} from 'sentry/styles/space';
+import getModalPortal from 'sentry/utils/getModalPortal';
+import testableTransition from 'sentry/utils/testableTransition';
+import {useEffectAfterFirstRender} from 'sentry/utils/useEffectAfterFirstRender';
+import {useLocation} from 'sentry/utils/useLocation';
 
 import {makeClosableHeader, makeCloseButton, ModalBody, ModalFooter} from './components';
 
 type ModalOptions = {
   /**
-   * Callback for when the modal is closed
+   * Set to `false` to disable the backdrop from being rendered.
+   * Set to `true` (the default) to show a translucent backdrop.
    */
-  onClose?: () => void;
+  backdrop?: boolean;
+  /**
+   * Additional CSS which will be applied to the modal's backdrop.
+   * Allows specific control over the positioning of z-index for the entire modal
+   */
+  backdropCss?: ReturnType<typeof css>;
+  /**
+   * By default, the modal is closed when the backdrop is clicked or the
+   * escape key is pressed. This prop allows you to modify that behavior.
+   * Only use when completely necessary, the defaults are important for
+   * accessibility.
+   *
+   * 'all' (default) - the modal is automatically closed on backdrop click or
+   *   escape key.
+   * 'none' - the modal cannot be dismissed with either the mouse or the
+   *   keyboard. The modal will need to be closed manually with `closeModal()`.
+   *   This should only be used when a modal requires user input and cannot be
+   *   dismissed, which is rare.
+   * 'backdrop-click' - the modal cannot be dimissed by pressing the escape key.
+   * 'escape-key' - the modal cannot be dismissed by clicking on the backdrop.
+   *   This is useful for modals containing user input which will disappear on an
+   *   accidental click.
+   */
+  closeEvents?: 'all' | 'none' | 'backdrop-click' | 'escape-key';
   /**
    * Additional CSS which will be applied to the modals `role="dialog"`
    * component. You may use the `[role="document"]` selector to target the
@@ -27,57 +57,52 @@ type ModalOptions = {
    */
   modalCss?: ReturnType<typeof css>;
   /**
-   * Set to `false` to disable the backdrop from being rendered. Set to
-   * `static` to disable the 'click outside' behavior from closing the modal.
-   * Set to true (the default) to show a translucent backdrop
+   * Callback for when the modal is closed
    */
-  backdrop?: 'static' | boolean;
-  /**
-   * Set to `false` to disable the ability to click outside the modal to
-   * close it. This is useful for modals containing user input which will
-   * disappear on an accidental click. Defaults to `true`.
-   */
-  allowClickClose?: boolean;
+  onClose?: (reason?: 'close-button' | 'backdrop-click' | 'escape-key') => void;
 };
 
 type ModalRenderProps = {
   /**
-   * Closes the modal
+   * Body container for the modal
    */
-  closeModal: () => void;
+  Body: typeof ModalBody;
+  /**
+   * Looks like a close button. Useful for when you don't want to render the
+   * header which can include the close button.
+   */
+  CloseButton: ReturnType<typeof makeCloseButton>;
+  /**
+   * Footer container for the modal, typically for actions
+   */
+  Footer: typeof ModalFooter;
   /**
    * The modal header, optionally includes a close button which will close the
    * modal.
    */
   Header: ReturnType<typeof makeClosableHeader>;
   /**
-   * Body container for the modal
+   * Closes the modal
    */
-  Body: typeof ModalBody;
+  closeModal: () => void;
   /**
-   * Footer container for the modal, typically for actions
+   * Reference to the modal's container.
    */
-  Footer: typeof ModalFooter;
-  /**
-   * Looks like a close button. Useful for when you don't want to render the
-   * header which can include the close button.
-   */
-  CloseButton: ReturnType<typeof makeCloseButton>;
+  modalContainerRef?: React.RefObject<HTMLDivElement | null>;
+};
+
+/**
+ * Meta-type to make re-exporting these in the action creator easy without
+ * polluting the global API namespace with duplicate type names.
+ *
+ * eg. you won't accidentally import ModalRenderProps from here.
+ */
+export type ModalTypes = {
+  options: ModalOptions;
+  renderProps: ModalRenderProps;
 };
 
 type Props = {
-  /**
-   * Configuration of the modal
-   */
-  options: ModalOptions;
-  /**
-   * Is the modal visible
-   */
-  visible: boolean;
-  /**
-   * A function that returns a React Element
-   */
-  children?: null | ((renderProps: ModalRenderProps) => React.ReactNode);
   /**
    * Note this is the callback for the main App container and NOT the calling
    * component. GlobalModal is never used directly, but is controlled via
@@ -87,104 +112,163 @@ type Props = {
   onClose?: () => void;
 };
 
-function GlobalModal({visible = false, options = {}, children, onClose}: Props) {
-  const closeModal = React.useCallback(() => {
-    // Option close callback, from the thing which opened the modal
-    options.onClose?.();
+function GlobalModal({onClose}: Props) {
+  const {renderer, options, visible} = useGlobalModal();
+  const location = useLocation();
 
-    // Action creator, actually closes the modal
-    actionCloseModal();
+  const closeEvents = options.closeEvents ?? 'all';
 
-    // GlobalModal onClose prop callback
-    onClose?.();
-  }, [options]);
+  const closeModal = useCallback(
+    (reason?: 'close-button' | 'backdrop-click' | 'escape-key') => {
+      // Option close callback, from the thing which opened the modal
+      options.onClose?.(reason);
 
-  const handleEscapeClose = React.useCallback(
-    (e: KeyboardEvent) => e.key === 'Escape' && closeModal(),
-    [closeModal]
+      // actually closes the modal
+      ModalStore.closeModal();
+
+      // GlobalModal onClose prop callback
+      onClose?.();
+    },
+    [options, onClose]
   );
 
+  const handleEscapeClose = useCallback(
+    (e: KeyboardEvent) => {
+      if (
+        e.key !== 'Escape' ||
+        e.defaultPrevented ||
+        closeEvents === 'none' ||
+        closeEvents === 'backdrop-click'
+      ) {
+        return;
+      }
+
+      closeModal('escape-key');
+    },
+    [closeModal, closeEvents]
+  );
+
+  const scrollLock = useScrollLock(document.documentElement);
   const portal = getModalPortal();
-  const focusTrap = React.useRef<FocusTrap>();
+  const focusTrap = useRef<FocusTrap | null>(null);
   // SentryApp might be missing on tests
   if (window.SentryApp) {
     window.SentryApp.modalFocusTrap = focusTrap;
   }
 
-  React.useEffect(() => {
+  useEffect(() => {
     focusTrap.current = createFocusTrap(portal, {
       preventScroll: true,
       escapeDeactivates: false,
       fallbackFocus: portal,
+      allowOutsideClick: true,
     });
+    ModalStore.setFocusTrap(focusTrap.current);
   }, [portal]);
 
-  React.useEffect(() => {
-    const body = document.querySelector('body');
+  useEffect(() => {
     const root = document.getElementById(ROOT_ELEMENT);
 
-    if (!body || !root) {
-      return () => void 0;
-    }
-
     const reset = () => {
-      body.style.removeProperty('overflow');
-      root.removeAttribute('aria-hidden');
+      scrollLock.release();
+      root?.removeAttribute('aria-hidden');
       focusTrap.current?.deactivate();
-      portal.removeEventListener('keydown', handleEscapeClose);
+      document.removeEventListener('keydown', handleEscapeClose);
     };
 
     if (visible) {
-      body.style.overflow = 'hidden';
-      root.setAttribute('aria-hidden', 'true');
+      scrollLock.acquire();
+      root?.setAttribute('aria-hidden', 'true');
       focusTrap.current?.activate();
 
-      portal.addEventListener('keydown', handleEscapeClose);
+      document.addEventListener('keydown', handleEscapeClose);
     } else {
       reset();
     }
 
     return reset;
-  }, [portal, handleEscapeClose, visible]);
+  }, [portal, handleEscapeClose, visible, scrollLock]);
 
-  const renderedChild = children?.({
-    CloseButton: makeCloseButton(closeModal),
-    Header: makeClosableHeader(closeModal),
-    Body: ModalBody,
-    Footer: ModalFooter,
-    closeModal,
-  });
+  // Close the modal when the browser history changes.
+  //
+  // XXX: We're using useEffectAfterFirstRender primarily to support tests
+  // which render the GlobalModal after a modal has already been registered in
+  // the modal store, meaning it would be closed immediately.
+  useEffectAfterFirstRender(() => ModalStore.closeModal(), [location.pathname]);
 
   // Default to enabled backdrop
   const backdrop = options.backdrop ?? true;
 
-  // Default to enabled click close
-  const allowClickClose = options.allowClickClose ?? true;
+  const allowBackdropClickClose =
+    closeEvents === 'all' || closeEvents === 'backdrop-click';
 
   // Only close when we directly click outside of the modal.
-  const containerRef = React.useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const clickClose = (e: React.MouseEvent) =>
-    containerRef.current === e.target && allowClickClose && closeModal();
+    containerRef.current === e.target &&
+    allowBackdropClickClose &&
+    closeModal('backdrop-click');
 
-  return ReactDOM.createPortal(
-    <React.Fragment>
+  const onCloseButtonClick = useCallback(() => closeModal('close-button'), [closeModal]);
+
+  const renderedChild = renderer?.({
+    CloseButton: makeCloseButton(onCloseButtonClick),
+    Header: makeClosableHeader(onCloseButtonClick),
+    Body: ModalBody,
+    Footer: ModalFooter,
+    modalContainerRef: containerRef,
+    closeModal,
+  });
+
+  return createPortal(
+    <Fragment>
       <Backdrop
+        data-overlay
         style={backdrop && visible ? {opacity: 0.5, pointerEvents: 'auto'} : {}}
+        css={options?.backdropCss}
       />
       <Container
+        data-test-id="modal-backdrop"
         ref={containerRef}
         style={{pointerEvents: visible ? 'auto' : 'none'}}
-        onClick={backdrop === true ? clickClose : undefined}
+        onClick={backdrop ? clickClose : undefined}
+        css={options?.backdropCss}
       >
-        <AnimatePresence>
-          {visible && (
-            <Modal role="dialog" css={options.modalCss}>
-              <Content role="document">{renderedChild}</Content>
-            </Modal>
-          )}
-        </AnimatePresence>
+        <TooltipContext
+          value={{
+            // To ensure tooltips within the modal remain interactive (e.g., clickable or selectable),
+            // they need to be rendered inside the modal's DOM node.
+            container: portal,
+          }}
+        >
+          <AnimatePresence>
+            {visible && (
+              <Modal
+                role="dialog"
+                aria-modal
+                css={options.modalCss}
+                initial={{opacity: 0, y: -10}}
+                animate={{opacity: 1, y: 0}}
+                exit={{opacity: 0, y: 15}}
+                transition={testableTransition({
+                  type: 'spring',
+                  stiffness: 450,
+                  damping: 25,
+                })}
+              >
+                <Surface variant="overlay" elevation="high">
+                  {p => (
+                    <Content role="document" {...p}>
+                      {renderedChild}
+                    </Content>
+                  )}
+                </Surface>
+              </Modal>
+            )}
+          </AnimatePresence>
+        </TooltipContext>
       </Container>
-    </React.Fragment>,
+    </Fragment>,
     portal
   );
 }
@@ -200,7 +284,7 @@ const fullPageCss = css`
 const Backdrop = styled('div')`
   ${fullPageCss};
   z-index: ${p => p.theme.zIndex.modal};
-  background: ${p => p.theme.gray500};
+  background: ${p => p.theme.colors.black};
   will-change: opacity;
   transition: opacity 200ms;
   pointer-events: none;
@@ -217,65 +301,25 @@ const Container = styled('div')`
 `;
 
 const Modal = styled(motion.div)`
+  max-width: 100%;
   width: 640px;
   pointer-events: auto;
-  padding: 80px ${space(2)} ${space(4)} ${space(2)};
-`;
+  margin-top: 64px;
+  padding: ${space(2)} ${space(1.5)};
 
-Modal.defaultProps = {
-  initial: {opacity: 0, y: -10},
-  animate: {opacity: 1, y: 0},
-  exit: {opacity: 0, y: 15},
-  transition: testableTransition({
-    opacity: {duration: 0.2},
-    y: {duration: 0.25},
-  }),
-};
+  @media (min-width: ${p => p.theme.breakpoints.md}) {
+    margin-top: 50px;
+    padding: ${space(4)} ${space(2)};
+  }
+`;
 
 const Content = styled('div')`
-  padding: ${space(4)};
-  background: ${p => p.theme.background};
-  border-radius: 8px;
-  border: ${p => p.theme.modalBorder};
-  box-shadow: ${p => p.theme.modalBoxShadow};
+  position: relative;
+  padding: ${space(4)} ${space(3)};
+
+  @media (min-width: ${p => p.theme.breakpoints.md}) {
+    padding: ${space(4)};
+  }
 `;
 
-type State = {
-  modalStore: ReturnType<typeof ModalStore.get>;
-};
-
-class GlobalModalContainer extends React.Component<Partial<Props>, State> {
-  state: State = {
-    modalStore: ModalStore.get(),
-  };
-
-  componentDidMount() {
-    // Listen for route changes so we can dismiss modal
-    this.unlistenBrowserHistory = browserHistory.listen(() => actionCloseModal());
-  }
-
-  componentWillUnmount() {
-    this.unlistenBrowserHistory?.();
-    this.unlistener?.();
-  }
-
-  unlistener = ModalStore.listen(
-    (modalStore: State['modalStore']) => this.setState({modalStore}),
-    undefined
-  );
-
-  unlistenBrowserHistory?: ReturnType<typeof browserHistory.listen>;
-
-  render() {
-    const {modalStore} = this.state;
-    const visible = !!modalStore && typeof modalStore.renderer === 'function';
-
-    return (
-      <GlobalModal {...this.props} {...modalStore} visible={visible}>
-        {visible ? modalStore.renderer : null}
-      </GlobalModal>
-    );
-  }
-}
-
-export default GlobalModalContainer;
+export default GlobalModal;

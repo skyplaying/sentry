@@ -1,11 +1,13 @@
-import Alert from 'app/components/alert';
-import {IconInfo} from 'app/icons';
-import {t} from 'app/locale';
+import {Alert} from '@sentry/scraps/alert';
 
-const ComingSoon = () => (
-  <Alert type="info" icon={<IconInfo size="md" />}>
-    {t('This feature is coming soon!')}
-  </Alert>
-);
+import {t} from 'sentry/locale';
+
+function ComingSoon() {
+  return (
+    <Alert.Container>
+      <Alert variant="info">{t('This feature is coming soon!')}</Alert>
+    </Alert.Container>
+  );
+}
 
 export default ComingSoon;

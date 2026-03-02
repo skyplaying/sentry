@@ -1,53 +1,55 @@
 import styled from '@emotion/styled';
 
-import {HeaderTitleLegend} from 'app/components/charts/styles';
-import QuestionTooltip from 'app/components/questionTooltip';
-import space from 'app/styles/space';
+import {FeatureBadge} from '@sentry/scraps/badge';
+import {Flex, Stack} from '@sentry/scraps/layout';
 
-import {
+import {HeaderTitleLegend} from 'sentry/components/charts/styles';
+import QuestionTooltip from 'sentry/components/questionTooltip';
+import TextOverflow from 'sentry/components/textOverflow';
+import {space} from 'sentry/styles/space';
+import {MEPTag} from 'sentry/utils/performance/contexts/metricsEnhancedPerformanceDataContext';
+import type {
   GenericPerformanceWidgetProps,
   WidgetDataConstraint,
   WidgetDataProps,
-} from '../types';
+} from 'sentry/views/performance/landing/widgets/types';
 
 export function WidgetHeader<T extends WidgetDataConstraint>(
   props: GenericPerformanceWidgetProps<T> & WidgetDataProps<T>
 ) {
-  const {title, titleTooltip, subtitle, HeaderActions} = props;
-  return (
-    <WidgetHeaderContainer>
-      <TitleContainer>
-        <StyledHeaderTitleLegend data-test-id="performance-widget-title">
-          {title}
-          <QuestionTooltip position="top" size="sm" title={titleTooltip} />
-        </StyledHeaderTitleLegend>
-        <div>{subtitle ? subtitle : null}</div>
-      </TitleContainer>
+  const {title, titleTooltip, Subtitle, HeaderActions, InteractiveTitle} = props;
 
-      {HeaderActions && (
-        <HeaderActionsContainer>
-          {HeaderActions && <HeaderActions {...props} />}
-        </HeaderActionsContainer>
-      )}
-    </WidgetHeaderContainer>
+  return (
+    <Flex justify="between" align="start" gap="md">
+      <Stack align="start">
+        <StyledHeaderTitleLegend data-test-id="performance-widget-title">
+          {InteractiveTitle ? (
+            <InteractiveTitle {...props} />
+          ) : (
+            <TextOverflow>{title}</TextOverflow>
+          )}
+          <MEPTag />
+          {titleTooltip && (
+            <QuestionTooltip position="top" size="sm" title={titleTooltip} />
+          )}
+        </StyledHeaderTitleLegend>
+        {Subtitle ? <Subtitle {...props} /> : null}
+      </Stack>
+      <Flex align="center" gap="md">
+        {HeaderActions && <HeaderActions {...props} />}
+      </Flex>
+    </Flex>
   );
 }
 
 const StyledHeaderTitleLegend = styled(HeaderTitleLegend)`
   position: relative;
   z-index: initial;
-`;
+  top: -${space(0.5)};
 
-const TitleContainer = styled('div')`
-  display: flex;
-  flex-direction: column;
-`;
-
-const WidgetHeaderContainer = styled('div')`
-  display: flex;
-  justify-content: space-between;
-`;
-const HeaderActionsContainer = styled('div')`
-  display: flex;
-  gap: ${space(1)};
+  ${FeatureBadge} {
+    position: relative;
+    top: -${space(0.25)};
+    margin-left: ${space(0.25)};
+  }
 `;

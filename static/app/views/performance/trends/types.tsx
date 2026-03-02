@@ -1,39 +1,43 @@
-import moment from 'moment';
+import type moment from 'moment-timezone';
 
-import {EventQuery} from 'app/actionCreators/events';
-import {EventsStatsData} from 'app/types';
-import EventView, {LocationQuery} from 'app/utils/discover/eventView';
+import type {EventQuery} from 'sentry/actionCreators/events';
+import type {EventsStatsData} from 'sentry/types/organization';
+import type {Project} from 'sentry/types/project';
+import type {LocationQuery} from 'sentry/utils/discover/eventView';
+import type EventView from 'sentry/utils/discover/eventView';
 
 export type TrendView = EventView & {
+  middle?: string;
   orderby?: string;
   trendFunction?: string;
   trendType?: TrendChangeType;
-  middle?: string;
 };
 
 export type TrendsQuery = EventQuery &
   LocationQuery & {
+    interval?: string;
+    middle?: string;
+    topEvents?: number;
     trendFunction?: string;
     trendType?: TrendChangeType;
-    middle?: string;
-    interval?: string;
   };
 
 export type TrendFunction = {
-  label: string;
-  field: TrendFunctionField;
   alias: string;
+  field: TrendFunctionField;
+  label: string;
   legendLabel: string;
 };
 
 export type TrendParameter = {
-  label: string;
-  column: string;
+  column: TrendParameterColumn;
+  label: TrendParameterLabel;
 };
 
 export enum TrendChangeType {
   IMPROVED = 'improved',
   REGRESSION = 'regression',
+  ANY = 'any',
 }
 
 export enum TrendFunctionField {
@@ -44,7 +48,7 @@ export enum TrendFunctionField {
   AVG = 'avg',
 }
 
-export enum TrendColumnField {
+export enum TrendParameterColumn {
   DURATION = 'transaction.duration',
   LCP = 'measurements.lcp',
   FCP = 'measurements.fcp',
@@ -56,27 +60,41 @@ export enum TrendColumnField {
   SPANS_RESOURCE = 'spans.resource',
 }
 
-export type TrendStat = {
+export enum TrendParameterLabel {
+  DURATION = 'Duration',
+  LCP = 'LCP',
+  FCP = 'FCP',
+  FID = 'FID',
+  CLS = 'CLS',
+  SPANS_DB = 'Spans (db)',
+  SPANS_HTTP = 'Spans (http)',
+  SPANS_BROWSER = 'Spans (browser)',
+  SPANS_RESOURCE = 'Spans (resource)',
+}
+
+type TrendStat = {
   data: EventsStatsData;
   order: number;
 };
 
-export type TrendsStats = {
-  [transaction: string]: TrendStat;
-};
+export type TrendsStats = Record<string, TrendStat>;
 
 export type TrendsTransaction = {
-  transaction: string;
-  project: string;
-  count: number;
-
   aggregate_range_1: number;
   aggregate_range_2: number;
-  count_range_1: number;
-  count_range_2: number;
-  trend_percentage: number;
+  count: number;
+
+  project: string;
+  transaction: string;
   trend_difference: number;
-  count_percentage: number;
+  trend_percentage: number;
+  breakpoint?: number;
+  // TODO change type to TrendsChangeType
+  // once backend sends it
+  change?: string;
+  count_percentage?: number;
+  count_range_1?: number;
+  count_range_2?: number;
 };
 
 export type TrendsDataEvents = {
@@ -86,6 +104,7 @@ export type TrendsDataEvents = {
 
 export type TrendsData = {
   events: TrendsDataEvents;
+  projects: Project[];
   stats: TrendsStats;
 };
 

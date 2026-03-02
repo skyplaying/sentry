@@ -1,23 +1,24 @@
 import styled from '@emotion/styled';
 
-import Button from 'app/components/button';
-import ButtonBar from 'app/components/buttonBar';
-import Clipboard from 'app/components/clipboard';
-import ConfirmDelete from 'app/components/confirmDelete';
-import DateTime from 'app/components/dateTime';
-import QuestionTooltip from 'app/components/questionTooltip';
-import {IconCopy, IconDelete, IconEdit} from 'app/icons';
-import {t, tct} from 'app/locale';
-import space from 'app/styles/space';
-import {Relay} from 'app/types';
+import {Button} from '@sentry/scraps/button';
+import {Grid, type GridProps} from '@sentry/scraps/layout';
+
+import ConfirmDelete from 'sentry/components/confirmDelete';
+import {DateTime} from 'sentry/components/dateTime';
+import QuestionTooltip from 'sentry/components/questionTooltip';
+import {IconCopy, IconDelete, IconEdit} from 'sentry/icons';
+import {t, tct} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {Relay} from 'sentry/types/relay';
+import useCopyToClipboard from 'sentry/utils/useCopyToClipboard';
 
 type Props = Relay & {
-  onEdit: (publicKey: Relay['publicKey']) => () => void;
-  onDelete: (publicKey: Relay['publicKey']) => () => void;
   disabled: boolean;
+  onDelete: (publicKey: Relay['publicKey']) => () => void;
+  onEdit: (publicKey: Relay['publicKey']) => () => void;
 };
 
-const CardHeader = ({
+function CardHeader({
   publicKey,
   name,
   description,
@@ -25,14 +26,18 @@ const CardHeader = ({
   disabled,
   onEdit,
   onDelete,
-}: Props) => {
+}: Props) {
+  const {copy} = useCopyToClipboard();
+
   const deleteButton = (
     <Button
-      size="small"
+      size="sm"
       icon={<IconDelete />}
-      label={t('Delete Key')}
+      aria-label={t('Delete Key')}
       disabled={disabled}
-      title={disabled ? t('You do not have permission to delete keys') : undefined}
+      tooltipProps={{
+        title: disabled ? t('You do not have permission to delete keys') : undefined,
+      }}
     />
   );
   return (
@@ -42,21 +47,25 @@ const CardHeader = ({
         {description && <QuestionTooltip position="top" size="sm" title={description} />}
       </KeyName>
       <DateCreated>
-        {tct('Created on [date]', {date: <DateTime date={created} timeAndDate />})}
+        {tct('Created on [date]', {date: <DateTime date={created} />})}
       </DateCreated>
-      <StyledButtonBar gap={1}>
-        <Clipboard value={publicKey}>
-          <Button size="small" icon={<IconCopy />}>
-            {t('Copy Key')}
-          </Button>
-        </Clipboard>
+      <StyledButtonBar>
         <Button
-          size="small"
+          size="sm"
+          icon={<IconCopy />}
+          onClick={() => copy(publicKey, {successMessage: t('Copied key to clipboard')})}
+        >
+          {t('Copy Key')}
+        </Button>
+        <Button
+          size="sm"
           onClick={onEdit(publicKey)}
           icon={<IconEdit />}
-          label={t('Edit Key')}
+          aria-label={t('Edit Key')}
           disabled={disabled}
-          title={disabled ? t('You do not have permission to edit keys') : undefined}
+          tooltipProps={{
+            title: disabled ? t('You do not have permission to edit keys') : undefined,
+          }}
         />
         {disabled ? (
           deleteButton
@@ -74,35 +83,38 @@ const CardHeader = ({
       </StyledButtonBar>
     </Header>
   );
-};
+}
 
 export default CardHeader;
 
 const KeyName = styled('div')`
   grid-row: 1/2;
-  display: grid;
   grid-template-columns: repeat(2, max-content);
-  grid-column-gap: ${space(0.5)};
+  display: flex;
+  gap: ${space(1)};
+  align-items: center;
 `;
 
 const DateCreated = styled('div')`
   grid-row: 2/3;
-  color: ${p => p.theme.gray300};
-  font-size: ${p => p.theme.fontSizeMedium};
+  color: ${p => p.theme.tokens.content.secondary};
+  font-size: ${p => p.theme.font.size.md};
 `;
 
-const StyledButtonBar = styled(ButtonBar)`
-  @media (min-width: ${p => p.theme.breakpoints[1]}) {
+const StyledButtonBar = styled((props: GridProps) => (
+  <Grid flow="column" align="center" gap="md" {...props} />
+))`
+  @media (min-width: ${p => p.theme.breakpoints.md}) {
     grid-row: 1/3;
   }
 `;
 
 const Header = styled('div')`
   display: grid;
-  grid-row-gap: ${space(1)};
+  grid-row-gap: ${space(0.25)};
   margin-bottom: ${space(1)};
 
-  @media (min-width: ${p => p.theme.breakpoints[1]}) {
+  @media (min-width: ${p => p.theme.breakpoints.md}) {
     grid-template-columns: 1fr max-content;
     grid-template-rows: repeat(2, max-content);
   }

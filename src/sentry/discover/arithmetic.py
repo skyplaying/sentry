@@ -1,13 +1,19 @@
-from typing import Any, List, Optional, Tuple, Union
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from typing import Literal, Union, overload
 
 from parsimonious.exceptions import ParseError
-from parsimonious.grammar import Grammar, NodeVisitor
+from parsimonious.grammar import Grammar
+from parsimonious.nodes import NodeVisitor
 
 from sentry.exceptions import InvalidSearchQuery
-from sentry.search.events.fields import get_function_alias
+from sentry.search.events.constants import TOTAL_COUNT_ALIAS, TOTAL_TRANSACTION_DURATION_ALIAS
 
 # prefix on fields so we know they're equations
 EQUATION_PREFIX = "equation|"
+EQUATION_ALIAS_REGEX = re.compile(r"^equation\[\d*\]$")
 SUPPORTED_OPERATORS = {"plus", "minus", "multiply", "divide"}
 
 
@@ -18,23 +24,17 @@ class ArithmeticError(Exception):
 class MaxOperatorError(ArithmeticError):
     """Exceeded the maximum allowed operators"""
 
-    pass
-
 
 class ArithmeticParseError(ArithmeticError):
     """Encountered an error trying to parse an equation"""
-
-    pass
 
 
 class ArithmeticValidationError(ArithmeticError):
     """The math itself isn't valid"""
 
-    pass
 
-
-OperationSideType = Union["Operation", float, str]
-JsonQueryType = List[Union[str, float, List[Any]]]
+OperandType = Union["Operation", float, str]
+JsonQueryType = list[Union[str, list[Union[str, float, None, "JsonQueryType"]]]]
 
 
 class Operation:
@@ -43,12 +43,12 @@ class Operation:
     def __init__(
         self,
         operator: str,
-        lhs: Optional[OperationSideType] = None,
-        rhs: Optional[OperationSideType] = None,
+        lhs: OperandType | None = None,
+        rhs: OperandType | None = None,
     ) -> None:
         self.operator = operator
-        self.lhs: Optional[OperationSideType] = lhs
-        self.rhs: Optional[OperationSideType] = rhs
+        self.lhs: OperandType | None = lhs
+        self.rhs: OperandType | None = rhs
         self.validate()
 
     def validate(self) -> None:
@@ -59,20 +59,26 @@ class Operation:
         if self.operator == "divide" and self.rhs == 0:
             raise ArithmeticValidationError("division by 0 is not allowed")
 
-    def to_snuba_json(self, alias: Optional[str] = None) -> JsonQueryType:
+    def to_snuba_json(self, alias: str | None = None) -> JsonQueryType:
         """Convert this tree of Operations to the equivalent snuba json"""
         lhs = self.lhs.to_snuba_json() if isinstance(self.lhs, Operation) else self.lhs
         # TODO(snql): This is a hack so the json syntax doesn't turn lhs into a function
         if isinstance(lhs, str):
             lhs = ["toFloat64", [lhs]]
         rhs = self.rhs.to_snuba_json() if isinstance(self.rhs, Operation) else self.rhs
-        result = [self.operator, [lhs, rhs]]
+        result: JsonQueryType = [self.operator, [lhs, rhs]]
         if alias:
             result.append(alias)
         return result
 
     def __repr__(self) -> str:
         return repr([self.operator, self.lhs, self.rhs])
+
+
+@dataclass(frozen=True)
+class ParsedEquation:
+    equation: Operation
+    contains_functions: bool
 
 
 def flatten(remaining):
@@ -145,24 +151,39 @@ class ArithmeticVisitor(NodeVisitor):
         "spans.resource",
         "spans.browser",
         "spans.total.time",
-        "measurements.fp",
+        "measurements.app_start_cold",
+        "measurements.app_start_warm",
+        "measurements.cls",
         "measurements.fcp",
-        "measurements.lcp",
         "measurements.fid",
+        "measurements.fp",
+        "measurements.frames_frozen",
+        "measurements.frames_slow",
+        "measurements.frames_total",
+        "measurements.lcp",
+        "measurements.stall_count",
+        "measurements.stall_stall_longest_time",
+        "measurements.stall_stall_total_time",
+        "measurements.time_to_full_display",
+        "measurements.time_to_initial_display",
         "measurements.ttfb",
         "measurements.ttfb.requesttime",
+        TOTAL_COUNT_ALIAS,
+        TOTAL_TRANSACTION_DURATION_ALIAS,
     }
     function_allowlist = {
         "count",
         "count_if",
         "count_unique",
         "failure_count",
+        "failure_rate",
         "min",
         "max",
         "avg",
         "sum",
         "p50",
         "p75",
+        "p90",
         "p95",
         "p99",
         "p100",
@@ -172,15 +193,34 @@ class ArithmeticVisitor(NodeVisitor):
         "eps",
         "epm",
         "count_miserable",
+        "count_web_vitals",
+        "percentile_range",
+        "performance_score",
+        "opportunity_score",
+        # Frontend overview uses these functions
+        "tpm",
+        "p50_if",
+        "p75_if",
+        "p90_if",
+        "p95_if",
+        "p99_if",
+        "sum_if",
+        "avg_if",
+        "division_if",
+        "failure_rate_if",
+        # Mobile vitals uses these functions
+        "ttid_contribution_rate",
+        "ttfd_contribution_rate",
     }
 
-    def __init__(self, max_operators):
+    def __init__(self, max_operators: int | None, custom_measurements: set[str] | None):
         super().__init__()
         self.operators: int = 0
         self.terms: int = 0
         self.max_operators = max_operators if max_operators else self.DEFAULT_MAX_OPERATORS
         self.fields: set[str] = set()
         self.functions: set[str] = set()
+        self.custom_measurements: set[str] = custom_measurements or set()
 
     def visit_term(self, _, children):
         maybe_factor, remaining_adds = children
@@ -252,7 +292,7 @@ class ArithmeticVisitor(NodeVisitor):
 
     def visit_field_value(self, node, _):
         field = node.text
-        if field not in self.field_allowlist:
+        if field not in self.field_allowlist and field not in self.custom_measurements:
             raise ArithmeticValidationError(f"{field} not allowed in arithmetic")
         self.fields.add(field)
         return field
@@ -264,16 +304,36 @@ class ArithmeticVisitor(NodeVisitor):
         if function_name not in self.function_allowlist:
             raise ArithmeticValidationError(f"{function_name} not allowed in arithmetic")
         self.functions.add(field)
-        # use the alias to reference the function in arithmetic
-        return get_function_alias(field)
+        return field
 
     def generic_visit(self, node, children):
         return children or node
 
 
+@overload
 def parse_arithmetic(
-    equation: str, max_operators: Optional[int] = None
-) -> Tuple[Operation, List[str], List[str]]:
+    equation: str,
+    max_operators: int | None = None,
+    custom_measurements: set[str] | None = None,
+    *,
+    validate_single_operator: Literal[True],
+) -> tuple[Operation, list[str], list[str]]: ...
+
+
+@overload
+def parse_arithmetic(
+    equation: str,
+    max_operators: int | None = None,
+    custom_measurements: set[str] | None = None,
+) -> tuple[Operation | float | str, list[str], list[str]]: ...
+
+
+def parse_arithmetic(
+    equation: str,
+    max_operators: int | None = None,
+    custom_measurements: set[str] | None = None,
+    validate_single_operator: bool = False,
+) -> tuple[Operation | float | str, list[str], list[str]]:
     """Given a string equation try to parse it into a set of Operations"""
     try:
         tree = arithmetic_grammar.parse(equation)
@@ -281,22 +341,29 @@ def parse_arithmetic(
         raise ArithmeticParseError(
             "Unable to parse your equation, make sure it is well formed arithmetic"
         )
-    visitor = ArithmeticVisitor(max_operators)
+    visitor = ArithmeticVisitor(max_operators, custom_measurements)
     result = visitor.visit(tree)
+    # total count is the exception to the no mixing rule
+    if (
+        visitor.fields.intersection({TOTAL_COUNT_ALIAS, TOTAL_TRANSACTION_DURATION_ALIAS})
+        and len(visitor.functions) > 0
+    ):
+        return result, list(visitor.fields), list(visitor.functions)
     if len(visitor.fields) > 0 and len(visitor.functions) > 0:
         raise ArithmeticValidationError("Cannot mix functions and fields in arithmetic")
-    if visitor.terms <= 1:
-        raise ArithmeticValidationError("Arithmetic expression must contain at least 2 terms")
+    if validate_single_operator and visitor.operators == 0:
+        raise ArithmeticValidationError("Arithmetic expression must contain at least 1 operator")
     return result, list(visitor.fields), list(visitor.functions)
 
 
 def resolve_equation_list(
-    equations: List[str],
-    selected_columns: List[str],
-    aggregates_only: Optional[bool] = False,
-    auto_add: Optional[bool] = False,
-    plain_math: Optional[bool] = False,
-) -> Tuple[List[JsonQueryType], List[str]]:
+    equations: list[str],
+    selected_columns: list[str],
+    aggregates_only: bool = False,
+    auto_add: bool = False,
+    plain_math: bool = False,
+    custom_measurements: set[str] | None = None,
+) -> tuple[list[str], list[ParsedEquation]]:
     """Given a list of equation strings, resolve them to their equivalent snuba json query formats
     :param equations: list of equations strings that haven't been parsed yet
     :param selected_columns: list of public aliases from the endpoint, can be a mix of fields and aggregates
@@ -306,10 +373,12 @@ def resolve_equation_list(
         selected_columns and return a new list with them added
     :param plain_math: Allow equations that don't include any fields or functions, disabled by default
     """
-    resolved_equations = []
-    resolved_columns = selected_columns[:]
+    parsed_equations: list[ParsedEquation] = []
+    resolved_columns: list[str] = selected_columns[:]
     for index, equation in enumerate(equations):
-        parsed_equation, fields, functions = parse_arithmetic(equation)
+        parsed_equation, fields, functions = parse_arithmetic(
+            equation, None, custom_measurements, validate_single_operator=True
+        )
 
         if (len(fields) == 0 and len(functions) == 0) and not plain_math:
             raise InvalidSearchQuery("Equations need to include a field or function")
@@ -333,11 +402,10 @@ def resolve_equation_list(
                         f"{function} used in an equation but is not a selected function"
                     )
 
-        # We just jam everything into resolved_equations because the json format can't take arithmetic in the aggregates
-        # field, but can do the aliases in the selected_columns field
-        # TODO(snql): we can do better
-        resolved_equations.append(parsed_equation.to_snuba_json(f"equation[{index}]"))
-    return resolved_equations, resolved_columns
+        # TODO: currently returning "resolved_equations" for the json syntax
+        # once we're converted to SnQL this should only return parsed_equations
+        parsed_equations.append(ParsedEquation(parsed_equation, len(functions) > 0))
+    return resolved_columns, parsed_equations
 
 
 def is_equation(field: str) -> bool:
@@ -351,3 +419,27 @@ def strip_equation(field: str) -> str:
     """remove the equation prefix from a public field alias"""
     assert is_equation(field), f"{field} does not start with {EQUATION_PREFIX}"
     return field[len(EQUATION_PREFIX) :]
+
+
+def categorize_columns(columns) -> tuple[list[str], list[str]]:
+    """equations have a prefix so that they can be easily included alongside our existing fields"""
+    equations = []
+    fields = []
+    for column in columns:
+        if is_equation(column):
+            equations.append(strip_equation(column))
+        else:
+            fields.append(column)
+    return equations, fields
+
+
+def is_equation_alias(alias: str) -> bool:
+    return EQUATION_ALIAS_REGEX.match(alias) is not None
+
+
+def get_equation_alias_index(alias: str) -> int | None:
+    """Extract the index from an equation alias like 'equation[5]' -> 5"""
+    match = re.match(r"^equation\[(\d+)\]$", alias)
+    if match:
+        return int(match.group(1))
+    return None

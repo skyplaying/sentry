@@ -1,21 +1,28 @@
+from unittest.mock import patch
 from urllib.parse import urlencode, urlparse
 
+import orjson
 import pytest
 import responses
 
 from sentry import options
+from sentry.integrations.models.integration import Integration
+from sentry.integrations.models.organization_integration import OrganizationIntegration
 from sentry.integrations.pagerduty.integration import PagerDutyIntegrationProvider
-from sentry.models import Integration, OrganizationIntegration, PagerDutyService
+from sentry.integrations.pagerduty.utils import get_services
+from sentry.integrations.types import EventLifecycleOutcome
 from sentry.shared_integrations.exceptions import IntegrationError
-from sentry.testutils import IntegrationTestCase
-from sentry.utils import json
+from sentry.testutils.asserts import assert_count_of_metric, assert_success_metric
+from sentry.testutils.cases import IntegrationTestCase
+from sentry.testutils.silo import control_silo_test
 
 
+@control_silo_test
 class PagerDutyIntegrationTest(IntegrationTestCase):
     provider = PagerDutyIntegrationProvider
     base_url = "https://app.pagerduty.com"
 
-    def setUp(self):
+    def setUp(self) -> None:
         super().setUp()
         self.app_id = "app_1"
         self.account_slug = "test-app"
@@ -32,7 +39,8 @@ class PagerDutyIntegrationTest(IntegrationTestCase):
             % (self.app_id, self.setup_path),
         )
 
-    def assert_setup_flow(self):
+    @patch("sentry.integrations.utils.metrics.EventLifecycle.record_event")
+    def assert_setup_flow(self, mock_record):
         resp = self.client.get(self.init_path)
         assert resp.status_code == 302
         redirect = urlparse(resp["Location"])
@@ -59,10 +67,22 @@ class PagerDutyIntegrationTest(IntegrationTestCase):
         }
 
         resp = self.client.get(
-            "{}?{}".format(self.setup_path, urlencode({"config": json.dumps(config)}))
+            "{}?{}".format(self.setup_path, urlencode({"config": orjson.dumps(config).decode()}))
         )
 
         self.assertDialogSuccess(resp)
+
+        # SLO assertions
+        # INSTALLATION_REDIRECT (success) -> POST_INSTALL (success) -> FINISH_PIPELINE (success) -> INSTALLATION_REDIRECT (success)
+        # The first INSTALLATION_REDIRECT exits early because we redirect the user, the second INSTALLATION_REDIRECT is the last layer of the onion
+        assert_count_of_metric(
+            mock_record=mock_record, outcome=EventLifecycleOutcome.STARTED, outcome_count=4
+        )
+        assert_count_of_metric(
+            mock_record=mock_record, outcome=EventLifecycleOutcome.SUCCESS, outcome_count=4
+        )
+        assert_success_metric(mock_record)
+
         return resp
 
     def assert_add_service_flow(self, integration):
@@ -88,14 +108,14 @@ class PagerDutyIntegrationTest(IntegrationTestCase):
         }
 
         resp = self.client.get(
-            "{}?{}".format(self.setup_path, urlencode({"config": json.dumps(config)}))
+            "{}?{}".format(self.setup_path, urlencode({"config": orjson.dumps(config).decode()}))
         )
 
         self.assertDialogSuccess(resp)
         return resp
 
     @responses.activate
-    def test_basic_flow(self):
+    def test_basic_flow(self) -> None:
         with self.tasks():
             self.assert_setup_flow()
 
@@ -112,21 +132,21 @@ class PagerDutyIntegrationTest(IntegrationTestCase):
             }
         ]
         oi = OrganizationIntegration.objects.get(
-            integration=integration, organization=self.organization
+            integration=integration, organization_id=self.organization.id
         )
-        assert oi.config == {}
+        services = get_services(oi)
+        assert services[0]["service_name"] == "Super Cool Service"
 
     @responses.activate
-    def test_add_services_flow(self):
+    def test_add_services_flow(self) -> None:
         with self.tasks():
             self.assert_setup_flow()
 
         integration = Integration.objects.get(provider=self.provider.key)
-        service = PagerDutyService.objects.get(
-            organization_integration=OrganizationIntegration.objects.get(
-                integration=integration, organization=self.organization
-            )
+        oi = OrganizationIntegration.objects.get(
+            integration_id=integration.id, organization_id=self.organization.id
         )
+        service = get_services(oi)[0]
 
         url = "https://%s.pagerduty.com" % (integration.metadata["domain_name"])
         responses.add(
@@ -139,71 +159,111 @@ class PagerDutyIntegrationTest(IntegrationTestCase):
         with self.tasks():
             self.assert_add_service_flow(integration)
 
-        assert PagerDutyService.objects.filter(id=service.id).exists()
-        assert PagerDutyService.objects.filter(service_name="Additional Service").exists()
+        oi.refresh_from_db()
+        services = get_services(oi)
+        assert services[1]["id"]
+        del services[1]["id"]  # type: ignore[misc]
+        assert services == [
+            service,
+            dict(
+                integration_id=integration.id,
+                integration_key="additional-service",
+                service_name="Additional Service",
+            ),
+        ]
 
     @responses.activate
-    def test_update_organization_config(self):
+    def test_update_organization_config(self) -> None:
         with self.tasks():
             self.assert_setup_flow()
         integration = Integration.objects.get(provider=self.provider.key)
-        service_id = PagerDutyService.objects.get(integration_key="key1").id
+        oi = OrganizationIntegration.objects.get(
+            integration_id=integration.id, organization_id=self.organization.id
+        )
+        service_id = get_services(oi)[0]["id"]
         config_data = {
             "service_table": [
-                {"service": "Mleep", "integration_key": "xxxxxxxxxxxxxxxx", "id": None},
-                {"service": "new_service", "integration_key": "new_key", "id": service_id},
+                {"service": "Mleep", "integration_key": "xxxxxxxxxxxxxxxx", "id": service_id},
+                {"service": "new_service", "integration_key": "new_key", "id": None},
             ]
         }
-        integration.get_installation(self.organization).update_organization_config(config_data)
-        assert len(PagerDutyService.objects.filter()) == 2
-        service_row = PagerDutyService.objects.get(id=service_id)
-        assert service_row.service_name == "new_service"
-        assert service_row.integration_key == "new_key"
+        integration.get_installation(self.organization.id).update_organization_config(config_data)
+        oi.refresh_from_db()
+        services = get_services(oi)
+
+        del services[1]["id"]  # type: ignore[misc]
+
+        assert services == [
+            dict(
+                id=service_id,
+                integration_key="xxxxxxxxxxxxxxxx",
+                integration_id=oi.integration_id,
+                service_name="Mleep",
+            ),
+            dict(
+                integration_key="new_key",
+                integration_id=oi.integration_id,
+                service_name="new_service",
+            ),
+        ]
 
     @responses.activate
-    def test_delete_pagerduty_service(self):
+    def test_delete_pagerduty_service(self) -> None:
         with self.tasks():
             self.assert_setup_flow()
         integration = Integration.objects.get(provider=self.provider.key)
-        service_id = PagerDutyService.objects.get(integration_key="key1").id
+        oi = OrganizationIntegration.objects.get(
+            integration_id=integration.id, organization_id=self.organization.id
+        )
+        services = get_services(oi)
+        assert len(services) == 1
+        service_id = services[0]["id"]
         config_data = {
             "service_table": [{"service": "new_service", "integration_key": "new_key", "id": None}]
         }
-        integration.get_installation(self.organization).update_organization_config(config_data)
-        assert len(PagerDutyService.objects.all()) == 1
-        assert not PagerDutyService.objects.filter(id=service_id).exists()
+        integration.get_installation(self.organization.id).update_organization_config(config_data)
+
+        oi.refresh_from_db()
+        services = get_services(oi)
+        assert len(services) == 1
+        assert services[0]["id"] != service_id
 
     @responses.activate
-    def test_no_name(self):
+    def test_no_name(self) -> None:
         with self.tasks():
             self.assert_setup_flow()
         integration = Integration.objects.get(provider=self.provider.key)
-        service_id = PagerDutyService.objects.get(integration_key="key1").id
+        oi = OrganizationIntegration.objects.get(
+            integration=integration, organization_id=self.organization.id
+        )
+        service = get_services(oi)[0]
+        service_id = service["id"]
         config_data = {
             "service_table": [{"service": "new_service", "integration_key": "", "id": service_id}]
         }
         with pytest.raises(IntegrationError) as error:
-            integration.get_installation(self.organization).update_organization_config(config_data)
+            integration.get_installation(self.organization.id).update_organization_config(
+                config_data
+            )
         assert str(error.value) == "Name and key are required"
 
     @responses.activate
-    def test_get_config_data(self):
+    def test_get_config_data(self) -> None:
         with self.tasks():
             self.assert_setup_flow()
 
         integration = Integration.objects.get(provider=self.provider.key)
-        service = PagerDutyService.objects.get(
-            organization_integration=OrganizationIntegration.objects.get(
-                integration=integration, organization=self.organization
-            )
+        oi = OrganizationIntegration.objects.get(
+            integration=integration, organization_id=self.organization.id
         )
-        config = integration.get_installation(self.organization).get_config_data()
+        service = get_services(oi)[0]
+        config = integration.get_installation(self.organization.id).get_config_data()
         assert config == {
             "service_table": [
                 {
-                    "id": service.id,
-                    "service": service.service_name,
-                    "integration_key": service.integration_key,
+                    "id": service["id"],
+                    "service": service["service_name"],
+                    "integration_key": service["integration_key"],
                 }
             ]
         }

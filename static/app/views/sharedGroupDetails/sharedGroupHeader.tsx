@@ -1,38 +1,72 @@
 import styled from '@emotion/styled';
 
-import EventMessage from 'app/components/events/eventMessage';
-import overflowEllipsis from 'app/styles/overflowEllipsis';
-import space from 'app/styles/space';
-import {Group} from 'app/types';
+import {Flex} from '@sentry/scraps/layout';
+import {Tooltip} from '@sentry/scraps/tooltip';
 
-import UnhandledTag, {
-  TagAndMessageWrapper,
-} from '../organizationGroupDetails/unhandledTag';
+import {DateTime} from 'sentry/components/dateTime';
+import EventMessage from 'sentry/components/events/eventMessage';
+import ProjectBadge from 'sentry/components/idBadge/projectBadge';
+import ShortId from 'sentry/components/shortId';
+import {t} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {Group} from 'sentry/types/group';
+import EventCreatedTooltip from 'sentry/views/issueDetails/eventCreatedTooltip';
 
 type Props = {
   group: Group;
 };
 
-const SharedGroupHeader = ({group}: Props) => (
-  <Wrapper>
-    <Details>
-      <Title>{group.title}</Title>
-      <TagAndMessageWrapper>
-        {group.isUnhandled && <UnhandledTag />}
-        <EventMessage message={group.culprit} />
-      </TagAndMessageWrapper>
-    </Details>
-  </Wrapper>
-);
+function SharedGroupHeader({group}: Props) {
+  const date = new Date(
+    (group.latestEvent?.dateCreated ?? group.latestEvent?.dateReceived) as string
+  );
+  const event = group.latestEvent;
+
+  return (
+    <Wrapper>
+      <Details>
+        <TitleWrap>
+          <Title>{group.title}</Title>
+          <Flex>
+            <ShortId
+              shortId={group.shortId}
+              avatar={<ProjectBadge project={group.project} avatarSize={20} hideName />}
+            />
+          </Flex>
+          {event && (event.dateCreated ?? event.dateReceived) && (
+            <TimeStamp data-test-id="sgh-timestamp">
+              {t('Last seen ')}
+              <EventTimeLabel>
+                <Tooltip
+                  isHoverable
+                  showUnderline
+                  title={<EventCreatedTooltip event={event} />}
+                  overlayStyle={{maxWidth: 300}}
+                >
+                  <DateTime date={date} />
+                </Tooltip>
+              </EventTimeLabel>
+            </TimeStamp>
+          )}
+        </TitleWrap>
+        <EventMessage
+          showUnhandled={group.isUnhandled}
+          message={group.culprit}
+          level={group.level}
+          type={group.type}
+          data={group}
+        />
+      </Details>
+    </Wrapper>
+  );
+}
 
 export default SharedGroupHeader;
 
 const Wrapper = styled('div')`
   padding: ${space(3)} ${space(4)} ${space(3)} ${space(4)};
-  border-bottom: ${p => `1px solid ${p.theme.border}`};
-  box-shadow: 0 2px 0 rgba(0, 0, 0, 0.03);
+  border-bottom: 1px solid ${p => p.theme.tokens.border.primary};
   position: relative;
-  margin: 0 0 ${space(3)};
 `;
 
 const Details = styled('div')`
@@ -40,16 +74,34 @@ const Details = styled('div')`
   margin: 0 auto;
 `;
 
-// TODO(style): the color #161319 is not yet in the color object of the theme
+const TitleWrap = styled('div')`
+  display: grid;
+  grid-template-columns: 1fr max-content;
+  align-items: center;
+  margin-bottom: ${space(1)};
+`;
+
 const Title = styled('h3')`
-  color: #161319;
-  margin: 0 0 ${space(1)};
-  overflow-wrap: break-word;
-  line-height: 1.2;
-  font-size: ${p => p.theme.fontSizeExtraLarge};
-  @media (min-width: ${props => props.theme.breakpoints[0]}) {
-    font-size: ${p => p.theme.headerFontSize};
-    line-height: 1.1;
-    ${overflowEllipsis};
-  }
+  color: ${p => p.theme.tokens.content.primary};
+  font-size: ${p => p.theme.font.size.xl};
+  line-height: ${p => p.theme.font.lineHeight.default};
+  margin-right: ${space(2)};
+  margin-bottom: 0;
+  display: block;
+  width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+`;
+
+const TimeStamp = styled('div')`
+  color: ${p => p.theme.tokens.content.primary};
+  font-size: ${p => p.theme.font.size.md};
+  line-height: ${p => p.theme.font.lineHeight.default};
+  margin-top: ${space(0.25)};
+`;
+
+const EventTimeLabel = styled('span')`
+  color: ${p => p.theme.tokens.content.secondary};
+  margin-left: ${space(0.25)};
 `;

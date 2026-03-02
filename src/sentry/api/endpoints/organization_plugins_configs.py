@@ -1,16 +1,30 @@
+from __future__ import annotations
+
+from django.http.response import Http404
+from rest_framework.request import Request
 from rest_framework.response import Response
 
+from sentry.api.api_owners import ApiOwner
+from sentry.api.api_publish_status import ApiPublishStatus
+from sentry.api.base import region_silo_endpoint
 from sentry.api.bases.organization import OrganizationEndpoint
 from sentry.api.serializers import serialize
 from sentry.api.serializers.models.plugin import PluginSerializer
 from sentry.constants import ObjectStatus
-from sentry.models import Project, ProjectOption
+from sentry.models.options.project_option import ProjectOption
+from sentry.models.organization import Organization
+from sentry.models.project import Project
 from sentry.plugins.base import plugins
 
 
+@region_silo_endpoint
 class OrganizationPluginsConfigsEndpoint(OrganizationEndpoint):
-    def get(self, request, organization):
+    owner = ApiOwner.INTEGRATIONS
+    publish_status = {
+        "GET": ApiPublishStatus.PRIVATE,
+    }
 
+    def get(self, request: Request, organization: Organization) -> Response:
         """
         List one or more plugin configurations, including a `projectList` for each plugin which contains
         all the projects that have that specific plugin both configured and enabled.
@@ -45,7 +59,7 @@ class OrganizationPluginsConfigsEndpoint(OrganizationEndpoint):
         # Get all the project options for org that have truthy values
         project_options = ProjectOption.objects.filter(
             key__in=keys_to_check, project__organization=organization
-        ).exclude(value__in=[False, ""])
+        )
 
         """
         This map stores info about whether a plugin is configured and/or enabled
@@ -55,8 +69,10 @@ class OrganizationPluginsConfigsEndpoint(OrganizationEndpoint):
             },
         }
         """
-        info_by_plugin_project = {}
+        info_by_plugin_project: dict[str, dict[int, dict[str, bool]]] = {}
         for project_option in project_options:
+            if not project_option.value:
+                continue
             [slug, field] = project_option.key.split(":")
             project_id = project_option.project_id
 
@@ -74,7 +90,7 @@ class OrganizationPluginsConfigsEndpoint(OrganizationEndpoint):
 
         # get the IDs of all projects for found project options and grab them from the DB
         project_id_set = {project_option.project_id for project_option in project_options}
-        projects = Project.objects.filter(id__in=project_id_set, status=ObjectStatus.VISIBLE)
+        projects = Project.objects.filter(id__in=project_id_set, status=ObjectStatus.ACTIVE)
 
         # create a key/value map of our projects
         project_map = {project.id: project for project in projects}
@@ -83,6 +99,8 @@ class OrganizationPluginsConfigsEndpoint(OrganizationEndpoint):
         serialized_plugins = []
         for plugin in desired_plugins:
             serialized_plugin = serialize(plugin, request.user, PluginSerializer())
+            if serialized_plugin["isDeprecated"]:
+                continue
 
             serialized_plugin["projectList"] = []
 
@@ -112,5 +130,8 @@ class OrganizationPluginsConfigsEndpoint(OrganizationEndpoint):
             # sort by the projectSlug
             serialized_plugin["projectList"].sort(key=lambda x: x["projectSlug"])
             serialized_plugins.append(serialized_plugin)
+
+        if not serialized_plugins:
+            raise Http404
 
         return Response(serialized_plugins)

@@ -1,9 +1,25 @@
+from __future__ import annotations
+
+import logging
 import re
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from typing import TYPE_CHECKING, Any, TypedDict
 
-import progressbar
+import click
 from django.db import connections, router
+from django.db.models.fields import Field
+from django.db.models.query import QuerySet
+from django.db.models.query_utils import Q
+from django.db.models.sql.constants import ROW_COUNT
+from django.db.models.sql.subqueries import DeleteQuery
+from django.db.utils import OperationalError
 
-from sentry import eventstore
+from sentry.db.models.base import Model
+from sentry.services import eventstore
+from sentry.utils.retries import ConditionalRetryPolicy
+
+if TYPE_CHECKING:
+    from sentry.services.eventstore.models import Event
 
 _leaf_re = re.compile(r"^(UserReport|Event|Group)(.+)")
 
@@ -12,10 +28,22 @@ class InvalidQuerySetError(ValueError):
     pass
 
 
-def celery_run_batch_query(filter, batch_size, referrer, state=None, fetch_events=True):  # noqa
+class TaskBulkQueryState(TypedDict):
+    timestamp: str
+    event_id: str
+
+
+def task_run_batch_query(
+    filter: eventstore.Filter,
+    batch_size: int,
+    referrer: str,
+    state: TaskBulkQueryState | None = None,
+    fetch_events: bool = True,
+    tenant_ids: dict[str, int | str] | None = None,
+) -> tuple[TaskBulkQueryState | None, list[Event]]:
     """
     A tool for batched queries similar in purpose to RangeQuerySetWrapper that
-    is used for celery tasks in issue merge/unmerge/reprocessing.
+    is used for tasks in issue merge/unmerge/reprocessing.
     """
 
     # We process events sorted in descending order by -timestamp, -event_id. We need
@@ -34,7 +62,7 @@ def celery_run_batch_query(filter, batch_size, referrer, state=None, fetch_event
     #
     # state contains data about the last event ID and timestamp. Changing
     # the keys in here needs to be done carefully as the state object is
-    # semi-persisted in celery queues.
+    # persisted in task messages.
     if state is not None:
         filter.conditions = filter.conditions or []
         filter.conditions.append(["timestamp", "<=", state["timestamp"]])
@@ -42,14 +70,17 @@ def celery_run_batch_query(filter, batch_size, referrer, state=None, fetch_event
             [["timestamp", "<", state["timestamp"]], ["event_id", "<", state["event_id"]]]
         )
 
-    method = eventstore.get_events if fetch_events else eventstore.get_unfetched_events
+    method = (
+        eventstore.backend.get_events if fetch_events else eventstore.backend.get_unfetched_events
+    )
 
     events = list(
         method(
-            filter=filter,  # noqa
+            filter=filter,
             limit=batch_size,
             referrer=referrer,
             orderby=["-timestamp", "-event_id"],
+            tenant_ids=tenant_ids,
         )
     )
 
@@ -61,7 +92,7 @@ def celery_run_batch_query(filter, batch_size, referrer, state=None, fetch_event
     return state, events
 
 
-class RangeQuerySetWrapper:
+class RangeQuerySetWrapper[V]:
     """
     Iterates through a queryset by chunking results by ``step`` and using GREATER THAN
     and LESS THAN queries on the primary key.
@@ -69,15 +100,20 @@ class RangeQuerySetWrapper:
     Very efficient, but ORDER BY statements will not work.
     """
 
-    def __init__(
+    def __init__[M: Model](
         self,
-        queryset,
-        step=1000,
-        limit=None,
-        min_id=None,
-        order_by="pk",
-        callbacks=(),
-        result_value_getter=None,
+        queryset: QuerySet[M, V],
+        *,
+        step: int = 1000,
+        limit: int | None = None,
+        min_id: int | None = None,
+        order_by: str | Sequence[str] = "pk",
+        use_compound_keyset_pagination: bool = False,
+        callbacks: Sequence[Callable[[list[V]], None]] = (),
+        result_value_getter: Callable[[V], Any] | None = None,
+        override_unique_safety_check: bool = False,
+        query_timeout_retries: int | None = None,
+        retry_delay_seconds: float = 0.5,
     ):
         # Support for slicing
         if queryset.query.low_mark == 0 and not (
@@ -90,160 +126,207 @@ class RangeQuerySetWrapper:
             raise InvalidQuerySetError
 
         self.limit = limit
-        if limit:
-            self.step = min(limit, abs(step))
-            self.desc = step < 0
-        else:
-            self.step = abs(step)
-            self.desc = step < 0
+        self.desc = step < 0
+        self.step = min(limit, abs(step)) if limit else abs(step)
         self.queryset = queryset
         self.min_value = min_id
-        self.order_by = order_by
+        self.use_compound_keyset_pagination = use_compound_keyset_pagination
         self.callbacks = callbacks
         self.result_value_getter = result_value_getter
+        self.query_timeout_retries = query_timeout_retries
+        self.retry_delay_seconds = retry_delay_seconds
 
-    def __iter__(self):
-        max_value = None
-        if self.min_value is not None:
-            cur_value = self.min_value
+        # Normalize order_by to a list, converting "pk" to "id" for raw SQL compatibility
+        if isinstance(order_by, str):
+            fields = [order_by]
         else:
-            cur_value = None
+            fields = list(order_by)
+        self.order_by_fields = ["id" if f == "pk" else f for f in fields]
+
+        if use_compound_keyset_pagination and min_id is not None:
+            raise InvalidQuerySetError("min_id is not supported with compound keyset pagination")
+
+        # Validate that the last order_by field is unique to prevent infinite loops
+        if not override_unique_safety_check:
+            last_field = self.order_by_fields[-1]
+            order_by_col = queryset.model._meta.get_field(last_field)
+            if not isinstance(order_by_col, Field) or not order_by_col.unique:
+                raise InvalidQuerySetError(
+                    "The last order_by field must be unique to prevent infinite loops. "
+                    "If you're sure your data is unique, disable this check with "
+                    "`override_unique_safety_check=True`"
+                )
+
+    def _apply_keyset_filter(
+        self, queryset: QuerySet[Any, V], cursor_values: dict[str, Any]
+    ) -> QuerySet[Any, V]:
+        """Apply compound cursor filter using PostgreSQL ROW comparison."""
+        fields_sql = ", ".join(f'"{f}"' for f in self.order_by_fields)
+        placeholders = ", ".join(["%s"] * len(self.order_by_fields))
+        values = [cursor_values[f] for f in self.order_by_fields]
+
+        if self.desc:
+            condition = f"ROW({fields_sql}) < ROW({placeholders})"
+        else:
+            condition = f"ROW({fields_sql}) > ROW({placeholders})"
+
+        return queryset.extra(where=[condition], params=values)
+
+    def _get_cursor_values(self, result: V) -> dict[str, Any]:
+        if self.result_value_getter:
+            value = self.result_value_getter(result)
+            # Handle both single value (backward compat) and dict returns
+            if isinstance(value, dict):
+                return value
+            # Single value: wrap in dict with the first order_by field
+            return {self.order_by_fields[0]: value}
+        return {field: getattr(result, field) for field in self.order_by_fields}
+
+    def _execute_query(self, results_qs: QuerySet[Any, V]) -> list[V]:
+        if self.query_timeout_retries is not None:
+            retries = self.query_timeout_retries
+            retry_policy = ConditionalRetryPolicy(
+                test_function=lambda attempt, exc: attempt <= retries
+                and isinstance(exc, OperationalError),
+                delay_function=lambda i: self.retry_delay_seconds,
+            )
+            return retry_policy(lambda: list(results_qs[0 : self.step]))
+        return list(results_qs[0 : self.step])
+
+    def _apply_cursor_filter(
+        self, queryset: QuerySet[Any, V], cursor_values: dict[str, Any]
+    ) -> QuerySet[Any, V]:
+        if self.use_compound_keyset_pagination:
+            return self._apply_keyset_filter(queryset, cursor_values)
+
+        # Single field: use >= / <=
+        field = self.order_by_fields[0]
+        value = cursor_values[field]
+        if self.desc:
+            return queryset.filter(**{f"{field}__lte": value})
+        return queryset.filter(**{f"{field}__gte": value})
+
+    def __iter__(self) -> Iterator[V]:
+        if self.desc:
+            order_clause = [f"-{f}" for f in self.order_by_fields]
+        else:
+            order_clause = list(self.order_by_fields)
+        queryset = self.queryset.order_by(*order_clause)
+
+        cursor_values: dict[str, Any] | None = None
+
+        if not self.use_compound_keyset_pagination and self.min_value is not None:
+            cursor_values = {self.order_by_fields[0]: self.min_value}
 
         num = 0
         limit = self.limit
+        start = 0
+        last_object_pk: Any = None
 
-        queryset = self.queryset
-        if self.desc:
-            queryset = queryset.order_by("-%s" % self.order_by)
-        else:
-            queryset = queryset.order_by(self.order_by)
-
-        # we implement basic cursor pagination for columns that are not unique
-        last_object_pk = None
         has_results = True
         while has_results:
-            if (max_value and cur_value >= max_value) or (limit and num >= limit):
+            if limit and num >= limit:
                 break
 
             start = num
 
-            if cur_value is None:
-                results = queryset
-            elif self.desc:
-                results = queryset.filter(**{"%s__lte" % self.order_by: cur_value})
-            elif not self.desc:
-                results = queryset.filter(**{"%s__gte" % self.order_by: cur_value})
+            if cursor_values is None:
+                results_qs = queryset
+            else:
+                results_qs = self._apply_cursor_filter(queryset, cursor_values)
 
-            results = list(results[0 : self.step])
+            results = self._execute_query(results_qs)
 
             for cb in self.callbacks:
                 cb(results)
 
             for result in results:
-                pk = self.result_value_getter(result) if self.result_value_getter else result.pk
-                if last_object_pk is not None and pk == last_object_pk:
-                    continue
+                if not self.use_compound_keyset_pagination:
+                    pk = (
+                        self.result_value_getter(result)
+                        if self.result_value_getter
+                        else getattr(result, "pk")
+                    )
+                    if last_object_pk is not None and pk == last_object_pk:
+                        continue
+                    last_object_pk = pk
 
-                # Need to bind value before yielding, because the caller
-                # may mutate the value and we're left with a bad value.
-                # This is commonly the case if iterating over and
-                # deleting, because a Model.delete() mutates the `id`
-                # to `None` causing the loop to exit early.
+                # Update cursor for next batch
+                cursor_values = self._get_cursor_values(result)
+
                 num += 1
-                last_object_pk = pk
-                cur_value = (
-                    self.result_value_getter(result)
-                    if self.result_value_getter
-                    else getattr(result, self.order_by)
-                )
-
                 yield result
 
-            if cur_value is None:
+                if limit and num >= limit:
+                    break
+
+            if cursor_values is None:
                 break
 
-            has_results = num > start
+            if self.use_compound_keyset_pagination:
+                has_results = bool(results) and len(results) == self.step
+            else:
+                has_results = num > start
 
 
-class RangeQuerySetWrapperWithProgressBar(RangeQuerySetWrapper):
-    def __iter__(self):
-        total_count = self.queryset.count()
-        if not total_count:
-            return iter([])
+class RangeQuerySetWrapperWithProgressBar[V](RangeQuerySetWrapper[V]):
+    def get_total_count(self) -> int:
+        return self.queryset.count()
+
+    def __iter__(self) -> Iterator[V]:
+        total_count = self.get_total_count()
         iterator = super().__iter__()
-        label = self.queryset.model._meta.verbose_name_plural.title()
-        return iter(WithProgressBar(iterator, total_count, label))
+        verbose_name = self.queryset.model._meta.verbose_name_plural or self.queryset.model.__name__
+        return iter(WithProgressBar(iterator, total_count, verbose_name.title()))
 
 
-class WithProgressBar:
-    def __init__(self, iterator, count=None, caption=None):
-        if count is None and hasattr(iterator, "__len__"):
-            count = len(iterator)
+class RangeQuerySetWrapperWithProgressBarApprox[V](RangeQuerySetWrapperWithProgressBar[V]):
+    """
+    Works the same as `RangeQuerySetWrapperWithProgressBar`, but approximates the number of rows
+    in the table. This is intended for use on very large tables where we end up timing out
+    attempting to get an accurate count.
+
+    Note: This is only intended for queries that are iterating over an entire table. Will not
+    produce a useful total count on filtered queries.
+    """
+
+    def get_total_count(self) -> int:
+        cursor = connections[self.queryset.db].cursor()
+        cursor.execute(
+            "SELECT CAST(GREATEST(reltuples, 0) AS BIGINT) AS estimate FROM pg_class WHERE relname = %s",
+            (self.queryset.model._meta.db_table,),
+        )
+        return cursor.fetchone()[0]
+
+
+class WithProgressBar[V]:
+    def __init__(
+        self, iterator: Iterable[V], count: int | None = None, caption: str | None = None
+    ) -> None:
         self.iterator = iterator
         self.count = count
-        self.caption = str(caption or "Progress")
+        self.caption = caption or "Progress"
 
-    def __iter__(self):
-        if self.count != 0:
-            widgets = [
-                f"{self.caption}: ",
-                progressbar.Percentage(),
-                " ",
-                progressbar.Bar(),
-                " ",
-                progressbar.ETA(),
-            ]
-            pbar = progressbar.ProgressBar(widgets=widgets, maxval=self.count)
-            pbar.start()
-            for idx, item in enumerate(self.iterator):
-                yield item
-                # It's possible that we've exceeded the maxval, but instead
-                # of exploding on a ValueError, let's just cap it so we don't.
-                # this could happen if new rows were added between calculating `count()`
-                # and actually beginning iteration where we're iterating slightly more
-                # than we thought.
-                pbar.update(min(idx, self.count))
-            pbar.finish()
+    def __iter__(self) -> Iterator[V]:
+        with click.progressbar(self.iterator, length=self.count, label=self.caption) as it:
+            yield from it
 
 
 def bulk_delete_objects(
-    model, limit=10000, transaction_id=None, logger=None, partition_key=None, **filters
-):
-    connection = connections[router.db_for_write(model)]
-    quote_name = connection.ops.quote_name
+    model: type[Model],
+    limit: int = 10000,
+    transaction_id: str | None = None,
+    logger: logging.Logger | None = None,
+    **filters: Any,
+) -> bool:
+    qs = model.objects.filter(**filters).values_list("id")[:limit]
 
-    query = []
-    params = []
-    partition_query = []
+    delete_query = DeleteQuery(model)
+    delete_query.add_q(Q(id__in=qs))
+    n = delete_query.get_compiler(router.db_for_write(model)).execute_sql(ROW_COUNT)
 
-    if partition_key:
-        for column, value in partition_key.items():
-            partition_query.append(f"{quote_name(column)} = %s")
-            params.append(value)
-
-    for column, value in filters.items():
-        query.append(f"{quote_name(column)} = %s")
-        params.append(value)
-
-    query = """
-        delete from %(table)s
-        where %(partition_query)s id = any(array(
-            select id
-            from %(table)s
-            where (%(query)s)
-            limit %(limit)d
-        ))
-    """ % dict(
-        partition_query=(" AND ".join(partition_query)) + (" AND " if partition_query else ""),
-        query=" AND ".join(query),
-        table=model._meta.db_table,
-        limit=limit,
-    )
-
-    cursor = connection.cursor()
-    cursor.execute(query, params)
-
-    has_more = cursor.rowcount > 0
+    # `n` will be `None` if `qs` is an empty queryset
+    has_more = n is not None and n > 0
 
     if has_more and logger is not None and _leaf_re.search(model.__name__) is None:
         logger.info(

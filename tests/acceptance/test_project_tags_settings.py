@@ -1,17 +1,17 @@
-from datetime import datetime
+from datetime import datetime, timezone
+from unittest.mock import MagicMock, patch
 
-import pytz
+from sentry.testutils.cases import AcceptanceTestCase, SnubaTestCase
+from sentry.testutils.helpers.datetime import before_now
+from sentry.testutils.silo import no_silo_test
 
-from sentry.testutils import AcceptanceTestCase, SnubaTestCase
-from sentry.testutils.helpers.datetime import before_now, iso_format
-from sentry.utils.compat.mock import patch
-
-event_time = before_now(days=3).replace(tzinfo=pytz.utc)
-current_time = datetime.utcnow().replace(tzinfo=pytz.utc)
+event_time = before_now(days=3)
+current_time = datetime.now(timezone.utc)
 
 
+@no_silo_test
 class ProjectTagsSettingsTest(AcceptanceTestCase, SnubaTestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         super().setUp()
         self.user = self.create_user("foo@example.com")
         self.org = self.create_organization(name="Rowdy Tiger", owner=None)
@@ -23,21 +23,20 @@ class ProjectTagsSettingsTest(AcceptanceTestCase, SnubaTestCase):
         self.path = f"/settings/{self.org.slug}/projects/{self.project.slug}/tags/"
 
     @patch("django.utils.timezone.now", return_value=current_time)
-    def test_tags_list(self, mock_timezone):
+    def test_tags_list(self, mock_timezone: MagicMock) -> None:
         self.store_event(
             data={
                 "event_id": "a" * 32,
                 "message": "oh no",
                 "level": "error",
-                "timestamp": iso_format(event_time),
+                "timestamp": event_time.isoformat(),
             },
             project_id=self.project.id,
             assert_no_errors=False,
         )
 
         self.browser.get(self.path)
-        self.browser.wait_until_not(".loading-indicator")
-        self.browser.snapshot("project settings - tags")
+        self.browser.wait_until_not('[data-test-id="loading-indicator"]')
 
         self.browser.wait_until_test_id("tag-row")
         self.browser.click('[data-test-id="tag-row"] [data-test-id="delete"]')
@@ -45,4 +44,3 @@ class ProjectTagsSettingsTest(AcceptanceTestCase, SnubaTestCase):
 
         self.browser.click("[role='dialog'] [data-test-id='confirm-button']")
         self.browser.wait_until_not('[data-test-id="tag-row"]')
-        self.browser.snapshot("project settings - tags - after remove")

@@ -1,10 +1,4 @@
-from django.conf import settings
+# Shim for backward compatibility with getsentry
+# The eventstore module has been moved to sentry.services.eventstore
 
-from sentry.utils.imports import import_string
-
-event_processing_store = import_string(settings.SENTRY_EVENT_PROCESSING_STORE)(
-    **settings.SENTRY_EVENT_PROCESSING_STORE_OPTIONS
-)
-
-
-__all__ = ["event_processing_store"]
+from sentry.services.eventstore.processing import *  # noqa: F401, F403

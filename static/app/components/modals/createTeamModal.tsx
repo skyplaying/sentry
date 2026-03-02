@@ -1,52 +1,46 @@
-import {Component, Fragment} from 'react';
+import {Fragment} from 'react';
 
-import {ModalRenderProps} from 'app/actionCreators/modal';
-import {createTeam} from 'app/actionCreators/teams';
-import {Client} from 'app/api';
-import CreateTeamForm from 'app/components/teams/createTeamForm';
-import {t} from 'app/locale';
-import {Organization, Team} from 'app/types';
-import withApi from 'app/utils/withApi';
+import type {ModalRenderProps} from 'sentry/actionCreators/modal';
+import {createTeam} from 'sentry/actionCreators/teams';
+import CreateTeamForm from 'sentry/components/teams/createTeamForm';
+import {t} from 'sentry/locale';
+import type {Organization, Team} from 'sentry/types/organization';
+import useApi from 'sentry/utils/useApi';
 
-type Props = {
-  api: Client;
+interface Props extends ModalRenderProps {
   organization: Organization;
   onClose?: (team: Team) => void;
-} & ModalRenderProps;
-
-class CreateTeamModal extends Component<Props> {
-  handleSubmit = (data: {slug: string}, onSuccess: Function, onError: Function) => {
-    const {organization, api} = this.props;
-    createTeam(api, data, {orgId: organization.slug})
-      .then((resp: Team) => {
-        this.handleSuccess(resp);
-        onSuccess(resp);
-      })
-      .catch((err: Error) => {
-        onError(err);
-      });
-  };
-
-  handleSuccess(team: Team) {
-    if (this.props.onClose) {
-      this.props.onClose(team);
-    }
-
-    this.props.closeModal();
-  }
-
-  render() {
-    const {Body, Header, ...props} = this.props;
-
-    return (
-      <Fragment>
-        <Header closeButton>{t('Create Team')}</Header>
-        <Body>
-          <CreateTeamForm {...props} onSubmit={this.handleSubmit} />
-        </Body>
-      </Fragment>
-    );
-  }
 }
 
-export default withApi(CreateTeamModal);
+function CreateTeamModal({Body, Header, organization, onClose, closeModal}: Props) {
+  const api = useApi();
+
+  const handleSubmit: React.ComponentProps<typeof CreateTeamForm>['onSubmit'] = async (
+    data,
+    onSuccess,
+    onError
+  ) => {
+    try {
+      const team: Team = await createTeam(api, data, {orgId: organization.slug});
+
+      closeModal();
+      onClose?.(team);
+      onSuccess(team);
+    } catch (err) {
+      onError(err as Team);
+    }
+  };
+
+  return (
+    <Fragment>
+      <Header closeButton>
+        <h5>{t('Create Team')}</h5>
+      </Header>
+      <Body>
+        <CreateTeamForm organization={organization} onSubmit={handleSubmit} />
+      </Body>
+    </Fragment>
+  );
+}
+
+export default CreateTeamModal;

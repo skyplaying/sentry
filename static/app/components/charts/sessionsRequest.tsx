@@ -1,47 +1,52 @@
-import * as React from 'react';
+import {Component} from 'react';
 import isEqual from 'lodash/isEqual';
 import omitBy from 'lodash/omitBy';
 
-import {addErrorMessage} from 'app/actionCreators/indicator';
-import {Client} from 'app/api';
-import {t} from 'app/locale';
-import {DateString, Organization, SessionApiResponse, SessionField} from 'app/types';
-import {getSessionsInterval} from 'app/utils/sessions';
+import {addErrorMessage} from 'sentry/actionCreators/indicator';
+import type {Client} from 'sentry/api';
+import {t} from 'sentry/locale';
+import type {
+  Organization,
+  SessionApiResponse,
+  SessionFieldWithOperation,
+} from 'sentry/types/organization';
+import {filterSessionsInTimeWindow, getSessionsInterval} from 'sentry/utils/sessions';
 
 const propNamesToIgnore = ['api', 'children', 'organization'];
 const omitIgnoredProps = (props: Props) =>
   omitBy(props, (_value, key) => propNamesToIgnore.includes(key));
 
-export type SessionsRequestRenderProps = {
+type SessionsRequestRenderProps = {
+  errored: boolean;
   loading: boolean;
   reloading: boolean;
-  errored: boolean;
   response: SessionApiResponse | null;
 };
 
 type Props = {
   api: Client;
-  organization: Organization;
   children: (renderProps: SessionsRequestRenderProps) => React.ReactNode;
-  field: SessionField[];
-  project?: number[];
+  field: SessionFieldWithOperation[];
+  organization: Organization;
+  end?: string;
   environment?: string[];
-  statsPeriod?: string;
-  start?: DateString;
-  end?: DateString;
-  query?: string;
   groupBy?: string[];
   interval?: string;
-  disabled?: boolean;
+  isDisabled?: boolean;
+  project?: number[];
+  query?: string;
+  shouldFilterSessionsInTimeWindow?: boolean;
+  start?: string;
+  statsPeriod?: string | null;
 };
 
 type State = {
-  reloading: boolean;
   errored: boolean;
+  reloading: boolean;
   response: SessionApiResponse | null;
 };
 
-class SessionsRequest extends React.Component<Props, State> {
+class SessionsRequest extends Component<Props, State> {
   state: State = {
     reloading: false,
     errored: false,
@@ -99,13 +104,12 @@ class SessionsRequest extends React.Component<Props, State> {
   }
 
   fetchData = async () => {
-    const {api, disabled} = this.props;
+    const {api, isDisabled, shouldFilterSessionsInTimeWindow} = this.props;
 
-    if (disabled) {
+    if (isDisabled) {
       return;
     }
 
-    api.clear();
     this.setState(state => ({
       reloading: state.response !== null,
       errored: false,
@@ -118,9 +122,15 @@ class SessionsRequest extends React.Component<Props, State> {
 
       this.setState({
         reloading: false,
-        response,
+        response: shouldFilterSessionsInTimeWindow
+          ? filterSessionsInTimeWindow(
+              response,
+              this.baseQueryParams.start,
+              this.baseQueryParams.end
+            )
+          : response,
       });
-    } catch (error) {
+    } catch (error: any) {
       addErrorMessage(error.responseJSON?.detail ?? t('Error loading health data'));
       this.setState({
         reloading: false,

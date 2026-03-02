@@ -3,10 +3,10 @@ import {
   addLoadingMessage,
   addSuccessMessage,
   clearIndicators,
-} from 'app/actionCreators/indicator';
-import {Client} from 'app/api';
-import {t} from 'app/locale';
-import {SentryApp} from 'app/types';
+} from 'sentry/actionCreators/indicator';
+import type {Client} from 'sentry/api';
+import {t} from 'sentry/locale';
+import type {SentryApp} from 'sentry/types/integrations';
 
 /**
  * Remove a Sentry Application

@@ -1,32 +1,36 @@
-import errno
+from __future__ import annotations
+
 import logging
-import os
 import zipfile
 from contextlib import contextmanager
 from hashlib import sha1
 from io import BytesIO
 from tempfile import TemporaryDirectory
-from typing import IO, Optional, Tuple
-from urllib.parse import urlsplit, urlunsplit
+from typing import IO, ClassVar, Self
+from urllib.parse import urlunsplit
 
-from django.core.files.base import File as FileObj
+import sentry_sdk
 from django.db import models, router
+from django.db.models.functions import Now
+from django.utils import timezone
 
-from sentry import options
+from sentry.backup.scopes import RelocationScope
 from sentry.db.models import (
     BoundedBigIntegerField,
     BoundedPositiveIntegerField,
     FlexibleForeignKey,
     Model,
+    region_silo_model,
     sane_repr,
 )
-from sentry.models import clear_cached_files
+from sentry.db.models.manager.base import BaseManager
 from sentry.models.distribution import Distribution
-from sentry.models.file import File
+from sentry.models.files.file import File
 from sentry.models.release import Release
-from sentry.utils import json, metrics
+from sentry.utils import json
 from sentry.utils.db import atomic_transaction
 from sentry.utils.hashlib import sha1_text
+from sentry.utils.urls import urlsplit_best_effort
 from sentry.utils.zip import safe_extract_zip
 
 logger = logging.getLogger(__name__)
@@ -36,7 +40,7 @@ ARTIFACT_INDEX_FILENAME = "artifact-index.json"
 ARTIFACT_INDEX_TYPE = "release.artifact-index"
 
 
-class PublicReleaseFileManager(models.Manager):
+class PublicReleaseFileManager(models.Manager["ReleaseFile"]):
     """Manager for all release files that are not internal.
 
     Internal release files include:
@@ -52,6 +56,7 @@ class PublicReleaseFileManager(models.Manager):
         return super().get_queryset().select_related("file").filter(file__type="release.file")
 
 
+@region_silo_model
 class ReleaseFile(Model):
     r"""
     A ReleaseFile is an association between a Release and a File.
@@ -59,16 +64,19 @@ class ReleaseFile(Model):
     The ident of the file should be sha1(name) or
     sha1(name '\x00\x00' dist.name) and must be unique per release.
     """
-    __include_in_export__ = False
 
-    organization_id = BoundedBigIntegerField()
+    __relocation_scope__ = RelocationScope.Excluded
+
+    organization_id = BoundedBigIntegerField(db_index=True)
     # DEPRECATED
-    project_id = BoundedPositiveIntegerField(null=True)
-    release_id = BoundedBigIntegerField()
+    project_id = BoundedBigIntegerField(null=True)
+    release_id = BoundedBigIntegerField(db_index=True)
     file = FlexibleForeignKey("sentry.File")
     ident = models.CharField(max_length=40)
     name = models.TextField()
-    dist_id = BoundedBigIntegerField(null=True)
+    dist_id = BoundedBigIntegerField(null=True, db_index=True)
+
+    date_accessed = models.DateTimeField(default=timezone.now, db_default=Now())
 
     #: For classic file uploads, this field is 1.
     #: For release archives, this field is 0.
@@ -78,17 +86,17 @@ class ReleaseFile(Model):
 
     __repr__ = sane_repr("release", "ident")
 
-    objects = models.Manager()  # The default manager.
-    public_objects = PublicReleaseFileManager()
+    objects: ClassVar[BaseManager[Self]] = BaseManager()  # The default manager.
+    public_objects: ClassVar[PublicReleaseFileManager] = PublicReleaseFileManager()
 
     class Meta:
         unique_together = (("release_id", "ident"),)
-        index_together = (("release_id", "name"),)
+        indexes = (models.Index(fields=("release_id", "name")),)
         app_label = "sentry"
         db_table = "sentry_releasefile"
 
     def save(self, *args, **kwargs):
-        from sentry.models import Distribution
+        from sentry.models.distribution import Distribution
 
         if not self.ident and self.name:
             dist = None
@@ -107,6 +115,7 @@ class ReleaseFile(Model):
                     0
                 ]
             kwargs["ident"] = self.ident = type(self).get_ident(kwargs["name"], dist_name)
+            kwargs["date_accessed"] = timezone.now()
         return super().update(*args, **kwargs)
 
     @classmethod
@@ -125,7 +134,7 @@ class ReleaseFile(Model):
         * (optional) full url without scheme and netloc or querystring
         """
         # Always ignore the fragment
-        scheme, netloc, path, query, _ = urlsplit(url)
+        scheme, netloc, path, query = urlsplit_best_effort(url)
 
         uri_without_fragment = (scheme, netloc, path, query, "")
         uri_relative = ("", "", path, query, "")
@@ -141,41 +150,6 @@ class ReleaseFile(Model):
         return urls
 
 
-class ReleaseFileCache:
-    @property
-    def cache_path(self):
-        return options.get("releasefile.cache-path")
-
-    def getfile(self, releasefile):
-        cutoff = options.get("releasefile.cache-limit")
-        file_size = releasefile.file.size
-        if file_size < cutoff:
-            metrics.timing("release_file.cache.get.size", file_size, tags={"cutoff": True})
-            return releasefile.file.getfile()
-
-        file_id = str(releasefile.file.id)
-        organization_id = str(releasefile.organization_id)
-        file_path = os.path.join(self.cache_path, organization_id, file_id)
-
-        hit = True
-        try:
-            os.stat(file_path)
-        except OSError as e:
-            if e.errno != errno.ENOENT:
-                raise
-            releasefile.file.save_to(file_path)
-            hit = False
-
-        metrics.timing("release_file.cache.get.size", file_size, tags={"hit": hit, "cutoff": False})
-        return FileObj(open(file_path, "rb"))
-
-    def clear_old_entries(self):
-        clear_cached_files(self.cache_path)
-
-
-ReleaseFile.cache = ReleaseFileCache()
-
-
 class ReleaseArchive:
     """Read-only view of uploaded ZIP-archive of release files"""
 
@@ -183,14 +157,17 @@ class ReleaseArchive:
         self._fileobj = fileobj
         self._zip_file = zipfile.ZipFile(self._fileobj)
         self.manifest = self._read_manifest()
+        self.artifact_count = len(self.manifest.get("files", {}))
         files = self.manifest.get("files", {})
-
         self._entries_by_url = {entry["url"]: (path, entry) for path, entry in files.items()}
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc, value, tb):
+        self.close()
+
+    def close(self):
         self._zip_file.close()
         self._fileobj.close()
 
@@ -204,7 +181,7 @@ class ReleaseArchive:
         manifest_bytes = self.read("manifest.json")
         return json.loads(manifest_bytes.decode("utf-8"))
 
-    def get_file_by_url(self, url: str) -> Tuple[IO, dict]:
+    def get_file_by_url(self, url: str) -> tuple[IO[bytes], dict]:
         """Return file-like object and headers.
 
         The caller is responsible for closing the returned stream.
@@ -220,7 +197,7 @@ class ReleaseArchive:
         The caller is responsible for cleanup of the temporary files.
         """
         temp_dir = TemporaryDirectory()
-        safe_extract_zip(self._fileobj, temp_dir.name, strip_toplevel=False)
+        safe_extract_zip(self._fileobj, temp_dir.name)
 
         return temp_dir
 
@@ -261,23 +238,20 @@ class _ArtifactIndexData:
 class _ArtifactIndexGuard:
     """Ensures atomic write operations to the artifact index"""
 
-    def __init__(self, release: Release, dist: Optional[Distribution], **filter_args):
+    def __init__(self, release: Release, dist: Distribution | None, **filter_args):
         self._release = release
         self._dist = dist
         self._ident = ReleaseFile.get_ident(ARTIFACT_INDEX_FILENAME, dist and dist.name)
         self._filter_args = filter_args  # Extra constraints on artifact index release file
 
-    def readable_data(self, use_cache: bool) -> Optional[dict]:
+    def readable_data(self) -> dict | None:
         """Simple read, no synchronization necessary"""
         try:
             releasefile = self._releasefile_qs()[0]
         except IndexError:
             return None
         else:
-            if use_cache:
-                fp = ReleaseFile.cache.getfile(releasefile)
-            else:
-                fp = releasefile.file.getfile()
+            fp = releasefile.file.getfile()
             with fp:
                 return json.load(fp)
 
@@ -362,12 +336,11 @@ class _ArtifactIndexGuard:
         )
 
 
-def read_artifact_index(
-    release: Release, dist: Optional[Distribution], use_cache: bool = False, **filter_args
-) -> Optional[dict]:
+@sentry_sdk.tracing.trace
+def read_artifact_index(release: Release, dist: Distribution | None, **filter_args) -> dict | None:
     """Get index data"""
     guard = _ArtifactIndexGuard(release, dist, **filter_args)
-    return guard.readable_data(use_cache)
+    return guard.readable_data()
 
 
 def _compute_sha1(archive: ReleaseArchive, url: str) -> str:
@@ -375,7 +348,13 @@ def _compute_sha1(archive: ReleaseArchive, url: str) -> str:
     return sha1(data).hexdigest()
 
 
-def update_artifact_index(release: Release, dist: Optional[Distribution], archive_file: File):
+@sentry_sdk.tracing.trace
+def update_artifact_index(
+    release: Release,
+    dist: Distribution | None,
+    archive_file: File,
+    temp_file: IO | None = None,
+):
     """Add information from release archive to artifact index
 
     :returns: The created ReleaseFile instance
@@ -384,13 +363,13 @@ def update_artifact_index(release: Release, dist: Optional[Distribution], archiv
         name=archive_file.name,
         release_id=release.id,
         organization_id=release.organization_id,
-        dist_id=dist.id if dist else dist,
+        dist_id=dist.id if dist is not None else dist,
         file=archive_file,
         artifact_count=0,  # Artifacts will be counted with artifact index
     )
 
     files_out = {}
-    with ReleaseArchive(archive_file.getfile()) as archive:
+    with ReleaseArchive(temp_file or archive_file.getfile()) as archive:
         manifest = archive.manifest
 
         files = manifest.get("files", {})
@@ -414,7 +393,8 @@ def update_artifact_index(release: Release, dist: Optional[Distribution], archiv
     return releasefile
 
 
-def delete_from_artifact_index(release: Release, dist: Optional[Distribution], url: str) -> bool:
+@sentry_sdk.tracing.trace
+def delete_from_artifact_index(release: Release, dist: Distribution | None, url: str) -> bool:
     """Delete the file with the given url from the manifest.
 
     Does *not* delete the file from the zip archive.

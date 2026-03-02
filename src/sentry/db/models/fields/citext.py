@@ -1,35 +1,18 @@
+from __future__ import annotations
+
 from django.db import connections, models
+from django.db.backends.base.base import BaseDatabaseWrapper
 from django.db.models.signals import pre_migrate
 
-from sentry.db.models.utils import Creator
-
-__all__ = ("CITextField", "CICharField", "CIEmailField")
+__all__ = ("CIEmailField",)
 
 
-class CIText:
-    def db_type(self, connection):
+class CIEmailField(models.EmailField[str, str]):
+    def db_type(self, connection: BaseDatabaseWrapper) -> str:
         return "citext"
 
 
-class CITextField(CIText, models.TextField):
-    def contribute_to_class(self, cls, name):
-        super().contribute_to_class(cls, name)
-        setattr(cls, name, Creator(self))
-
-
-class CICharField(CIText, models.CharField):
-    def contribute_to_class(self, cls, name):
-        super().contribute_to_class(cls, name)
-        setattr(cls, name, Creator(self))
-
-
-class CIEmailField(CIText, models.EmailField):
-    def contribute_to_class(self, cls, name):
-        super().contribute_to_class(cls, name)
-        setattr(cls, name, Creator(self))
-
-
-def create_citext_extension(using, **kwargs):
+def create_citext_extension(using: str, **kwargs: object) -> None:
     # We always need the citext extension installed for Postgres,
     # and for tests, it's not always guaranteed that we will have
     # run full migrations which installed it.

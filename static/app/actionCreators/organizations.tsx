@@ -1,21 +1,28 @@
-import {browserHistory} from 'react-router';
+import type {NavigateFunction} from 'react-router-dom';
 
-import {resetGlobalSelection} from 'app/actionCreators/globalSelection';
-import {addErrorMessage, addSuccessMessage} from 'app/actionCreators/indicator';
-import OrganizationActions from 'app/actions/organizationActions';
-import OrganizationsActions from 'app/actions/organizationsActions';
-import {Client} from 'app/api';
-import OrganizationsStore from 'app/stores/organizationsStore';
-import ProjectsStore from 'app/stores/projectsStore';
-import TeamStore from 'app/stores/teamStore';
-import {Organization} from 'app/types';
+import {addErrorMessage, addSuccessMessage} from 'sentry/actionCreators/indicator';
+import type {Client} from 'sentry/api';
+import {resetPageFilters} from 'sentry/components/pageFilters/actions';
+import {USING_CUSTOMER_DOMAIN} from 'sentry/constants';
+import ConfigStore from 'sentry/stores/configStore';
+import GuideStore from 'sentry/stores/guideStore';
+import OrganizationsStore from 'sentry/stores/organizationsStore';
+import OrganizationStore from 'sentry/stores/organizationStore';
+import ProjectsStore from 'sentry/stores/projectsStore';
+import TeamStore from 'sentry/stores/teamStore';
+import type {Organization} from 'sentry/types/organization';
+import {browserHistory} from 'sentry/utils/browserHistory';
+import normalizeUrl from 'sentry/utils/url/normalizeUrl';
 
 type RedirectRemainingOrganizationParams = {
   /**
    * The organization slug
    */
   orgId: string;
-
+  /**
+   * navigate function from useNavigate
+   */
+  navigate?: NavigateFunction;
   /**
    * Should remove org?
    */
@@ -29,6 +36,7 @@ type RedirectRemainingOrganizationParams = {
  * Can optionally remove organization from organizations store.
  */
 export function redirectToRemainingOrganization({
+  navigate,
   orgId,
   removeOrg,
 }: RedirectRemainingOrganizationParams) {
@@ -37,13 +45,30 @@ export function redirectToRemainingOrganization({
     org => org.status.id === 'active' && org.slug !== orgId
   );
   if (!allOrgs.length) {
-    browserHistory.push('/organizations/new/');
+    if (navigate) {
+      navigate('/organizations/new/');
+    } else {
+      browserHistory.push('/organizations/new/');
+    }
+
     return;
   }
 
   // Let's be smart and select the best org to redirect to
-  const firstRemainingOrg = allOrgs[0];
-  browserHistory.push(`/${firstRemainingOrg.slug}/`);
+  const firstRemainingOrg = allOrgs[0]!;
+
+  const route = `/organizations/${firstRemainingOrg.slug}/issues/`;
+  if (USING_CUSTOMER_DOMAIN) {
+    const {organizationUrl} = firstRemainingOrg.links;
+    window.location.assign(`${organizationUrl}${normalizeUrl(route)}`);
+    return;
+  }
+
+  if (navigate) {
+    navigate(route);
+  } else {
+    browserHistory.push(route);
+  }
 
   // Remove org from SidebarDropdown
   if (removeOrg) {
@@ -68,22 +93,20 @@ type RemoveParams = {
   successMessage?: string;
 };
 
-export function remove(api: Client, {successMessage, errorMessage, orgId}: RemoveParams) {
+function remove(api: Client, {successMessage, errorMessage, orgId}: RemoveParams) {
   const endpoint = `/organizations/${orgId}/`;
   return api
     .requestPromise(endpoint, {
       method: 'DELETE',
     })
     .then(() => {
-      OrganizationsActions.removeSuccess(orgId);
+      OrganizationsStore.onRemoveSuccess(orgId);
 
       if (successMessage) {
         addSuccessMessage(successMessage);
       }
     })
     .catch(() => {
-      OrganizationsActions.removeError();
-
       if (errorMessage) {
         addErrorMessage(errorMessage);
       }
@@ -91,7 +114,7 @@ export function remove(api: Client, {successMessage, errorMessage, orgId}: Remov
 }
 
 export function switchOrganization() {
-  resetGlobalSelection();
+  resetPageFilters();
 }
 
 export function removeAndRedirectToRemainingOrganization(
@@ -105,14 +128,14 @@ export function removeAndRedirectToRemainingOrganization(
  * Set active organization
  */
 export function setActiveOrganization(org: Organization) {
-  OrganizationsActions.setActive(org);
+  GuideStore.setActiveOrganization(org);
 }
 
 export function changeOrganizationSlug(
   prev: Organization,
   next: Partial<Organization> & Pick<Organization, 'slug'>
 ) {
-  OrganizationsActions.changeSlug(prev, next);
+  OrganizationsStore.onChangeSlug(prev, next);
 }
 
 /**
@@ -121,8 +144,8 @@ export function changeOrganizationSlug(
  * Accepts a partial organization as it will merge will existing organization
  */
 export function updateOrganization(org: Partial<Organization>) {
-  OrganizationsActions.update(org);
-  OrganizationActions.update(org);
+  OrganizationsStore.onUpdate(org);
+  OrganizationStore.onUpdate(org);
 }
 
 type FetchOrganizationByMemberParams = {
@@ -131,10 +154,10 @@ type FetchOrganizationByMemberParams = {
 };
 
 export async function fetchOrganizationByMember(
+  api: Client,
   memberId: string,
   {addOrg, fetchOrgDetails}: FetchOrganizationByMemberParams
 ) {
-  const api = new Client();
   const data = await api.requestPromise(`/organizations/?query=member_id:${memberId}`);
 
   if (!data.length) {
@@ -145,12 +168,12 @@ export async function fetchOrganizationByMember(
 
   if (addOrg) {
     // add org to SwitchOrganization dropdown
-    OrganizationsStore.add(org);
+    OrganizationsStore.addOrReplace(org);
   }
 
   if (fetchOrgDetails) {
     // load SidebarDropdown with org details including `access`
-    await fetchOrganizationDetails(org.slug, {setActive: true, loadProjects: true});
+    await fetchOrganizationDetails(api, org.slug, {setActive: true, loadProjects: true});
   }
 
   return org;
@@ -158,9 +181,9 @@ export async function fetchOrganizationByMember(
 
 type FetchOrganizationDetailsParams = {
   /**
-   * Should set as active organization?
+   * Should load projects in ProjectsStore
    */
-  setActive?: boolean;
+  loadProjects?: boolean;
 
   /**
    * Should load teams in TeamStore?
@@ -168,23 +191,27 @@ type FetchOrganizationDetailsParams = {
   loadTeam?: boolean;
 
   /**
-   * Should load projects in ProjectsStore
+   * Should set as active organization?
    */
-  loadProjects?: boolean;
+  setActive?: boolean;
 };
 export async function fetchOrganizationDetails(
+  api: Client,
   orgId: string,
   {setActive, loadProjects, loadTeam}: FetchOrganizationDetailsParams
 ) {
-  const api = new Client();
-  const data = await api.requestPromise(`/organizations/${orgId}/`);
+  const data = await api.requestPromise(`/organizations/${orgId}/`, {
+    query: {
+      include_feature_flags: 1,
+    },
+  });
 
   if (setActive) {
     setActiveOrganization(data);
   }
 
   if (loadTeam) {
-    TeamStore.loadInitialData(data.teams);
+    TeamStore.loadInitialData(data.teams, false, null);
   }
 
   if (loadProjects) {
@@ -192,4 +219,34 @@ export async function fetchOrganizationDetails(
   }
 
   return data;
+}
+
+/**
+ * Get all organizations for the current user.
+ *
+ * Will perform a fan-out across all multi-tenant regions,
+ * and single-tenant regions the user has membership in.
+ *
+ * This function is challenging to type as the structure of the response
+ * from /organizations can vary based on query parameters
+ */
+export async function fetchOrganizations(api: Client, query?: Record<string, any>) {
+  const regions = ConfigStore.get('memberRegions');
+  const results = await Promise.all(
+    regions.map(region =>
+      api.requestPromise(`/organizations/`, {
+        host: region.url,
+        query,
+        // Authentication errors can happen as we span regions.
+        allowAuthError: true,
+      })
+    )
+  );
+  return results.reduce((acc, response) => {
+    // Don't append error results to the org list.
+    if (response[0]) {
+      acc = acc.concat(response);
+    }
+    return acc;
+  }, []);
 }

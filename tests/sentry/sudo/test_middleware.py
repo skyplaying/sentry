@@ -1,33 +1,34 @@
+import pytest
 from django.http import HttpResponse
 
+from fixtures.sudo_testutils import BaseTestCase
+from sentry.middleware.placeholder import placeholder_get_response
 from sudo.middleware import SudoMiddleware
 from sudo.settings import COOKIE_NAME
 from sudo.utils import grant_sudo_privileges, revoke_sudo_privileges
 
-from .base import BaseTestCase
-
 
 class SudoMiddlewareTestCase(BaseTestCase):
-    middleware = SudoMiddleware()
+    middleware = SudoMiddleware(placeholder_get_response)
 
     def assertSignedCookieEqual(self, v1, v2, reason=None):
         value, _, _ = v1.split(":")
         return self.assertEqual(value, v2, reason)
 
-    def test_process_request_raises_without_session(self):
+    def test_process_request_raises_without_session(self) -> None:
         del self.request.session
-        with self.assertRaises(AssertionError):
+        with pytest.raises(AssertionError):
             self.middleware.process_request(self.request)
 
-    def test_process_request_adds_is_sudo(self):
+    def test_process_request_adds_is_sudo(self) -> None:
         self.middleware.process_request(self.request)
         self.assertFalse(self.request.is_sudo())
 
-    def test_process_response_noop(self):
+    def test_process_response_noop(self) -> None:
         response = self.middleware.process_response(self.request, HttpResponse())
         self.assertEqual(len(response.cookies.items()), 0)
 
-    def test_process_response_with_sudo_sets_cookie(self):
+    def test_process_response_with_sudo_sets_cookie(self) -> None:
         self.login()
         self.middleware.process_request(self.request)
         grant_sudo_privileges(self.request)
@@ -42,11 +43,11 @@ class SudoMiddlewareTestCase(BaseTestCase):
         self.assertTrue(sudo["httponly"])
 
         # Asserting that these are insecure together explicitly
-        # since it's a big deal to not fuck up
+        # since it's a big deal to not bungle.
         self.assertFalse(self.request.is_secure())
         self.assertFalse(sudo["secure"])  # insecure request
 
-    def test_process_response_sets_secure_cookie(self):
+    def test_process_response_sets_secure_cookie(self) -> None:
         self.login()
         self.request.is_secure = lambda: True
 
@@ -65,7 +66,7 @@ class SudoMiddlewareTestCase(BaseTestCase):
         #      into the middleware's process_response rather than at module level.
         # self.assertTrue(sudo["secure"])
 
-    def test_process_response_sudo_revoked_removes_cookie(self):
+    def test_process_response_sudo_revoked_removes_cookie(self) -> None:
         self.login()
         self.middleware.process_request(self.request)
         grant_sudo_privileges(self.request)
@@ -83,7 +84,7 @@ class SudoMiddlewareTestCase(BaseTestCase):
         self.assertFalse(sudo.value)
         self.assertEqual(sudo["max-age"], 0)
 
-    def test_process_response_sudo_revoked_without_cookie(self):
+    def test_process_response_sudo_revoked_without_cookie(self) -> None:
         self.login()
         self.middleware.process_request(self.request)
         grant_sudo_privileges(self.request)

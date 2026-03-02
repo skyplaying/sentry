@@ -1,47 +1,72 @@
+import type {Theme} from '@emotion/react';
 import compact from 'lodash/compact';
-import mean from 'lodash/mean';
-import moment from 'moment';
+import moment from 'moment-timezone';
 
+import type {DateTimeObject} from 'sentry/components/charts/utils';
 import {
-  DateTimeObject,
   getDiffInMinutes,
-  ONE_WEEK,
-  TWO_WEEKS,
-} from 'app/components/charts/utils';
-import {SessionApiResponse, SessionField, SessionStatus} from 'app/types';
-import {SeriesDataUnit} from 'app/types/echarts';
-import {defined, percent} from 'app/utils';
-import {getCrashFreePercent, getSessionStatusPercent} from 'app/views/releases/utils';
+  SIX_HOURS,
+  SIXTY_DAYS,
+  THIRTY_DAYS,
+  TWENTY_FOUR_HOURS,
+} from 'sentry/components/charts/utils';
+import type {SeriesDataUnit} from 'sentry/types/echarts';
+import type {
+  SessionApiResponse,
+  SessionFieldWithOperation,
+} from 'sentry/types/organization';
+import {SessionStatus} from 'sentry/types/organization';
+import {defined, percent} from 'sentry/utils';
+import {getCrashFreePercent, getSessionStatusPercent} from 'sentry/views/releases/utils';
+import {sessionTerm} from 'sentry/views/releases/utils/sessionTerm';
 
-export function getCount(groups: SessionApiResponse['groups'] = [], field: SessionField) {
-  return groups.reduce((acc, group) => acc + group.totals[field], 0);
+/**
+ * If the time window is less than or equal 10, seconds will be displayed on the graphs
+ */
+export const MINUTES_THRESHOLD_TO_DISPLAY_SECONDS = 10;
+
+export function getCount(
+  groups: SessionApiResponse['groups'] = [],
+  field: SessionFieldWithOperation
+) {
+  return groups.reduce((acc, group) => acc + group.totals[field]!, 0);
+}
+
+export function getCountAtIndex(
+  groups: SessionApiResponse['groups'] = [],
+  field: SessionFieldWithOperation,
+  index: number
+) {
+  return groups.reduce((acc, group) => acc + group.series[field]![index]!, 0);
 }
 
 export function getCrashFreeRate(
   groups: SessionApiResponse['groups'] = [],
-  field: SessionField
+  field: SessionFieldWithOperation
 ) {
   const crashedRate = getSessionStatusRate(groups, field, SessionStatus.CRASHED);
 
   return defined(crashedRate) ? getCrashFreePercent(100 - crashedRate) : null;
 }
 
-export function getSeriesAverage(
+export function getSeriesSum(
   groups: SessionApiResponse['groups'] = [],
-  field: SessionField
+  field: SessionFieldWithOperation,
+  intervals: SessionApiResponse['intervals'] = []
 ) {
-  const totalCount = getCount(groups, field);
+  const dataPointsSums: number[] = new Array(intervals.length).fill(0);
+  const groupSeries = groups.map(group => group.series[field]);
 
-  const dataPoints = groups.filter(group => !!group.totals[field]).length;
+  groupSeries.forEach(series => {
+    series!.forEach((dataPoint, idx) => (dataPointsSums[idx]! += dataPoint));
+  });
 
-  return !defined(totalCount) || dataPoints === null || totalCount === 0
-    ? null
-    : totalCount / dataPoints;
+  return dataPointsSums;
 }
 
 export function getSessionStatusRate(
   groups: SessionApiResponse['groups'] = [],
-  field: SessionField,
+  field: SessionFieldWithOperation,
   status: SessionStatus
 ) {
   const totalCount = getCount(groups, field);
@@ -59,18 +84,18 @@ export function getSessionStatusRate(
 export function getCrashFreeRateSeries(
   groups: SessionApiResponse['groups'] = [],
   intervals: SessionApiResponse['intervals'] = [],
-  field: SessionField
+  field: SessionFieldWithOperation
 ): SeriesDataUnit[] {
   return compact(
     intervals.map((interval, i) => {
       const intervalTotalSessions = groups.reduce(
-        (acc, group) => acc + group.series[field][i],
+        (acc, group) => acc + (group.series[field]?.[i] ?? 0),
         0
       );
 
       const intervalCrashedSessions =
         groups.find(group => group.by['session.status'] === SessionStatus.CRASHED)
-          ?.series[field][i] ?? 0;
+          ?.series[field]?.[i] ?? 0;
 
       const crashedSessionsPercent = percent(
         intervalCrashedSessions,
@@ -92,18 +117,18 @@ export function getCrashFreeRateSeries(
 export function getSessionStatusRateSeries(
   groups: SessionApiResponse['groups'] = [],
   intervals: SessionApiResponse['intervals'] = [],
-  field: SessionField,
+  field: SessionFieldWithOperation,
   status: SessionStatus
 ): SeriesDataUnit[] {
   return compact(
     intervals.map((interval, i) => {
       const intervalTotalSessions = groups.reduce(
-        (acc, group) => acc + group.series[field][i],
+        (acc, group) => acc + group.series[field]![i]!,
         0
       );
 
       const intervalStatusSessions =
-        groups.find(group => group.by['session.status'] === status)?.series[field][i] ??
+        groups.find(group => group.by['session.status'] === status)?.series[field]![i] ??
         0;
 
       const statusSessionsPercent = percent(
@@ -123,44 +148,19 @@ export function getSessionStatusRateSeries(
   );
 }
 
-export function getSessionP50Series(
-  groups: SessionApiResponse['groups'] = [],
-  intervals: SessionApiResponse['intervals'] = [],
-  field: SessionField,
-  valueFormatter?: (value: number) => number
-): SeriesDataUnit[] {
-  return compact(
-    intervals.map((interval, i) => {
-      const meanValue = mean(
-        groups.map(group => group.series[field][i]).filter(v => !!v)
-      );
-
-      if (!meanValue) {
-        return null;
-      }
-
-      return {
-        name: interval,
-        value:
-          typeof valueFormatter === 'function' ? valueFormatter(meanValue) : meanValue,
-      };
-    })
-  );
-}
-
 export function getAdoptionSeries(
   releaseGroups: SessionApiResponse['groups'] = [],
   allGroups: SessionApiResponse['groups'] = [],
   intervals: SessionApiResponse['intervals'] = [],
-  field: SessionField
+  field: SessionFieldWithOperation
 ): SeriesDataUnit[] {
   return intervals.map((interval, i) => {
     const intervalReleaseSessions = releaseGroups.reduce(
-      (acc, group) => acc + group.series[field][i],
+      (acc, group) => acc + (group.series[field]?.[i] ?? 0),
       0
     );
     const intervalTotalSessions = allGroups.reduce(
-      (acc, group) => acc + group.series[field][i],
+      (acc, group) => acc + (group.series[field]?.[i] ?? 0),
       0
     );
 
@@ -173,13 +173,96 @@ export function getAdoptionSeries(
   });
 }
 
+export function getCountSeries(
+  field: SessionFieldWithOperation,
+  group?: SessionApiResponse['groups'][0],
+  intervals: SessionApiResponse['intervals'] = []
+): SeriesDataUnit[] {
+  return intervals.map((interval, index) => ({
+    name: interval,
+    value: group?.series[field]![index] ?? 0,
+  }));
+}
+
+export function initSessionsChart(theme: Theme) {
+  const colors = theme.chart.getColorPalette(15);
+  return {
+    [SessionStatus.HEALTHY]: {
+      seriesName: sessionTerm.healthy,
+      data: [],
+      color: theme.colors.green400,
+      areaStyle: {
+        color: theme.colors.green400,
+        opacity: 1,
+      },
+      lineStyle: {
+        opacity: 0,
+        width: 0.4,
+      },
+    },
+    [SessionStatus.ERRORED]: {
+      seriesName: sessionTerm.errored,
+      data: [],
+      color: colors[12],
+      areaStyle: {
+        color: colors[12],
+        opacity: 1,
+      },
+      lineStyle: {
+        opacity: 0,
+        width: 0.4,
+      },
+    },
+    [SessionStatus.UNHANDLED]: {
+      seriesName: sessionTerm.unhandled,
+      data: [],
+      color: colors[13],
+      areaStyle: {
+        color: colors[13],
+        opacity: 1,
+      },
+      lineStyle: {
+        opacity: 0,
+        width: 0.4,
+      },
+    },
+    [SessionStatus.ABNORMAL]: {
+      seriesName: sessionTerm.abnormal,
+      data: [],
+      color: colors[15],
+      areaStyle: {
+        color: colors[15],
+        opacity: 1,
+      },
+      lineStyle: {
+        opacity: 0,
+        width: 0.4,
+      },
+    },
+    [SessionStatus.CRASHED]: {
+      seriesName: sessionTerm.crashed,
+      data: [],
+      color: theme.colors.red400,
+      areaStyle: {
+        color: theme.colors.red400,
+        opacity: 1,
+      },
+      lineStyle: {
+        opacity: 0,
+        width: 0.4,
+      },
+    },
+  };
+}
+
 type GetSessionsIntervalOptions = {
+  dailyInterval?: boolean;
   highFidelity?: boolean;
 };
 
 export function getSessionsInterval(
   datetimeObj: DateTimeObject,
-  {highFidelity}: GetSessionsIntervalOptions = {}
+  {highFidelity, dailyInterval}: GetSessionsIntervalOptions = {}
 ) {
   const diffInMinutes = getDiffInMinutes(datetimeObj);
 
@@ -188,15 +271,30 @@ export function getSessionsInterval(
     highFidelity = false;
   }
 
-  if (diffInMinutes > TWO_WEEKS) {
+  if (dailyInterval === true && diffInMinutes > TWENTY_FOUR_HOURS) {
     return '1d';
   }
-  if (diffInMinutes > ONE_WEEK) {
-    return '6h';
+
+  if (diffInMinutes >= SIXTY_DAYS) {
+    return '1d';
+  }
+
+  if (diffInMinutes >= THIRTY_DAYS) {
+    return '4h';
+  }
+
+  if (diffInMinutes >= SIX_HOURS) {
+    return '1h';
   }
 
   // limit on backend for sub-hour session resolution is set to six hours
-  if (highFidelity && diffInMinutes < 360) {
+  if (highFidelity) {
+    if (diffInMinutes <= MINUTES_THRESHOLD_TO_DISPLAY_SECONDS) {
+      // This only works for metrics-based session stats.
+      // Backend will silently replace with '1m' for session-based stats.
+      return '10s';
+    }
+
     if (diffInMinutes <= 30) {
       return '1m';
     }
@@ -232,11 +330,11 @@ export function filterSessionsInTimeWindow(
   });
 
   const groups = sessions.groups.map(group => {
-    const series = {};
-    const totals = {};
+    const series: Record<string, number[]> = {};
+    const totals: Record<string, number> = {};
     Object.keys(group.series).forEach(field => {
       totals[field] = 0;
-      series[field] = group.series[field].filter((value, index) => {
+      series[field] = group.series[field]!.filter((value, index) => {
         const isBetween = filteredIndexes.includes(index);
         if (isBetween) {
           totals[field] = (totals[field] ?? 0) + value;
@@ -245,22 +343,24 @@ export function filterSessionsInTimeWindow(
         return isBetween;
       });
       if (field.startsWith('p50')) {
-        totals[field] = mean(series[field]);
+        // Calculate the mean of the current field.
+        const base = series[field] ?? [];
+        totals[field] = base.reduce((acc, curr) => acc + curr, 0) / base.length;
       }
       if (field.startsWith('count_unique')) {
-        /* E.g. users
-        We cannot sum here because users would not be unique anymore.
-        User can be repeated and part of multiple buckets in series but it's still that one user so totals would be wrong.
-        This operation is not 100% correct, because we are filtering series in time window but the total is for unfiltered series (it's the closest thing we can do right now) */
-        totals[field] = group.totals[field];
+        // E.g. users
+        // We cannot sum here because users would not be unique anymore.
+        // User can be repeated and part of multiple buckets in series but it's still that one user so totals would be wrong.
+        // This operation is not 100% correct, because we are filtering series in time window but the total is for unfiltered series (it's the closest thing we can do right now)
+        totals[field] = group.totals[field]!;
       }
     });
     return {...group, series, totals};
   });
 
   return {
-    start: intervals[0],
-    end: intervals[intervals.length - 1],
+    start: intervals[0]!,
+    end: intervals[intervals.length - 1]!,
     query: sessions.query,
     intervals,
     groups,

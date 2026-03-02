@@ -1,102 +1,43 @@
-import {addErrorMessage, addSuccessMessage} from 'app/actionCreators/indicator';
-import TeamActions from 'app/actions/teamActions';
-import {Client} from 'app/api';
-import {tct} from 'app/locale';
-import {Team} from 'app/types';
-import {callIfFunction} from 'app/utils/callIfFunction';
-import {uniqueId} from 'app/utils/guid';
+import {addErrorMessage, addSuccessMessage} from 'sentry/actionCreators/indicator';
+import type {Client} from 'sentry/api';
+import {tct} from 'sentry/locale';
+import TeamStore from 'sentry/stores/teamStore';
+import type {Team} from 'sentry/types/organization';
 
 type CallbackOptions = {
-  success?: Function;
-  error?: Function;
+  error?: (...args: unknown[]) => void;
+  success?: (...args: unknown[]) => void;
 };
 
 const doCallback = (
   params: CallbackOptions = {},
   name: keyof CallbackOptions,
   ...args: any[]
-) => {
-  callIfFunction(params[name], ...args);
-};
-
+) => params[name]?.(...args);
 /**
  * Note these are both slugs
  */
 type OrgSlug = {orgId: string};
 type OrgAndTeamSlug = OrgSlug & {teamId: string};
 
-type TeamData = {data: Team};
-
 /**
  * This is the actual internal id, not username or email
  */
 type MemberId = {memberId: string};
 
-// Fetch teams for org
-export function fetchTeams(api: Client, params: OrgSlug, options: CallbackOptions) {
-  TeamActions.fetchAll(params.orgId);
-  return api.request(`/teams/${params.orgId}/`, {
-    success: data => {
-      TeamActions.fetchAllSuccess(params.orgId, data);
-      doCallback(options, 'success', data);
-    },
-    error: error => {
-      TeamActions.fetchAllError(params.orgId, error);
-      doCallback(options, 'error', error);
-    },
-  });
-}
-
 // Fetch user teams for current org and place them in the team store
 export async function fetchUserTeams(api: Client, params: OrgSlug) {
   const teams = await api.requestPromise(`/organizations/${params.orgId}/user-teams/`);
-  TeamActions.loadUserTeams(teams);
-}
-
-export function fetchTeamDetails(
-  api: Client,
-  params: OrgAndTeamSlug,
-  options?: CallbackOptions
-) {
-  TeamActions.fetchDetails(params.teamId);
-  return api.request(`/teams/${params.orgId}/${params.teamId}/`, {
-    success: data => {
-      TeamActions.fetchDetailsSuccess(params.teamId, data);
-      doCallback(options, 'success', data);
-    },
-    error: error => {
-      TeamActions.fetchDetailsError(params.teamId, error);
-      doCallback(options, 'error', error);
-    },
-  });
+  TeamStore.loadUserTeams(teams);
 }
 
 export function updateTeamSuccess(teamId: OrgAndTeamSlug['teamId'], data: Team) {
-  TeamActions.updateSuccess(teamId, data);
+  TeamStore.onUpdateSuccess(teamId, data);
 }
 
-export function updateTeam(
-  api: Client,
-  params: OrgAndTeamSlug & TeamData,
-  options: CallbackOptions
-) {
-  const endpoint = `/teams/${params.orgId}/${params.teamId}/`;
-  TeamActions.update(params.teamId, params.data);
-
-  return api.request(endpoint, {
-    method: 'PUT',
-    data: params.data,
-    success: data => {
-      updateTeamSuccess(params.teamId, data);
-      doCallback(options, 'success', data);
-    },
-    error: error => {
-      TeamActions.updateError(params.teamId, error);
-      doCallback(options, 'error', error);
-    },
-  });
-}
-
+/**
+ * @deprecated use joinTeamPromise instead
+ */
 export function joinTeam(
   api: Client,
   params: OrgAndTeamSlug & Partial<MemberId>,
@@ -105,51 +46,52 @@ export function joinTeam(
   const endpoint = `/organizations/${params.orgId}/members/${
     params.memberId ?? 'me'
   }/teams/${params.teamId}/`;
-  const id = uniqueId();
-
-  TeamActions.update(id, params.teamId);
 
   return api.request(endpoint, {
     method: 'POST',
     success: data => {
-      TeamActions.updateSuccess(params.teamId, data);
+      TeamStore.onUpdateSuccess(params.teamId, data);
       doCallback(options, 'success', data);
     },
     error: error => {
-      TeamActions.updateError(id, params.teamId, error);
       doCallback(options, 'error', error);
     },
   });
 }
 
-export function leaveTeam(
+export async function joinTeamPromise(
   api: Client,
-  params: OrgAndTeamSlug & Partial<MemberId>,
-  options: CallbackOptions
+  params: OrgAndTeamSlug & Partial<MemberId>
 ) {
-  const endpoint = `/organizations/${params.orgId}/members/${
-    params.memberId || 'me'
-  }/teams/${params.teamId}/`;
-  const id = uniqueId();
+  const data: Team = await api.requestPromise(
+    `/organizations/${params.orgId}/members/${params.memberId ?? 'me'}/teams/${params.teamId}/`,
+    {
+      method: 'POST',
+    }
+  );
 
-  TeamActions.update(id, params.teamId);
+  TeamStore.onUpdateSuccess(params.teamId, data);
 
-  return api.request(endpoint, {
-    method: 'DELETE',
-    success: data => {
-      TeamActions.updateSuccess(params.teamId, data);
-      doCallback(options, 'success', data);
-    },
-    error: error => {
-      TeamActions.updateError(id, params.teamId, error);
-      doCallback(options, 'error', error);
-    },
-  });
+  return data;
+}
+
+export async function leaveTeamPromise(
+  api: Client,
+  params: OrgAndTeamSlug & Partial<MemberId>
+) {
+  const data: Team = await api.requestPromise(
+    `/organizations/${params.orgId}/members/${params.memberId ?? 'me'}/teams/${params.teamId}/`,
+    {
+      method: 'DELETE',
+    }
+  );
+
+  TeamStore.onUpdateSuccess(params.teamId, data);
+
+  return data;
 }
 
 export function createTeam(api: Client, team: Pick<Team, 'slug'>, params: OrgSlug) {
-  TeamActions.createTeam(team);
-
   return api
     .requestPromise(`/organizations/${params.orgId}/teams/`, {
       method: 'POST',
@@ -157,7 +99,7 @@ export function createTeam(api: Client, team: Pick<Team, 'slug'>, params: OrgSlu
     })
     .then(
       data => {
-        TeamActions.createTeamSuccess(data);
+        TeamStore.onCreateSuccess(data);
         addSuccessMessage(
           tct('[team] has been added to the [organization] organization', {
             team: `#${data.slug}`,
@@ -167,7 +109,6 @@ export function createTeam(api: Client, team: Pick<Team, 'slug'>, params: OrgSlu
         return data;
       },
       err => {
-        TeamActions.createTeamError(team.slug, err);
         addErrorMessage(
           tct('Unable to create [team] in the [organization] organization', {
             team: `#${team.slug}`,
@@ -180,15 +121,13 @@ export function createTeam(api: Client, team: Pick<Team, 'slug'>, params: OrgSlu
 }
 
 export function removeTeam(api: Client, params: OrgAndTeamSlug) {
-  TeamActions.removeTeam(params.teamId);
-
   return api
     .requestPromise(`/teams/${params.orgId}/${params.teamId}/`, {
       method: 'DELETE',
     })
     .then(
       data => {
-        TeamActions.removeTeamSuccess(params.teamId, data);
+        TeamStore.onRemoveSuccess(params.teamId);
         addSuccessMessage(
           tct('[team] has been removed from the [organization] organization', {
             team: `#${params.teamId}`,
@@ -198,7 +137,6 @@ export function removeTeam(api: Client, params: OrgAndTeamSlug) {
         return data;
       },
       err => {
-        TeamActions.removeTeamError(params.teamId, err);
         addErrorMessage(
           tct('Unable to remove [team] from the [organization] organization', {
             team: `#${params.teamId}`,

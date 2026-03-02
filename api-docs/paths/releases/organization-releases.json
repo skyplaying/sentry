@@ -5,9 +5,9 @@
     "operationId": "List an Organization's Releases",
     "parameters": [
       {
-        "name": "organization_slug",
+        "name": "organization_id_or_slug",
         "in": "path",
-        "description": "The slug of the organization.",
+        "description": "The ID or slug of the organization.",
         "required": true,
         "schema": {
           "type": "string"
@@ -20,6 +20,9 @@
         "schema": {
           "type": "string"
         }
+      },
+      {
+        "$ref": "../../components/parameters/pagination-cursor.json#/PaginationCursor"
       }
     ],
     "responses": {
@@ -35,6 +38,7 @@
             },
             "example": [
               {
+                "id": 2,
                 "authors": [],
                 "commitCount": 0,
                 "data": {},
@@ -59,6 +63,7 @@
                 "version": "2.0rc2"
               },
               {
+                "id": 1,
                 "authors": [],
                 "commitCount": 0,
                 "data": {},
@@ -108,9 +113,9 @@
     "operationId": "Create a New Release for an Organization",
     "parameters": [
       {
-        "name": "organization_slug",
+        "name": "organization_id_or_slug",
         "in": "path",
-        "description": "The slug of the organization.",
+        "description": "The ID or slug of the organization.",
         "required": true,
         "schema": {
           "type": "string"
@@ -241,6 +246,7 @@
               "$ref": "../../components/schemas/releases/organization-release.json#/OrganizationRelease"
             },
             "example": {
+              "id": 2,
               "authors": [],
               "commitCount": 0,
               "data": {},

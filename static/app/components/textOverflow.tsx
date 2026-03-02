@@ -1,35 +1,69 @@
-import * as React from 'react';
+import type {CSSProperties} from 'react';
+import {css} from '@emotion/react';
 import styled from '@emotion/styled';
-
-import overflowEllipsis from 'app/styles/overflowEllipsis';
-import overflowEllipsisLeft from 'app/styles/overflowEllipsisLeft';
 
 type Props = {
   children: React.ReactNode;
-  isParagraph?: boolean;
-  ellipsisDirection?: 'left' | 'right';
-  ['data-test-id']?: string;
   className?: string;
+  ['data-test-id']?: string;
+  /**
+   * Change which side of the text is elided.
+   * Default: 'right'
+   *
+   * BROWSER COMPAT:
+   * When set to `left` the intention is for something like: `...xample.com/foo/`
+   * In Chrome & Firefox this is what happens.
+   *
+   * In Safari (July 2022) you will see this instead: `...https://example.co`.
+   *
+   * See: https://stackoverflow.com/a/24800788
+   *
+   * @default 'right'
+   */
+  ellipsisDirection?: 'left' | 'right';
+  /**
+   * @default false
+   */
+  isParagraph?: boolean;
+  style?: CSSProperties;
 };
 
 const TextOverflow = styled(
-  ({isParagraph, className, children, ['data-test-id']: dataTestId}: Props) => {
+  ({
+    children,
+    className,
+    ellipsisDirection = 'right',
+    isParagraph = false,
+    ['data-test-id']: dataTestId,
+    style,
+  }: Props) => {
     const Component = isParagraph ? 'p' : 'div';
+    if (ellipsisDirection === 'left') {
+      return (
+        <Component className={className} style={style} data-test-id={dataTestId}>
+          <bdi>{children}</bdi>
+        </Component>
+      );
+    }
     return (
-      <Component className={className} data-test-id={dataTestId}>
+      <Component className={className} style={style} data-test-id={dataTestId}>
         {children}
       </Component>
     );
   }
 )`
-  ${p => (p.ellipsisDirection === 'right' ? overflowEllipsis : overflowEllipsisLeft)};
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  ${p =>
+    p.ellipsisDirection === 'left' &&
+    css`
+      direction: rtl;
+      text-align: left;
+    `};
   width: auto;
-  line-height: 1.1;
+  line-height: 1.2;
 `;
-
-TextOverflow.defaultProps = {
-  ellipsisDirection: 'right',
-  isParagraph: false,
-};
 
 export default TextOverflow;

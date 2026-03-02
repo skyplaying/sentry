@@ -1,11 +1,11 @@
-import * as React from 'react';
+import {LinkButton} from '@sentry/scraps/button';
+import {ExternalLink} from '@sentry/scraps/link';
 
-import Button from 'app/components/button';
-import ExternalLink from 'app/components/links/externalLink';
-import {IconBitbucket, IconGithub, IconGitlab, IconVsts} from 'app/icons';
-import {t} from 'app/locale';
-import {Repository} from 'app/types';
-import {getShortCommitHash} from 'app/utils';
+import {IconBitbucket, IconGithub, IconGitlab, IconVsts} from 'sentry/icons';
+import type {SVGIconProps} from 'sentry/icons/svgIcon';
+import {t} from 'sentry/locale';
+import type {Repository} from 'sentry/types/integrations';
+import {getShortCommitHash} from 'sentry/utils/git/getShortCommitHash';
 
 type CommitFormatterParameters = {
   baseUrl: string;
@@ -13,47 +13,64 @@ type CommitFormatterParameters = {
 };
 
 type CommitProvider = {
-  icon: React.ReactNode;
-  providerIds: string[];
   commitUrl: (opts: CommitFormatterParameters) => string;
+  icon: React.ComponentType<SVGIconProps>;
+  providerIds: string[];
 };
 
 // TODO(epurkhiser, jess): This should be moved into plugins.
-const SUPPORTED_PROVIDERS: Readonly<CommitProvider[]> = [
+const SUPPORTED_PROVIDERS: readonly CommitProvider[] = [
   {
-    icon: <IconGithub size="xs" />,
+    icon: IconGithub,
     providerIds: ['github', 'integrations:github', 'integrations:github_enterprise'],
     commitUrl: ({baseUrl, commitId}) => `${baseUrl}/commit/${commitId}`,
   },
   {
-    icon: <IconBitbucket size="xs" />,
+    icon: IconBitbucket,
     providerIds: ['bitbucket', 'integrations:bitbucket'],
     commitUrl: ({baseUrl, commitId}) => `${baseUrl}/commits/${commitId}`,
   },
   {
-    icon: <IconVsts size="xs" />,
+    icon: IconVsts,
     providerIds: ['visualstudio', 'integrations:vsts'],
     commitUrl: ({baseUrl, commitId}) => `${baseUrl}/commit/${commitId}`,
   },
   {
-    icon: <IconGitlab size="xs" />,
+    icon: IconGitlab,
     providerIds: ['gitlab', 'integrations:gitlab'],
     commitUrl: ({baseUrl, commitId}) => `${baseUrl}/commit/${commitId}`,
   },
 ];
 
 type Props = {
-  commitId: string;
-  repository?: Repository;
+  className?: string;
+  commitId?: string;
+  commitTitle?: string;
   inline?: boolean;
+  onClick?: () => void;
+  repository?: Repository;
+  showIcon?: boolean;
 };
 
-function CommitLink({inline, commitId, repository}: Props) {
+function CommitLink({
+  inline,
+  commitId,
+  repository,
+  showIcon = true,
+  onClick,
+  commitTitle,
+  className,
+}: Props) {
   if (!commitId || !repository) {
     return <span>{t('Unknown Commit')}</span>;
   }
 
-  const shortId = getShortCommitHash(commitId);
+  let label: string;
+  if (commitTitle) {
+    label = commitTitle;
+  } else {
+    label = getShortCommitHash(commitId);
+  }
 
   const providerData = SUPPORTED_PROVIDERS.find(provider => {
     if (!repository.provider) {
@@ -63,7 +80,7 @@ function CommitLink({inline, commitId, repository}: Props) {
   });
 
   if (providerData === undefined) {
-    return <span>{shortId}</span>;
+    return <span>{label}</span>;
   }
 
   const commitUrl =
@@ -73,15 +90,24 @@ function CommitLink({inline, commitId, repository}: Props) {
       baseUrl: repository.url,
     });
 
-  return !inline ? (
-    <Button external href={commitUrl} size="small" icon={providerData.icon}>
-      {shortId}
-    </Button>
-  ) : (
-    <ExternalLink className="inline-commit" href={commitUrl}>
-      {providerData.icon}
-      {' ' + shortId}
+  const Icon = providerData.icon;
+
+  return inline ? (
+    <ExternalLink href={commitUrl} onClick={onClick} className={className}>
+      {showIcon ? <Icon size="xs" /> : null}
+      {' ' + label}
     </ExternalLink>
+  ) : (
+    <LinkButton
+      external
+      href={commitUrl}
+      size="sm"
+      icon={showIcon ? <Icon size="sm" /> : null}
+      onClick={onClick}
+      className={className}
+    >
+      {label}
+    </LinkButton>
   );
 }
 

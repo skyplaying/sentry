@@ -1,50 +1,91 @@
-import * as React from 'react';
-import {RouteComponentProps} from 'react-router';
+import {useEffect, useEffectEvent} from 'react';
+import {Outlet, useOutletContext} from 'react-router-dom';
 
-import * as AppStoreConnectContext from 'app/components/projects/appStoreConnectContext';
-import {Organization} from 'app/types';
-import withOrganization from 'app/utils/withOrganization';
-import ProjectContext from 'app/views/projects/projectContext';
-import SettingsLayout from 'app/views/settings/components/settingsLayout';
-import ProjectSettingsNavigation from 'app/views/settings/project/projectSettingsNavigation';
+import {Button} from '@sentry/scraps/button';
+import {Flex} from '@sentry/scraps/layout';
 
-type Props = {
-  organization: Organization;
-  children: React.ReactNode;
-} & RouteComponentProps<{orgId: string; projectId: string}, {}>;
+import {navigateTo} from 'sentry/actionCreators/navigation';
+import AnalyticsArea from 'sentry/components/analyticsArea';
+import EmptyMessage from 'sentry/components/emptyMessage';
+import {IconProject} from 'sentry/icons';
+import {t} from 'sentry/locale';
+import type {Project} from 'sentry/types/project';
+import useRouteAnalyticsParams from 'sentry/utils/routeAnalytics/useRouteAnalyticsParams';
+import {useLocation} from 'sentry/utils/useLocation';
+import {useParams} from 'sentry/utils/useParams';
+import useRouter from 'sentry/utils/useRouter';
+import ProjectContext from 'sentry/views/projects/projectContext';
+import SettingsLayout from 'sentry/views/settings/components/settingsLayout';
 
-function ProjectSettingsLayout({
-  params,
-  organization,
-  children,
-  routes,
-  ...props
-}: Props) {
-  const {orgId, projectId} = params;
+type ProjectSettingsOutletContext = {
+  project: Project;
+};
+
+function ProjectSettingsOutlet(props: ProjectSettingsOutletContext) {
+  return <Outlet context={props} />;
+}
+
+export function useProjectSettingsOutlet() {
+  return useOutletContext<ProjectSettingsOutletContext>();
+}
+
+function InnerProjectSettingsLayout({project}: {project: Project}) {
+  // set analytics params for route based analytics
+  useRouteAnalyticsParams({
+    project_id: project.id,
+    project_platform: project.platform,
+  });
 
   return (
-    <ProjectContext orgId={orgId} projectId={projectId}>
-      {({project}) => (
-        <AppStoreConnectContext.Provider project={project} organization={organization}>
-          <SettingsLayout
-            params={params}
-            routes={routes}
-            {...props}
-            renderNavigation={() => (
-              <ProjectSettingsNavigation organization={organization} />
-            )}
-          >
-            {children && React.isValidElement(children)
-              ? React.cloneElement(children, {
-                  organization,
-                  project,
-                })
-              : children}
-          </SettingsLayout>
-        </AppStoreConnectContext.Provider>
-      )}
-    </ProjectContext>
+    <SettingsLayout>
+      <ProjectSettingsOutlet project={project} />
+    </SettingsLayout>
   );
 }
 
-export default withOrganization(ProjectSettingsLayout);
+export default function ProjectSettingsLayout() {
+  const params = useParams<{projectId: string}>();
+  const location = useLocation();
+  const router = useRouter();
+
+  const onMissingProject = useEffectEvent(() => {
+    navigateTo(location.pathname, router);
+  });
+
+  useEffect(() => {
+    if (params.projectId === ':projectId') {
+      onMissingProject();
+    }
+  }, [params.projectId]);
+
+  if (params.projectId === ':projectId') {
+    return (
+      <AnalyticsArea name="project">
+        <Flex justify="center" align="center" flex="1">
+          <EmptyMessage
+            icon={<IconProject size="xl" />}
+            title={t('Choose a Project')}
+            action={
+              <Button
+                priority="primary"
+                onClick={() => navigateTo(location.pathname, router)}
+              >
+                {t('Choose Project')}
+              </Button>
+            }
+          >
+            {t('Select a project to continue.')}
+          </EmptyMessage>
+        </Flex>
+      </AnalyticsArea>
+    );
+  }
+
+  return (
+    <AnalyticsArea name="project">
+      <ProjectContext projectSlug={params.projectId}>
+        {({project}) => <InnerProjectSettingsLayout project={project} />}
+      </ProjectContext>
+    </AnalyticsArea>
+  );
+}

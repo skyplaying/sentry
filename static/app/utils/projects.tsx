@@ -1,30 +1,41 @@
-import * as React from 'react';
+import {Component} from 'react';
 import memoize from 'lodash/memoize';
 import partition from 'lodash/partition';
 import uniqBy from 'lodash/uniqBy';
 
-import ProjectActions from 'app/actions/projectActions';
-import {Client} from 'app/api';
-import ProjectsStore from 'app/stores/projectsStore';
-import {AvatarProject, Project} from 'app/types';
-import {defined} from 'app/utils';
-import parseLinkHeader from 'app/utils/parseLinkHeader';
-import RequestError from 'app/utils/requestError/requestError';
-import withApi from 'app/utils/withApi';
-import withProjects from 'app/utils/withProjects';
+import type {Client} from 'sentry/api';
+import ProjectsStore from 'sentry/stores/projectsStore';
+import type {AvatarProject, Project} from 'sentry/types/project';
+import {defined} from 'sentry/utils';
+import getDaysSinceDate from 'sentry/utils/getDaysSinceDate';
+import parseLinkHeader from 'sentry/utils/parseLinkHeader';
+import type RequestError from 'sentry/utils/requestError/requestError';
+import withApi from 'sentry/utils/withApi';
+import withProjects from 'sentry/utils/withProjects';
 
 type ProjectPlaceholder = AvatarProject;
 
 type State = {
+  /**
+   * The error that occurred if fetching failed
+   */
+  fetchError: null | RequestError;
+
   /**
    * Projects from API
    */
   fetchedProjects: Project[] | ProjectPlaceholder[];
 
   /**
-   * Projects fetched from store
+   * This is state for when fetching data from API
    */
-  projectsFromStore: Project[];
+  fetching: boolean;
+
+  /**
+   * Project results (from API) are paginated and there are more projects
+   * that are not in the initial queryset
+   */
+  hasMore: null | boolean;
 
   /**
    * Reflects whether or not the initial fetch for the requested projects
@@ -33,41 +44,30 @@ type State = {
   initiallyLoaded: boolean;
 
   /**
-   * This is state for when fetching data from API
-   */
-  fetching: boolean;
-
-  /**
    * This is set when we fail to find some slugs from both store and API
    */
   isIncomplete: null | boolean;
-
-  /**
-   * Project results (from API) are paginated and there are more projects
-   * that are not in the initial queryset
-   */
-  hasMore: null | boolean;
   prevSearch: null | string;
-  nextCursor?: null | string;
-
   /**
-   * The error that occurred if fetching failed
+   * Projects fetched from store
    */
-  fetchError: null | RequestError;
+  projectsFromStore: Project[];
+
+  nextCursor?: null | string;
 };
 
-export type RenderProps = {
+type RenderProps = {
+  /**
+   * Calls API and searches for project, accepts a callback function with signature:
+   * fn(searchTerm, {append: bool})
+   */
+  onSearch: (searchTerm: string, options: {append: boolean}) => void;
+
   /**
    * We want to make sure that at the minimum, we return a list of objects with only `slug`
    * while we load actual project data
    */
   projects: Project[] | ProjectPlaceholder[];
-
-  /**
-   * Calls API and searches for project, accepts a callback function with signature:
-   * fn(searchTerm, {append: bool})
-   */
-  onSearch: (searchTerm: string, {append: boolean}) => void;
 } & Pick<
   State,
   'isIncomplete' | 'fetching' | 'hasMore' | 'initiallyLoaded' | 'fetchError'
@@ -83,46 +83,37 @@ type DefaultProps = {
 
 type Props = {
   api: Client;
-
+  children: RenderFunc;
   /**
    * Organization slug
    */
   orgId: string;
-
   /**
    * List of projects that have we already have summaries for (i.e. from store)
    */
   projects: Project[];
-
+  /**
+   * Whether to fetch all the projects in the organization of which the user
+   * has access to
+   */
+  allProjects?: boolean;
+  /**
+   * Number of projects to return when not using `props.slugs`
+   */
+  limit?: number;
+  /**
+   * List of project ids to look for summaries for, this can be from `props.projects`,
+   * otherwise fetch from API
+   */
+  projectIds?: number[];
   /**
    * List of slugs to look for summaries for, this can be from `props.projects`,
    * otherwise fetch from API
    */
   slugs?: string[];
-
-  /**
-   * Number of projects to return when not using `props.slugs`
-   */
-  limit?: number;
-
-  /**
-   * Whether to fetch all the projects in the organization of which the user
-   * has access to
-   * */
-  allProjects?: boolean;
-
-  children: RenderFunc;
 } & DefaultProps;
 
-/**
- * This is a utility component that should be used to fetch an organization's projects (summary).
- * It can either fetch explicit projects (e.g. via slug) or a paginated list of projects.
- * These will be passed down to the render prop (`children`).
- *
- * The legacy way of handling this is that `ProjectSummary[]` is expected to be included in an
- * `Organization` as well as being saved to `ProjectsStore`.
- */
-class Projects extends React.Component<Props, State> {
+class BaseProjects extends Component<Props, State> {
   static defaultProps: DefaultProps = {
     passthroughPlaceholderProject: true,
   };
@@ -140,10 +131,12 @@ class Projects extends React.Component<Props, State> {
   };
 
   componentDidMount() {
-    const {slugs} = this.props;
+    const {slugs, projectIds} = this.props;
 
-    if (!!slugs?.length) {
+    if (slugs?.length) {
       this.loadSpecificProjects();
+    } else if (projectIds?.length) {
+      this.loadSpecificProjectsFromIds();
     } else {
       this.loadAllProjects();
     }
@@ -168,7 +161,7 @@ class Projects extends React.Component<Props, State> {
       return;
     }
 
-    if (!!slugs?.length) {
+    if (slugs?.length) {
       // Extract the requested projects from the store based on props.slugs
       const projectsMap = this.getProjectsMap(projects);
       const projectsFromStore = slugs.map(slug => projectsMap.get(slug)).filter(defined);
@@ -179,13 +172,20 @@ class Projects extends React.Component<Props, State> {
   /**
    * List of projects that need to be fetched via API
    */
-  fetchQueue: Set<string> = new Set();
+  fetchQueue = new Set<string>();
 
   /**
    * Memoized function that returns a `Map<project.slug, project>`
    */
   getProjectsMap: (projects: Project[]) => Map<string, Project> = memoize(
     projects => new Map(projects.map(project => [project.slug, project]))
+  );
+
+  /**
+   * Memoized function that returns a `Map<project.id, project>`
+   */
+  getProjectsIdMap: (projects: Project[]) => Map<number, Project> = memoize(
+    projects => new Map(projects.map(project => [parseInt(project.id, 10), project]))
   );
 
   /**
@@ -223,6 +223,34 @@ class Projects extends React.Component<Props, State> {
   };
 
   /**
+   * When `props.projectIds` is included, identifies if we already
+   * have summaries them, otherwise fetches all projects from API
+   */
+  loadSpecificProjectsFromIds = () => {
+    const {projectIds, projects} = this.props;
+
+    const projectsMap = this.getProjectsIdMap(projects);
+
+    // Split projectIds into projects that are in store and not in store
+    // (so we can request projects not in store)
+    const [inStore, notInStore] = partition(projectIds, id => projectsMap.has(id));
+
+    if (notInStore.length) {
+      this.loadAllProjects();
+      return;
+    }
+
+    // Get the actual summaries of projects that are in store
+    const projectsFromStore = inStore.map(id => projectsMap.get(id)).filter(defined);
+
+    this.setState({
+      // set initiallyLoaded if any projects were fetched from store
+      initiallyLoaded: !!inStore.length,
+      projectsFromStore,
+    });
+  };
+
+  /**
    * These will fetch projects via API (using project slug) provided by `this.fetchQueue`
    */
   fetchSpecificProjects = async () => {
@@ -246,7 +274,7 @@ class Projects extends React.Component<Props, State> {
       projects = results;
     } catch (err) {
       console.error(err); // eslint-disable-line no-console
-      fetchError = err;
+      fetchError = err as RequestError;
     }
 
     const projectsMap = this.getProjectsMap(projects);
@@ -260,9 +288,9 @@ class Projects extends React.Component<Props, State> {
       .map(slug =>
         projectsMap.has(slug)
           ? projectsMap.get(slug)
-          : !!passthroughPlaceholderProject
-          ? {slug}
-          : null
+          : passthroughPlaceholderProject
+            ? {slug}
+            : null
       )
       .filter(defined);
 
@@ -312,7 +340,7 @@ class Projects extends React.Component<Props, State> {
         fetching: false,
         fetchedProjects: [],
         initiallyLoaded: true,
-        fetchError: err,
+        fetchError: err as RequestError,
       });
     }
   };
@@ -342,7 +370,7 @@ class Projects extends React.Component<Props, State> {
       });
 
       this.setState((state: State) => {
-        let fetchedProjects;
+        let fetchedProjects: any;
         if (append) {
           // Remove duplicates
           fetchedProjects = uniqBy(
@@ -365,7 +393,7 @@ class Projects extends React.Component<Props, State> {
 
       this.setState({
         fetching: false,
-        fetchError: err,
+        fetchError: err as RequestError,
       });
     }
   };
@@ -378,7 +406,7 @@ class Projects extends React.Component<Props, State> {
       // while we load actual project data
       projects: this.state.initiallyLoaded
         ? [...this.state.fetchedProjects, ...this.state.projectsFromStore]
-        : (slugs && slugs.map(slug => ({slug}))) || [],
+        : slugs?.map(slug => ({slug})) || [],
 
       // This is set when we fail to find some slugs from both store and API
       isIncomplete: this.state.isIncomplete,
@@ -407,13 +435,25 @@ class Projects extends React.Component<Props, State> {
   }
 }
 
-export default withProjects(withApi(Projects));
+/**
+ * @deprecated consider using useProjects if possible.
+ *
+ * This is a utility component that should be used to fetch an organization's projects (summary).
+ * It can either fetch explicit projects (e.g. via slug) or a paginated list of projects.
+ * These will be passed down to the render prop (`children`).
+ *
+ * The legacy way of handling this is that `ProjectSummary[]` is expected to be included in an
+ * `Organization` as well as being saved to `ProjectsStore`.
+ */
+const Projects = withProjects(withApi(BaseProjects));
+
+export default Projects;
 
 type FetchProjectsOptions = {
-  slugs?: string[];
   cursor?: State['nextCursor'];
-  search?: State['prevSearch'];
   prevSearch?: State['prevSearch'];
+  search?: State['prevSearch'];
+  slugs?: string[];
 } & Pick<Props, 'limit' | 'allProjects'>;
 
 async function fetchProjects(
@@ -422,17 +462,17 @@ async function fetchProjects(
   {slugs, search, limit, prevSearch, cursor, allProjects}: FetchProjectsOptions = {}
 ) {
   const query: {
-    query?: string;
+    collapse: string[];
+    all_projects?: number;
     cursor?: typeof cursor;
     per_page?: number;
-    all_projects?: number;
-    collapse: string[];
+    query?: string;
   } = {
     // Never return latestDeploys project property from api
-    collapse: ['latestDeploys'],
+    collapse: ['latestDeploys', 'unusedFeatures'],
   };
 
-  if (slugs && slugs.length) {
+  if (slugs?.length) {
     query.query = slugs.map(slug => `slug:${slug}`).join(' ');
   }
 
@@ -450,7 +490,8 @@ async function fetchProjects(
   }
 
   if (allProjects) {
-    const {loading, projects} = ProjectsStore.getState();
+    const projects = ProjectsStore.getState().projects;
+    const loading = ProjectsStore.isLoading();
     // If the projects store is loaded then return all projects from the store
     if (!loading) {
       return {
@@ -474,18 +515,38 @@ async function fetchProjects(
     const paginationObject = parseLinkHeader(pageLinks);
     hasMore =
       paginationObject &&
-      (paginationObject.next.results || paginationObject.previous.results);
-    nextCursor = paginationObject.next.cursor;
+      (paginationObject.next!.results || paginationObject.previous!.results);
+    nextCursor = paginationObject.next!.cursor;
   }
 
   // populate the projects store if all projects were fetched
   if (allProjects) {
-    ProjectActions.loadProjects(data);
+    ProjectsStore.loadInitialData(data);
   }
 
   return {
     results: data,
     hasMore,
     nextCursor,
+  };
+}
+
+interface ProjectAnalyticsData {
+  project_age: number;
+  project_has_minified_stack_trace: boolean;
+  project_has_replay: boolean;
+  project_id: number;
+  project_platform: string;
+}
+
+export function getAnalyicsDataForProject(
+  project?: Project | null
+): ProjectAnalyticsData {
+  return {
+    project_has_replay: project?.hasReplays ?? false,
+    project_has_minified_stack_trace: project?.hasMinifiedStackTrace ?? false,
+    project_age: project ? getDaysSinceDate(project.dateCreated) : -1,
+    project_id: project ? parseInt(project.id, 10) : -1,
+    project_platform: project?.platform ?? '',
   };
 }

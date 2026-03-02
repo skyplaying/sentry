@@ -1,11 +1,10 @@
-import {EChartOption} from 'echarts';
+import type {Theme} from '@emotion/react';
+import type {YAXisComponentOption} from 'echarts';
 import merge from 'lodash/merge';
 
-import {Theme} from 'app/utils/theme';
+type Props = YAXisComponentOption & {theme: Theme};
 
-type Props = EChartOption.YAxis & {theme: Theme};
-
-export default function YAxis({theme, ...props}: Props): EChartOption.YAxis {
+export default function YAxis({theme, ...props}: Props): YAXisComponentOption {
   return merge(
     {
       axisLine: {
@@ -15,12 +14,12 @@ export default function YAxis({theme, ...props}: Props): EChartOption.YAxis {
         show: false,
       },
       axisLabel: {
-        color: theme.chartLabel,
-        fontFamily: theme.text.family,
+        color: theme.tokens.content.secondary,
+        fontFamily: theme.font.family.sans,
       },
       splitLine: {
         lineStyle: {
-          color: theme.chartLineColor,
+          color: theme.colors.gray300,
           opacity: 0.3,
         },
       },

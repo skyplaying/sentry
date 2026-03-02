@@ -1,62 +1,66 @@
-import {GuideAnchor} from 'app/components/assistant/guideAnchor';
-import SmartSearchBar from 'app/components/smartSearchBar';
-import {RELEASE_ADOPTION_STAGES} from 'app/constants';
-import {t} from 'app/locale';
-import {Tag} from 'app/types';
+import {useCallback} from 'react';
+import styled from '@emotion/styled';
 
-import {TagValueLoader} from '../issueList/types';
+import {DatePageFilter} from 'sentry/components/pageFilters/date/datePageFilter';
+import {EnvironmentPageFilter} from 'sentry/components/pageFilters/environment/environmentPageFilter';
+import PageFilterBar from 'sentry/components/pageFilters/pageFilterBar';
+import {SearchQueryBuilder} from 'sentry/components/searchQueryBuilder';
+import type {GetTagValues} from 'sentry/components/searchQueryBuilder';
+import {t} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import {SEMVER_TAGS} from 'sentry/utils/discover/fields';
+import type {TagValueLoader} from 'sentry/views/issueList/types';
 
-const supportedTags = {
-  'release.version': {
-    key: 'release.version',
-    name: 'release.version',
-  },
-  'release.build': {
-    key: 'release.build',
-    name: 'release.build',
-  },
-  'release.package': {
-    key: 'release.package',
-    name: 'release.package',
-  },
-  'release.stage': {
-    key: 'release.stage',
-    name: 'release.stage',
-    predefined: true,
-    values: RELEASE_ADOPTION_STAGES,
-  },
+type Props = {
+  onSearch: (q: string) => void;
+  query: string;
+  relativeDateOptions: React.ComponentProps<typeof DatePageFilter>['relativeOptions'];
+  tagValueLoader: TagValueLoader;
+};
+
+const SUPPORTED_TAGS = {
+  ...SEMVER_TAGS,
   release: {
     key: 'release',
     name: 'release',
   },
 };
 
-type Props = {
-  query: string;
-  onSearch: (q: string) => void;
-  tagValueLoader: TagValueLoader;
-};
-
-function ProjectFilters({query, tagValueLoader, onSearch}: Props) {
-  const getTagValues = async (tag: Tag, currentQuery: string): Promise<string[]> => {
-    const values = await tagValueLoader(tag.key, currentQuery);
-    return values.map(({value}) => value);
-  };
+function ProjectFilters({query, relativeDateOptions, tagValueLoader, onSearch}: Props) {
+  const getTagValues = useCallback<GetTagValues>(
+    async (tag, currentQuery) => {
+      const values = await tagValueLoader(tag.key, currentQuery);
+      return values.map(({value}) => value);
+    },
+    [tagValueLoader]
+  );
 
   return (
-    <GuideAnchor target="releases_search" position="bottom">
-      <SmartSearchBar
+    <FiltersWrapper>
+      <PageFilterBar>
+        <EnvironmentPageFilter />
+        <DatePageFilter relativeOptions={relativeDateOptions} />
+      </PageFilterBar>
+      <SearchQueryBuilder
         searchSource="project_filters"
-        query={query}
+        initialQuery={query ?? ''}
         placeholder={t('Search by release version, build, package, or stage')}
-        maxSearchItems={5}
-        hasRecentSearches={false}
-        supportedTags={supportedTags}
+        filterKeys={SUPPORTED_TAGS}
         onSearch={onSearch}
-        onGetTagValues={getTagValues}
+        getTagValues={getTagValues}
       />
-    </GuideAnchor>
+    </FiltersWrapper>
   );
 }
+
+const FiltersWrapper = styled('div')`
+  display: grid;
+  grid-template-columns: minmax(0, max-content) 1fr;
+  gap: ${space(2)};
+
+  @media (max-width: ${p => p.theme.breakpoints.sm}) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+`;
 
 export default ProjectFilters;

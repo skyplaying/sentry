@@ -1,19 +1,31 @@
-import Reflux from 'reflux';
+import type {StoreDefinition} from 'reflux';
+import {createStore} from 'reflux';
 
-import SentryAppComponentsActions from 'app/actions/sentryAppComponentActions';
-import {SentryAppComponent} from 'app/types';
+import type {SentryAppComponent} from 'sentry/types/integrations';
 
-const SentryAppComponentsStore = Reflux.createStore({
+interface SentryAppComponentsStoreDefinition extends StoreDefinition {
+  get: (uuid: string) => SentryAppComponent | undefined;
+  getAll: () => SentryAppComponent[];
+  getInitialState: () => SentryAppComponent[];
+  init: () => void;
+  loadComponents: (items: SentryAppComponent[]) => void;
+}
+
+const storeConfig: SentryAppComponentsStoreDefinition = {
+  items: [],
+
   init() {
+    // XXX: Do not use `this.listenTo` in this store. We avoid usage of reflux
+    // listeners due to their leaky nature in tests.
+
     this.items = [];
-    this.listenTo(SentryAppComponentsActions.loadComponents, this.onLoadComponents);
   },
 
   getInitialState() {
     return this.items;
   },
 
-  onLoadComponents(items: SentryAppComponent[]) {
+  loadComponents(items: SentryAppComponent[]) {
     this.items = items;
     this.trigger(items);
   },
@@ -26,22 +38,7 @@ const SentryAppComponentsStore = Reflux.createStore({
   getAll() {
     return this.items;
   },
-
-  getComponentByType(type: string | undefined) {
-    if (!type) {
-      return this.getAll();
-    }
-    const items: SentryAppComponent[] = this.items;
-    return items.filter(item => item.type === type);
-  },
-});
-
-type SentryAppComponentsStoreType = Reflux.Store & {
-  onLoadComponents: (items: SentryAppComponent[]) => void;
-  getComponentByType: (type: string | undefined) => SentryAppComponent[];
-  getAll: () => SentryAppComponent[];
-  getInitialState: () => SentryAppComponent[];
-  get: () => SentryAppComponent | undefined;
 };
 
-export default SentryAppComponentsStore as SentryAppComponentsStoreType;
+const SentryAppComponentsStore = createStore(storeConfig);
+export default SentryAppComponentsStore;

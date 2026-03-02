@@ -1,28 +1,31 @@
-import responses
+import orjson
 from django.utils import timezone
 
-from sentry.models import Activity, Deploy, Release
-from sentry.notifications.notifications.activity import ReleaseActivityNotification
-from sentry.utils.compat import mock
+from sentry.models.activity import Activity
+from sentry.models.deploy import Deploy
+from sentry.notifications.notifications.activity.release import ReleaseActivityNotification
+from sentry.testutils.cases import SlackActivityNotificationTest
+from sentry.types.activity import ActivityType
 
-from . import SlackActivityNotificationTest, get_attachment, send_notification
 
-
-class SlackUnassignedNotificationTest(SlackActivityNotificationTest):
-    @responses.activate
-    @mock.patch("sentry.notifications.notify.notify", side_effect=send_notification)
-    def test_deploy(self, mock_func):
+class SlackDeployNotificationTest(SlackActivityNotificationTest):
+    def test_deploy_block(self) -> None:
         """
-        Test that a Slack message is sent with the expected payload when a deploy happens
+        Test that a Slack message is sent with the expected payload when a deploy happens.
+        and block kit is enabled.
         """
-        release = Release.objects.create(
+        release = self.create_release(
             version="meow" * 10,
-            organization_id=self.project.organization_id,
             date_released=timezone.now(),
         )
-        project2 = self.create_project(name="battlesnake")
-        release.add_project(self.project)
-        release.add_project(project2)
+
+        # The projects can appear out of order.
+        projects = (self.project, self.create_project(name="battlesnake"))
+        SLUGS_TO_PROJECT = {project.slug: project for project in projects}
+
+        for project in projects:
+            release.add_project(project)
+
         deploy = Deploy.objects.create(
             release=release,
             organization_id=self.organization.id,
@@ -31,30 +34,37 @@ class SlackUnassignedNotificationTest(SlackActivityNotificationTest):
         notification = ReleaseActivityNotification(
             Activity(
                 project=self.project,
-                user=self.user,
-                type=Activity.RELEASE,
+                user_id=self.user.id,
+                type=ActivityType.RELEASE.value,
                 data={"version": release.version, "deploy_id": deploy.id},
             )
         )
         with self.tasks():
             notification.send()
 
-        attachment, text = get_attachment()
+        blocks = orjson.loads(self.mock_post.call_args.kwargs["blocks"])
+        fallback_text = self.mock_post.call_args.kwargs["text"]
         assert (
-            text
+            fallback_text
             == f"Release {release.version} was deployed to {self.environment.name} for these projects"
         )
-        assert attachment["actions"][0]["text"] == self.project.slug
+        assert blocks[0]["text"]["text"] == fallback_text
+
+        first_project = None
+        for i in range(len(projects)):
+            project = SLUGS_TO_PROJECT[blocks[2]["elements"][i]["text"]["text"]]
+            if not first_project:
+                first_project = project
+            assert (
+                blocks[2]["elements"][i]["url"]
+                == f"http://testserver/organizations/{self.organization.slug}/releases/"
+                f"{release.version}/?project={project.id}&unselectedSeries=Healthy&referrer=release_activity&notification_uuid={notification.notification_uuid}"
+            )
+            assert blocks[2]["elements"][i]["value"] == "link_clicked"
+        assert first_project is not None
+
+        # footer project is the first project in the actions list
         assert (
-            attachment["actions"][0]["url"]
-            == f"http://testserver/organizations/{self.organization.slug}/releases/{release.version}/?project={self.project.id}&unselectedSeries=Healthy/"
-        )
-        assert attachment["actions"][1]["text"] == project2.slug
-        assert (
-            attachment["actions"][1]["url"]
-            == f"http://testserver/organizations/{self.organization.slug}/releases/{release.version}/?project={project2.id}&unselectedSeries=Healthy/"
-        )
-        assert (
-            attachment["footer"]
-            == f"{self.project.slug} | <http://testserver/settings/account/notifications/deploy/?referrer=ReleaseActivitySlack|Notification Settings>"
+            blocks[1]["elements"][0]["text"]
+            == f"{first_project.slug} | <http://testserver/settings/account/notifications/deploy/?referrer=release_activity-slack-user&notification_uuid={notification.notification_uuid}|Notification Settings>"
         )

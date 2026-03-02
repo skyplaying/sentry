@@ -1,49 +1,120 @@
+import {useCallback, useMemo, useState} from 'react';
 import styled from '@emotion/styled';
-import {Location} from 'history';
 
-import {SectionContents} from 'app/components/events/eventDataSection';
-import {t} from 'app/locale';
-import {Organization, Project} from 'app/types';
-import {Event} from 'app/types/event';
+import {Grid} from '@sentry/scraps/layout';
+import {ExternalLink} from '@sentry/scraps/link';
+import {SegmentedControl} from '@sentry/scraps/segmentedControl';
 
-import EventTags from '../eventTags/eventTags';
-
-import DataSection from './dataSection';
-import TagsHighlight from './tagsHighlight';
+import GuideAnchor from 'sentry/components/assistant/guideAnchor';
+import {EventTags} from 'sentry/components/events/eventTags';
+import {
+  associateTagsWithMeta,
+  getSentryDefaultTags,
+  TagFilter,
+  TagFilterData,
+  TAGS_DOCS_LINK,
+} from 'sentry/components/events/eventTags/util';
+import {t, tct} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {Event} from 'sentry/types/event';
+import type {Project} from 'sentry/types/project';
+import {SectionKey} from 'sentry/views/issueDetails/streamline/context';
+import {InterimSection} from 'sentry/views/issueDetails/streamline/interimSection';
 
 type Props = {
   event: Event;
-  organization: Organization;
   projectSlug: Project['slug'];
-  location: Location;
-  hasContext: boolean;
+  /**
+   * Additional buttons to render in the header of the section
+   */
+  additionalActions?: React.ReactNode;
+  disableCollapsePersistence?: boolean;
+  ref?: React.Ref<HTMLDivElement>;
 };
 
-function Tags({event, organization, projectSlug, location, hasContext}: Props) {
+export function EventTagsDataSection({
+  ref,
+  event,
+  projectSlug,
+  additionalActions,
+  disableCollapsePersistence,
+}: Props) {
+  const sentryTags = getSentryDefaultTags();
+
+  const [tagFilter, setTagFilter] = useState<TagFilter>(TagFilter.ALL);
+  const handleTagFilterChange = useCallback((value: TagFilter) => {
+    setTagFilter(value);
+  }, []);
+
+  const tagsWithMeta = useMemo(() => {
+    return associateTagsWithMeta({tags: event.tags, meta: event._meta?.tags});
+  }, [event.tags, event._meta?.tags]);
+
+  const filteredTags = useMemo(() => {
+    switch (tagFilter) {
+      case TagFilter.ALL:
+        return tagsWithMeta;
+      case TagFilter.CUSTOM:
+        return tagsWithMeta.filter(tag => !sentryTags.has(tag.key));
+      default:
+        return tagsWithMeta.filter(tag => TagFilterData[tagFilter].has(tag.key));
+    }
+  }, [tagFilter, tagsWithMeta, sentryTags]);
+
+  const availableFilters = useMemo(() => {
+    return Object.keys(TagFilterData).filter(filter => {
+      // @ts-expect-error TS(7053): Element implicitly has an 'any' type because expre... Remove this comment to see the full error message
+      return event.tags.some(tag => TagFilterData[filter].has(tag.key));
+    });
+  }, [event.tags]);
+
+  const actions = (
+    <Grid flow="column" align="center" gap="md">
+      {additionalActions}
+      <SegmentedControl
+        size="xs"
+        aria-label={t('Filter tags')}
+        value={tagFilter}
+        onChange={handleTagFilterChange}
+      >
+        {[TagFilter.ALL, TagFilter.CUSTOM, ...availableFilters].map(v => (
+          <SegmentedControl.Item key={v}>{`${v}`}</SegmentedControl.Item>
+        ))}
+      </SegmentedControl>
+    </Grid>
+  );
+
   return (
-    <StyledDataSection
-      title={t('Tags')}
-      description={t(
-        'Tags help you quickly both access related events and view the tag distribution for a set of events'
-      )}
+    <StyledEventDataSection
+      disableCollapsePersistence={disableCollapsePersistence}
+      title={
+        <GuideAnchor target="tags" position="top">
+          {t('Tags')}
+        </GuideAnchor>
+      }
+      help={tct('The searchable tags associated with this event. [link:Learn more]', {
+        link: <ExternalLink openInNewTab href={TAGS_DOCS_LINK} />,
+      })}
+      isHelpHoverable
+      actions={actions}
       data-test-id="event-tags"
+      type={SectionKey.TAGS}
+      ref={ref}
     >
-      {hasContext && <TagsHighlight event={event} />}
       <EventTags
         event={event}
-        organization={organization}
-        projectId={projectSlug}
-        location={location}
+        projectSlug={projectSlug}
+        tagFilter={tagFilter}
+        filteredTags={filteredTags ?? []}
       />
-    </StyledDataSection>
+    </StyledEventDataSection>
   );
 }
 
-export default Tags;
+const StyledEventDataSection = styled(InterimSection)`
+  padding: ${space(0.5)} ${space(2)} ${space(1)};
 
-const StyledDataSection = styled(DataSection)`
-  overflow: hidden;
-  ${SectionContents} {
-    overflow: hidden;
+  @media (min-width: ${p => p.theme.breakpoints.md}) {
+    padding: ${space(1)} ${space(4)} ${space(1.5)};
   }
 `;

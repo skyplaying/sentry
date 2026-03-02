@@ -1,17 +1,21 @@
 import re
 from functools import wraps
 
+import sentry_sdk
 from django.conf import settings
 from django.core.cache import cache
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
 from sentry import options
-from sentry.models import Project, ProjectKey
+from sentry.projects.services.project_key import ProjectKeyRole, project_key_service
 from sentry.shared_integrations.exceptions import IntegrationError
 from sentry.tasks.release_registry import LAYER_INDEX_CACHE_KEY
-from sentry.utils.compat import filter, map
 
 SUPPORTED_RUNTIMES = [
+    "nodejs22.x",
+    "nodejs20.x",
+    "nodejs18.x",
+    "nodejs16.x",
     "nodejs14.x",
     "nodejs12.x",
     "nodejs10.x",
@@ -19,6 +23,11 @@ SUPPORTED_RUNTIMES = [
     "python3.6",
     "python3.7",
     "python3.8",
+    "python3.9",
+    "python3.10",
+    "python3.11",
+    "python3.12",
+    "python3.13",
 ]
 
 INVALID_LAYER_TEXT = "Invalid existing layer %s"
@@ -33,21 +42,27 @@ OPTION_LAYER_NAME = "layer-name"
 OPTION_ACCOUNT_NUMBER = "account-number"
 
 ALL_AWS_REGIONS = [
+    "af-south-1",
+    "ap-east-1",
+    "ap-northeast-1",
+    "ap-northeast-2",
+    "ap-northeast-3",
+    "ap-south-1",
+    "ap-southeast-1",
+    "ap-southeast-2",
+    "ca-central-1",
+    "eu-central-1",
+    "eu-north-1",
+    "eu-south-1",
+    "eu-west-1",
+    "eu-west-2",
+    "eu-west-3",
+    "me-south-1",
+    "sa-east-1",
     "us-east-1",
     "us-east-2",
     "us-west-1",
     "us-west-2",
-    "ap-south-1",
-    "ap-southeast-1",
-    "ap-southeast-2",
-    "ap-northeast-1",
-    "ap-northeast-2",
-    "ca-central-1",
-    "eu-central-1",
-    "eu-west-1",
-    "eu-west-2",
-    "eu-west-3",
-    "sa-east-1",
 ]
 
 
@@ -104,7 +119,7 @@ def get_option_value(function, option):
     # special lookup for the version since it depends on the region
     if option == OPTION_VERSION:
         region_release_list = cache_value.get("regions", [])
-        matched_regions = filter(lambda x: x["region"] == region, region_release_list)
+        matched_regions = list(filter(lambda x: x["region"] == region, region_release_list))
         # see if there is the specific region in our list
         if matched_regions:
             version = matched_regions[0]["version"]
@@ -136,17 +151,12 @@ def _get_arn_from_layer(layer):
 
 def get_function_layer_arns(function):
     layers = function.get("Layers", [])
-    return map(_get_arn_from_layer, layers)
+    return [_get_arn_from_layer(layer) for layer in layers]
 
 
 def get_latest_layer_for_function(function):
     region = parse_arn(function["FunctionArn"])["region"]
-    return "arn:aws:lambda:{}:{}:layer:{}:{}".format(
-        region,
-        get_option_value(function, OPTION_ACCOUNT_NUMBER),
-        get_option_value(function, OPTION_LAYER_NAME),
-        get_option_value(function, OPTION_VERSION),
-    )
+    return f"arn:aws:lambda:{region}:{get_option_value(function, OPTION_ACCOUNT_NUMBER)}:layer:{get_option_value(function, OPTION_LAYER_NAME)}:{get_option_value(function, OPTION_VERSION)}"
 
 
 def get_latest_layer_version(function):
@@ -176,22 +186,68 @@ def get_supported_functions(lambda_client):
     for page in response_iterator:
         functions += page["Functions"]
 
-    return filter(
-        lambda x: x.get("Runtime") in SUPPORTED_RUNTIMES,
-        functions,
+    return list(
+        filter(
+            lambda x: x.get("Runtime") in SUPPORTED_RUNTIMES,
+            functions,
+        )
     )
 
 
 def get_dsn_for_project(organization_id, project_id):
-    try:
-        project = Project.objects.get(organization_id=organization_id, id=project_id)
-    except Project.DoesNotExist:
-        raise IntegrationError("No valid project")
-
-    enabled_dsn = ProjectKey.get_default(project=project)
+    enabled_dsn = project_key_service.get_project_key(
+        organization_id=organization_id, project_id=project_id, role=ProjectKeyRole.store
+    )
     if not enabled_dsn:
         raise IntegrationError("Project does not have DSN enabled")
-    return enabled_dsn.get_dsn(public=True)
+    return enabled_dsn.dsn_public
+
+
+def get_node_options_for_layer(layer_name: str, layer_version: int | None) -> str:
+    """
+    Depending on the SDK major our Lambda Layer represents, a different SDK
+    package has to be used when setting `NODE_OPTIONS`.
+    This helper generates the correct options for all the layers we support.
+    """
+    # Lambda layers for v7 of our AWS SDK use the older `@sentry/serverless` SDK
+    #
+    # These are specifically
+    # - `SentryNodeServerlessSDKv7`
+    # - `SentryNodeServerlessSDK:235` and lower
+    if layer_name == "SentryNodeServerlessSDKv7" or (
+        layer_name == "SentryNodeServerlessSDK"
+        and layer_version is not None
+        and layer_version <= 235
+    ):
+        return "-r @sentry/serverless/dist/awslambda-auto"
+
+    # Lambda layers for v8 and above of our AWS SDK use
+    # the newer `@sentry/aws-serverless` SDK
+    #
+    # These are specifically
+    # - `SentryNodeServerlessSDK:236` and above
+    # - `SentryNodeServerlessSDKv8`
+    # - and any other layer with a version suffix above, e.g.
+    #   `SentryNodeServerlessSDKv9`
+    if (
+        layer_name == "SentryNodeServerlessSDK"
+        or layer_name == "SentryNodeServerlessSDKv8"
+        or layer_name == "SentryNodeServerlessSDKv9"
+        or (
+            layer_name == "SentryNodeServerlessSDKv10"
+            and layer_version is not None
+            and layer_version <= 13
+        )
+    ):
+        return "-r @sentry/aws-serverless/awslambda-auto"
+
+    # Lambda layers for v10.6.0 and above can use `--import` for auto-instrumentation
+    #
+    # These are specifically
+    # - `SentryNodeServerlessSDKv10:14` and above
+    # - and any other layer with a version suffix above, e.g.
+    #   `SentryNodeServerlessSDKv11`
+    return "--import @sentry/aws-serverless/awslambda-auto"
 
 
 def enable_single_lambda(lambda_client, function, sentry_project_dsn, retries_left=3):
@@ -216,9 +272,21 @@ def enable_single_lambda(lambda_client, function, sentry_project_dsn, retries_le
 
     if runtime.startswith("nodejs"):
         # note the env variables would be different for non-Node runtimes
+        layer_name = get_option_value(function, OPTION_LAYER_NAME)
+        version = get_option_value(function, OPTION_VERSION)
+        try:
+            parsed_version = int(version)
+        except Exception:
+            sentry_sdk.capture_message("Invariant: Unable to parse AWS lambda version")
+            parsed_version = None
+
         env_variables.update(
-            {"NODE_OPTIONS": "-r @sentry/serverless/dist/awslambda-auto", **sentry_env_variables}
+            {
+                "NODE_OPTIONS": get_node_options_for_layer(layer_name, parsed_version),
+                **sentry_env_variables,
+            }
         )
+
     elif runtime.startswith("python"):
         # Check if we are trying to re-enable an already enabled python, and if
         # are we should not override the env variable "SENTRY_INITIAL_HANDLER"
@@ -262,7 +330,7 @@ def disable_single_lambda(lambda_client, function, layer_arn):
     updated_handler = None
 
     if runtime.startswith("python"):
-        updated_handler = env_variables["SENTRY_INITIAL_HANDLER"]
+        updated_handler = env_variables.get("SENTRY_INITIAL_HANDLER")
 
     for env_name in [
         "SENTRY_INITIAL_HANDLER",

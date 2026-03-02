@@ -1,28 +1,40 @@
+from __future__ import annotations
+
+import contextlib
+from collections.abc import Generator
 from threading import local
 
-from sentry.utils import redis
-from sentry.utils.locking.backends.redis import RedisLockBackend
-from sentry.utils.locking.manager import LockManager
+from django.http.request import HttpRequest
 
 
 class State(local):
-    request = None
-    data = {}
+    def __init__(self) -> None:
+        self.request_stack: list[HttpRequest] = []
+
+    @property
+    def request(self) -> HttpRequest | None:
+        if self.request_stack:
+            return self.request_stack[-1]
+        else:
+            return None
+
+    @contextlib.contextmanager
+    def active_request(self, request: HttpRequest) -> Generator[None]:
+        self.request_stack.append(request)
+        try:
+            yield
+        finally:
+            self.request_stack.pop()
 
 
 env = State()
 
-
-# COMPAT
+# These are backwards incompatible imports that should no longer be used.
+# They will be removed to reduce the size of the import graph
 from sentry import search, tsdb  # NOQA
-from sentry.utils.sdk import RavenShim
-
-from .buffer import backend as buffer  # NOQA
-from .digests import backend as digests  # NOQA
-from .nodestore import backend as nodestore  # NOQA
-from .quotas import backend as quotas  # NOQA
-from .ratelimits import backend as ratelimiter  # NOQA
-
-raven = client = RavenShim()  # NOQA
-
-locks = LockManager(RedisLockBackend(redis.clusters.get("default")))
+from sentry.buffer import backend as buffer  # NOQA
+from sentry.digests import backend as digests  # NOQA
+from sentry.locks import locks  # NOQA
+from sentry.quotas import backend as quotas  # NOQA
+from sentry.ratelimits import backend as ratelimiter  # NOQA
+from sentry.services.nodestore import backend as nodestore  # NOQA

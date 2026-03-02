@@ -1,12 +1,16 @@
+from django.http import HttpRequest, HttpResponse
 from django.views.generic import View
 
-from sentry.models import Organization, OrganizationMember
+from sentry.models.organization import Organization
+from sentry.models.organizationmember import OrganizationMember
+from sentry.web.frontend.base import internal_region_silo_view
 
 from .mail import MailPreview
 
 
+@internal_region_silo_view
 class DebugSetup2faEmailView(View):
-    def get(self, request):
+    def get(self, request: HttpRequest) -> HttpResponse:
         org = Organization(id=1, slug="organization", name="sentry corp")
         member = OrganizationMember(id=1, organization=org, email="test@gmail.com")
         context = {"url": member.get_invite_link(), "organization": org}

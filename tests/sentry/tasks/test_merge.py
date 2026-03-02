@@ -1,31 +1,40 @@
-from sentry import eventstore, eventstream
-from sentry.models import Group, GroupEnvironment, GroupMeta, GroupRedirect, UserReport
-from sentry.similarity import _make_index_backend
+from typing import Any
+from unittest.mock import patch
+
+from sentry import buffer, eventstream
+from sentry.models.group import Group
+from sentry.models.groupenvironment import GroupEnvironment
+from sentry.models.groupmeta import GroupMeta
+from sentry.models.groupredirect import GroupRedirect
+from sentry.models.userreport import UserReport
+from sentry.services import eventstore
+from sentry.similarity import _make_index_backend, features
 from sentry.tasks.merge import merge_groups
-from sentry.testutils import TestCase
-from sentry.testutils.helpers.datetime import before_now, iso_format
+from sentry.tasks.post_process import fetch_buffered_group_stats
+from sentry.testutils.cases import SnubaTestCase, TestCase
+from sentry.testutils.helpers.datetime import before_now
+from sentry.testutils.helpers.redis import mock_redis_buffer
 from sentry.utils import redis
-from sentry.utils.compat.mock import patch
 
 # Use the default redis client as a cluster client in the similarity index
 index = _make_index_backend(redis.clusters.get("default").get_local_client(0))
 
 
-@patch("sentry.similarity.features.index", new=index)
-class MergeGroupTest(TestCase):
-    @patch("sentry.tasks.merge.eventstream")
-    def test_merge_calls_eventstream(self, mock_eventstream):
+@patch.object(features, "index", new=index)
+class MergeGroupTest(TestCase, SnubaTestCase):
+    @patch("sentry.eventstream.backend")
+    def test_merge_calls_eventstream(self, mock_eventstream) -> None:
         group1 = self.create_group(self.project)
         group2 = self.create_group(self.project)
 
-        eventstream_state = object()
+        eventstream_state: dict[str, Any] = {"key": "value"}
 
         with self.tasks():
             merge_groups([group1.id], group2.id, eventstream_state=eventstream_state)
 
         mock_eventstream.end_merge.assert_called_once_with(eventstream_state)
 
-    def test_merge_group_environments(self):
+    def test_merge_group_environments(self) -> None:
         group1 = self.create_group(self.project)
 
         GroupEnvironment.objects.create(group_id=group1.id, environment_id=1)
@@ -45,12 +54,12 @@ class MergeGroupTest(TestCase):
             .values_list("environment_id", flat=True)
         ) == [1, 2]
 
-    def test_merge_with_event_integrity(self):
+    def test_merge_with_event_integrity(self) -> None:
         project = self.create_project()
         event1 = self.store_event(
             data={
                 "event_id": "a" * 32,
-                "timestamp": iso_format(before_now(seconds=1)),
+                "timestamp": before_now(seconds=1).isoformat(),
                 "fingerprint": ["group-1"],
                 "extra": {"foo": "bar"},
             },
@@ -60,7 +69,7 @@ class MergeGroupTest(TestCase):
         event2 = self.store_event(
             data={
                 "event_id": "b" * 32,
-                "timestamp": iso_format(before_now(seconds=1)),
+                "timestamp": before_now(seconds=1).isoformat(),
                 "fingerprint": ["group-2"],
                 "extra": {"foo": "baz"},
             },
@@ -69,21 +78,23 @@ class MergeGroupTest(TestCase):
         group2 = event2.group
 
         with self.tasks():
-            eventstream_state = eventstream.start_merge(project.id, [group1.id], group2.id)
+            eventstream_state = eventstream.backend.start_merge(project.id, [group1.id], group2.id)
             merge_groups([group1.id], group2.id)
-            eventstream.end_merge(eventstream_state)
+            eventstream.backend.end_merge(eventstream_state)
 
         assert not Group.objects.filter(id=group1.id).exists()
 
-        event1 = eventstore.get_event_by_id(project.id, event1.event_id)
+        event1 = eventstore.backend.get_event_by_id(project.id, event1.event_id)
+        assert event1 is not None
         assert event1.group_id == group2.id
         assert event1.data["extra"]["foo"] == "bar"
 
-        event2 = eventstore.get_event_by_id(project.id, event2.event_id)
+        event2 = eventstore.backend.get_event_by_id(project.id, event2.event_id)
+        assert event2 is not None
         assert event2.group_id == group2.id
         assert event2.data["extra"]["foo"] == "baz"
 
-    def test_merge_creates_redirect(self):
+    def test_merge_creates_redirect(self) -> None:
         groups = [self.create_group() for _ in range(0, 3)]
 
         with self.tasks():
@@ -103,12 +114,12 @@ class MergeGroupTest(TestCase):
         assert not Group.objects.filter(id=groups[1].id).exists()
         assert GroupRedirect.objects.filter(group_id=groups[2].id).count() == 2
 
-    def test_merge_updates_tag_values_seen(self):
+    def test_merge_updates_tag_values_seen(self) -> None:
         project = self.create_project()
         event1 = self.store_event(
             data={
                 "event_id": "a" * 32,
-                "timestamp": iso_format(before_now(seconds=1)),
+                "timestamp": before_now(seconds=1).isoformat(),
                 "fingerprint": ["group-1"],
                 "tags": {"foo": "bar"},
                 "environment": self.environment.name,
@@ -118,7 +129,7 @@ class MergeGroupTest(TestCase):
         event2 = self.store_event(
             data={
                 "event_id": "b" * 32,
-                "timestamp": iso_format(before_now(seconds=1)),
+                "timestamp": before_now(seconds=1).isoformat(),
                 "fingerprint": ["group-2"],
                 "tags": {"foo": "bar"},
                 "environment": self.environment.name,
@@ -133,7 +144,7 @@ class MergeGroupTest(TestCase):
 
         assert not Group.objects.filter(id=other.id).exists()
 
-    def test_merge_with_group_meta(self):
+    def test_merge_with_group_meta(self) -> None:
         project1 = self.create_project()
         event1 = self.store_event(data={}, project_id=project1.id)
         group1 = event1.group
@@ -168,7 +179,7 @@ class MergeGroupTest(TestCase):
         assert GroupMeta.objects.get_value(group2, "github:tid") == "134"
         assert GroupMeta.objects.get_value(group2, "other:tid") == "abc"
 
-    def test_user_report_merge(self):
+    def test_user_report_merge(self) -> None:
         project1 = self.create_project()
         event1 = self.store_event(data={}, project_id=project1.id)
         group1 = event1.group
@@ -185,3 +196,28 @@ class MergeGroupTest(TestCase):
         assert not Group.objects.filter(id=group1.id).exists()
 
         assert UserReport.objects.get(id=ur.id).group_id == group2.id
+
+    @mock_redis_buffer()
+    def test_merge_includes_pending_buffer_increments(self) -> None:
+        project = self.create_project()
+        old_group = self.create_group(project)
+        new_group = self.create_group(project)
+
+        old_group.update(times_seen=100)
+        new_group.update(times_seen=50)
+
+        buffer.backend.incr(Group, {"times_seen": 10}, {"id": old_group.id})
+        buffer.backend.incr(Group, {"times_seen": 5}, {"id": old_group.id})
+
+        buffer.backend.incr(Group, {"times_seen": 3}, {"id": new_group.id})
+
+        with self.tasks():
+            merge_groups([old_group.id], new_group.id)
+
+        assert Group.objects.filter(id=old_group.id).exists() is False
+
+        new_group.refresh_from_db()
+        assert new_group.times_seen == 165  # 50 + 100 + 15
+        fetch_buffered_group_stats(new_group)
+        assert new_group.times_seen_pending == 3
+        assert new_group.times_seen_with_pending == 168

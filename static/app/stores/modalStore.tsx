@@ -1,31 +1,36 @@
-import Reflux from 'reflux';
+import type {FocusTrap} from 'focus-trap';
+import {createStore} from 'reflux';
 
-import {ModalOptions, ModalRenderProps} from 'app/actionCreators/modal';
-import ModalActions from 'app/actions/modalActions';
+import type {ModalOptions, ModalRenderProps} from 'sentry/actionCreators/modal';
+
+import type {StrictStoreDefinition} from './types';
 
 type Renderer = (renderProps: ModalRenderProps) => React.ReactNode;
 
-type ModalStoreState = {
-  renderer: Renderer | null;
+type State = {
   options: ModalOptions;
+  renderer: Renderer | null;
+  focusTrap?: FocusTrap;
 };
 
-type ModalStoreInterface = {
-  init: () => void;
-  get: () => ModalStoreState;
-  reset: () => void;
-  onCloseModal: () => void;
-  onOpenModal: (renderer: Renderer, options: ModalOptions) => void;
-};
+interface ModalStoreDefinition extends StrictStoreDefinition<State> {
+  closeModal(): void;
+  init(): void;
+  openModal(renderer: Renderer, options: ModalOptions): void;
+  reset(): void;
+  setFocusTrap(focusTrap: FocusTrap): void;
+}
 
-const storeConfig: Reflux.StoreDefinition & ModalStoreInterface = {
+const storeConfig: ModalStoreDefinition = {
+  state: {renderer: null, options: {}},
   init() {
+    // XXX: Do not use `this.listenTo` in this store. We avoid usage of reflux
+    // listeners due to their leaky nature in tests.
+
     this.reset();
-    this.listenTo(ModalActions.closeModal, this.onCloseModal);
-    this.listenTo(ModalActions.openModal, this.onOpenModal);
   },
 
-  get() {
+  getState() {
     return this.state;
   },
 
@@ -33,20 +38,27 @@ const storeConfig: Reflux.StoreDefinition & ModalStoreInterface = {
     this.state = {
       renderer: null,
       options: {},
-    } as ModalStoreState;
+      focusTrap: this.state.focusTrap,
+    };
   },
 
-  onCloseModal() {
+  closeModal() {
     this.reset();
     this.trigger(this.state);
   },
 
-  onOpenModal(renderer: Renderer, options: ModalOptions) {
-    this.state = {renderer, options};
+  openModal(renderer: Renderer, options: ModalOptions) {
+    this.state = {renderer, options, focusTrap: this.state.focusTrap};
     this.trigger(this.state);
+  },
+
+  setFocusTrap(focusTrap: FocusTrap) {
+    this.state = {
+      ...this.state,
+      focusTrap,
+    };
   },
 };
 
-const ModalStore = Reflux.createStore(storeConfig) as Reflux.Store & ModalStoreInterface;
-
+const ModalStore = createStore(storeConfig);
 export default ModalStore;

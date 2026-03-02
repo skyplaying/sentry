@@ -1,4 +1,5 @@
 from enum import Enum
+from typing import TypedDict
 
 
 class ChartType(Enum):
@@ -14,4 +15,17 @@ class ChartType(Enum):
     SLACK_DISCOVER_TOTAL_PERIOD = "slack:discover.totalPeriod"
     SLACK_DISCOVER_TOTAL_DAILY = "slack:discover.totalDaily"
     SLACK_DISCOVER_TOP5_PERIOD = "slack:discover.top5Period"
+    SLACK_DISCOVER_TOP5_PERIOD_LINE = "slack:discover.top5PeriodLine"
     SLACK_DISCOVER_TOP5_DAILY = "slack:discover.top5Daily"
+    SLACK_DISCOVER_PREVIOUS_PERIOD = "slack:discover.previousPeriod"
+    SLACK_METRIC_ALERT_EVENTS = "slack:metricAlert.events"
+    SLACK_METRIC_ALERT_SESSIONS = "slack:metricAlert.sessions"
+    SLACK_PERFORMANCE_ENDPOINT_REGRESSION = "slack:performance.endpointRegression"
+    SLACK_PERFORMANCE_FUNCTION_REGRESSION = "slack:performance.functionRegression"
+    SLACK_METRIC_DETECTOR_EVENTS = "slack:metricDetector.events"
+    SLACK_METRIC_DETECTOR_SESSIONS = "slack:metricDetector.sessions"
+
+
+class ChartSize(TypedDict):
+    width: int
+    height: int

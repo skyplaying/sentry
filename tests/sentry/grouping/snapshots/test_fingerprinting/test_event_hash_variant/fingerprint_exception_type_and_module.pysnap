@@ -1,7 +1,5 @@
 ---
-created: '2020-12-08T17:25:05.043711Z'
-creator: sentry
-source: tests/sentry/grouping/test_fingerprinting.py
+source: tests/sentry/grouping/test_fingerprinting.py::test_event_hash_variant
 ---
 config:
   rules:
@@ -13,6 +11,7 @@ config:
       - DatabaseUnavailable
     - - module
       - io.sentry.example.*
+    text: type:"DatabaseUnavailable" module:"io.sentry.example.*" -> "database-unavailable"
   version: 1
 fingerprint:
 - database-unavailable
@@ -21,20 +20,27 @@ variants:
   app:
     component:
       contributes: false
-      contributes_to_similarity: true
-      hint: custom fingerprint takes precedence
+      hint: ignored because custom server fingerprint takes precedence
+    contributes: false
+    hint: ignored because custom server fingerprint takes precedence
+    key: app_exception_message
     type: component
-  custom-fingerprint:
+  custom_server_fingerprint:
     client_values:
     - my-route
     - '{{ default }}'
+    contributes: true
+    hint: null
+    key: custom_server_fingerprint
     matched_rule: type:"DatabaseUnavailable" module:"io.sentry.example.*" -> "database-unavailable"
-    type: custom-fingerprint
+    type: custom_fingerprint
     values:
     - database-unavailable
   system:
     component:
       contributes: false
-      contributes_to_similarity: true
-      hint: custom fingerprint takes precedence
+      hint: ignored because custom server fingerprint takes precedence
+    contributes: false
+    hint: ignored because custom server fingerprint takes precedence
+    key: system_exception_message
     type: component

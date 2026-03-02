@@ -1,39 +1,42 @@
-import * as React from 'react';
-import {withRouter, WithRouterProps} from 'react-router';
+import {Component} from 'react';
+import type {Theme} from '@emotion/react';
 import {withTheme} from '@emotion/react';
-import {EChartOption} from 'echarts/lib/echarts';
-import {Query} from 'history';
+import type {Query} from 'history';
 import isEqual from 'lodash/isEqual';
 import memoize from 'lodash/memoize';
 import partition from 'lodash/partition';
 
-import {addErrorMessage} from 'app/actionCreators/indicator';
-import {Client, ResponseMeta} from 'app/api';
-import MarkLine from 'app/components/charts/components/markLine';
-import {t} from 'app/locale';
-import {DateString, Organization} from 'app/types';
-import {Series} from 'app/types/echarts';
-import {escape} from 'app/utils';
-import {getFormattedDate, getUtcDateString} from 'app/utils/dates';
-import {formatVersion} from 'app/utils/formatters';
-import parseLinkHeader from 'app/utils/parseLinkHeader';
-import {Theme} from 'app/utils/theme';
-import withApi from 'app/utils/withApi';
-import withOrganization from 'app/utils/withOrganization';
+import {addErrorMessage} from 'sentry/actionCreators/indicator';
+import type {Client, ResponseMeta} from 'sentry/api';
+import MarkLine from 'sentry/components/charts/components/markLine';
+import {t} from 'sentry/locale';
+import type {DateString} from 'sentry/types/core';
+import type {Series} from 'sentry/types/echarts';
+import type {WithRouterProps} from 'sentry/types/legacyReactRouter';
+import type {Organization} from 'sentry/types/organization';
+import {escape} from 'sentry/utils';
+import {getFormat, getFormattedDate, getUtcDateString} from 'sentry/utils/dates';
+import parseLinkHeader from 'sentry/utils/parseLinkHeader';
+import {formatVersion} from 'sentry/utils/versions/formatVersion';
+import withApi from 'sentry/utils/withApi';
+import withOrganization from 'sentry/utils/withOrganization';
+// eslint-disable-next-line no-restricted-imports
+import withSentryRouter from 'sentry/utils/withSentryRouter';
+import {makeReleasesPathname} from 'sentry/views/releases/utils/pathnames';
 
 type ReleaseMetaBasic = {
-  version: string;
   date: string;
+  version: string;
 };
 
 type ReleaseConditions = {
-  start: DateString;
   end: DateString;
-  project: Readonly<number[]>;
-  environment: Readonly<string[]>;
-  statsPeriod?: string;
+  environment: readonly string[];
+  project: readonly number[];
+  start: DateString;
   cursor?: string;
   query?: string;
+  statsPeriod?: string | null;
 };
 
 // This is not an exported action/function because releases list uses AsyncComponent
@@ -43,9 +46,9 @@ function getOrganizationReleases(
   organization: Organization,
   conditions: ReleaseConditions
 ) {
-  const query = {};
+  const query: Record<string, string> = {};
   Object.keys(conditions).forEach(key => {
-    let value = conditions[key];
+    let value = (conditions as any)[key];
     if (value && (key === 'start' || key === 'end')) {
       value = getUtcDateString(value);
     }
@@ -61,32 +64,44 @@ function getOrganizationReleases(
   }) as Promise<[ReleaseMetaBasic[], any, ResponseMeta]>;
 }
 
-type Props = WithRouterProps & {
+const getOrganizationReleasesMemoized = memoize(
+  getOrganizationReleases,
+  (_, __, conditions) =>
+    Object.values(conditions)
+      .map(val => JSON.stringify(val))
+      .join('-')
+);
+
+export interface ReleaseSeriesProps extends WithRouterProps {
   api: Client;
-  theme: Theme;
-  organization: Organization;
   children: (s: State) => React.ReactNode;
-  projects: Readonly<number[]>;
-  environments: Readonly<string[]>;
-  start: DateString;
   end: DateString;
-  period?: string;
-  utc?: boolean | null;
-  releases?: ReleaseMetaBasic[] | null;
-  tooltip?: EChartOption.Tooltip;
-  memoized?: boolean;
-  preserveQueryParams?: boolean;
+  environments: readonly string[];
+  organization: Organization;
+  projects: readonly number[];
+  start: DateString;
+  theme: Theme;
   emphasizeReleases?: string[];
+  enabled?: boolean;
+  memoized?: boolean;
+  period?: string | null;
+  preserveQueryParams?: boolean;
   query?: string;
   queryExtra?: Query;
-};
+  releases?: ReleaseMetaBasic[] | null;
+  tooltip?: Exclude<Parameters<typeof MarkLine>[0], undefined>['tooltip'];
+  utc?: boolean | null;
+}
 
 type State = {
-  releases: ReleaseMetaBasic[] | null;
   releaseSeries: Series[];
+  releases: ReleaseMetaBasic[] | null;
 };
 
-class ReleaseSeries extends React.Component<Props, State> {
+/**
+ * @deprecated use useReleaseBubbles instead
+ */
+class ReleaseSeries extends Component<ReleaseSeriesProps, State> {
   state: State = {
     releases: null,
     releaseSeries: [],
@@ -94,7 +109,7 @@ class ReleaseSeries extends React.Component<Props, State> {
 
   componentDidMount() {
     this._isMounted = true;
-    const {releases} = this.props;
+    const {releases, enabled = true} = this.props;
 
     if (releases) {
       // No need to fetch releases if passed in from props
@@ -102,17 +117,23 @@ class ReleaseSeries extends React.Component<Props, State> {
       return;
     }
 
-    this.fetchData();
+    if (enabled) {
+      this.fetchData();
+    }
   }
 
-  componentDidUpdate(prevProps) {
+  componentDidUpdate(prevProps: any) {
+    const {enabled = true} = this.props;
+
     if (
-      !isEqual(prevProps.projects, this.props.projects) ||
-      !isEqual(prevProps.environments, this.props.environments) ||
-      !isEqual(prevProps.start, this.props.start) ||
-      !isEqual(prevProps.end, this.props.end) ||
-      !isEqual(prevProps.period, this.props.period) ||
-      !isEqual(prevProps.query, this.props.query)
+      (!isEqual(prevProps.projects, this.props.projects) ||
+        !isEqual(prevProps.environments, this.props.environments) ||
+        !isEqual(prevProps.start, this.props.start) ||
+        !isEqual(prevProps.end, this.props.end) ||
+        !isEqual(prevProps.period, this.props.period) ||
+        !isEqual(prevProps.query, this.props.query) ||
+        (!prevProps.enabled && this.props.enabled)) &&
+      enabled
     ) {
       this.fetchData();
     } else if (!isEqual(prevProps.emphasizeReleases, this.props.emphasizeReleases)) {
@@ -125,16 +146,7 @@ class ReleaseSeries extends React.Component<Props, State> {
     this.props.api.clear();
   }
 
-  _isMounted: boolean = false;
-
-  getOrganizationReleasesMemoized = memoize(
-    (api, conditions, organization) =>
-      getOrganizationReleases(api, conditions, organization),
-    (_, __, conditions) =>
-      Object.values(conditions)
-        .map(val => JSON.stringify(val))
-        .join('-')
-  );
+  _isMounted = false;
 
   async fetchData() {
     const {
@@ -161,7 +173,7 @@ class ReleaseSeries extends React.Component<Props, State> {
     while (hasMore) {
       try {
         const getReleases = memoized
-          ? this.getOrganizationReleasesMemoized
+          ? getOrganizationReleasesMemoized
           : getOrganizationReleases;
         const [newReleases, , resp] = await getReleases(api, organization, conditions);
         releases.push(...newReleases);
@@ -173,7 +185,7 @@ class ReleaseSeries extends React.Component<Props, State> {
         if (pageLinks) {
           const paginationObject = parseLinkHeader(pageLinks);
           hasMore = paginationObject?.next?.results ?? false;
-          conditions.cursor = paginationObject.next.cursor;
+          conditions.cursor = paginationObject.next!.cursor;
         } else {
           hasMore = false;
         }
@@ -184,7 +196,7 @@ class ReleaseSeries extends React.Component<Props, State> {
     }
   }
 
-  setReleasesWithSeries(releases) {
+  setReleasesWithSeries(releases: any) {
     const {emphasizeReleases = []} = this.props;
     const releaseSeries: Series[] = [];
 
@@ -213,7 +225,7 @@ class ReleaseSeries extends React.Component<Props, State> {
     });
   }
 
-  getReleaseSeries = (releases, lineStyle = {}) => {
+  getReleaseSeries = (releases: any, lineStyle = {}) => {
     const {
       organization,
       router,
@@ -228,9 +240,7 @@ class ReleaseSeries extends React.Component<Props, State> {
     } = this.props;
 
     const query = {...queryExtra};
-    if (organization.features.includes('global-views')) {
-      query.project = router.location.query.project;
-    }
+    query.project = router.location.query.project;
     if (preserveQueryParams) {
       query.environment = [...environments];
       query.start = start ? getUtcDateString(start) : undefined;
@@ -241,7 +251,7 @@ class ReleaseSeries extends React.Component<Props, State> {
     const markLine = MarkLine({
       animation: false,
       lineStyle: {
-        color: theme.purple300,
+        color: theme.tokens.dataviz.semantic.release,
         opacity: 0.3,
         type: 'solid',
         ...lineStyle,
@@ -249,36 +259,42 @@ class ReleaseSeries extends React.Component<Props, State> {
       label: {
         show: false,
       },
-      data: releases.map(release => ({
+      data: releases.map((release: any) => ({
         xAxis: +new Date(release.date),
         name: formatVersion(release.version, true),
         value: formatVersion(release.version, true),
+
         onClick: () => {
           router.push({
-            pathname: `/organizations/${organization.slug}/releases/${release.version}/`,
+            pathname: makeReleasesPathname({
+              organization,
+              path: `/${encodeURIComponent(release.version)}/`,
+            }),
             query,
           });
         },
+
         label: {
           formatter: () => formatVersion(release.version, true),
         },
       })),
-    });
-
-    // TODO(tonyx): This conflicts with the types declaration of `MarkLine`
-    // if we add it in the constructor. So we opt to add it here so typescript
-    // doesn't complain.
-    (markLine as any).tooltip =
-      tooltip ||
-      ({
+      tooltip: tooltip || {
         trigger: 'item',
-        formatter: ({data}: EChartOption.Tooltip.Format) => {
+        formatter: ({data}: any) => {
+          // Should only happen when navigating pages
+          if (!data) {
+            return '';
+          }
           // XXX using this.props here as this function does not get re-run
           // unless projects are changed. Using a closure variable would result
           // in stale values.
-          const time = getFormattedDate(data.value, 'MMM D, YYYY LT', {
-            local: !this.props.utc,
-          });
+          const time = getFormattedDate(
+            data.value,
+            getFormat({timeZone: true, year: true}),
+            {
+              local: !this.props.utc,
+            }
+          );
           const version = escape(formatVersion(data.name, true));
           return [
             '<div class="tooltip-series">',
@@ -286,31 +302,35 @@ class ReleaseSeries extends React.Component<Props, State> {
               'Release'
             )}</strong></span> ${version}</div>`,
             '</div>',
-            '<div class="tooltip-date">',
+            '<div class="tooltip-footer">',
             time,
-            '</div>',
             '</div>',
             '<div class="tooltip-arrow"></div>',
           ].join('');
         },
-      } as EChartOption.Tooltip);
+      },
+    });
 
     return {
+      id: 'release-lines',
       seriesName: 'Releases',
-      color: theme.purple200,
+      color: theme.tokens.dataviz.semantic.release,
       data: [],
       markLine,
     };
   };
 
   render() {
-    const {children} = this.props;
+    const {children, enabled = true} = this.props;
 
     return children({
-      releases: this.state.releases,
-      releaseSeries: this.state.releaseSeries,
+      releases: enabled ? this.state.releases : [],
+      releaseSeries: enabled ? this.state.releaseSeries : [],
     });
   }
 }
 
-export default withRouter(withOrganization(withApi(withTheme(ReleaseSeries))));
+/**
+ * @deprecated use useReleaseBubbles instead
+ */
+export default withSentryRouter(withOrganization(withApi(withTheme(ReleaseSeries))));

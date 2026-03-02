@@ -1,20 +1,19 @@
-import {t} from 'app/locale';
+import {t} from 'sentry/locale';
+import type {
+  AttributeResults,
+  Rule,
+} from 'sentry/views/settings/components/dataScrubbing/types';
 
-import {ProjectId, Rule} from '../types';
+import ModalManager, {type ModalManagerProps} from './modalManager';
 
-import ModalManager from './modalManager';
-
-type ModalManagerProps<T extends ProjectId> = ModalManager<T>['props'];
-type Props<T extends ProjectId> = Omit<
-  ModalManagerProps<T>,
-  'title' | 'initialValues' | 'onGetNewRules'
-> & {
+type Props = Omit<ModalManagerProps, 'title' | 'initialValues' | 'onGetNewRules'> & {
+  attributeResults: AttributeResults;
   rule: Rule;
 };
 
-const Edit = <T extends ProjectId>({savedRules, rule, ...props}: Props<T>) => {
+function Edit({savedRules, rule, ...props}: Props) {
   const handleGetNewRules = (
-    values: Parameters<ModalManagerProps<T>['onGetNewRules']>[0]
+    values: Parameters<ModalManagerProps['onGetNewRules']>[0]
   ) => {
     const updatedRule = {...values, id: rule.id};
 
@@ -23,7 +22,7 @@ const Edit = <T extends ProjectId>({savedRules, rule, ...props}: Props<T>) => {
         return updatedRule;
       }
       return savedRule;
-    }) as Array<Rule>;
+    }) as Rule[];
 
     return newRules;
   };
@@ -37,6 +36,6 @@ const Edit = <T extends ProjectId>({savedRules, rule, ...props}: Props<T>) => {
       onGetNewRules={handleGetNewRules}
     />
   );
-};
+}
 
 export default Edit;

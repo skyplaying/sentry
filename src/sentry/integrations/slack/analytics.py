@@ -1,54 +1,62 @@
 from sentry import analytics
+from sentry.analytics.events.base_notification_sent import BaseNotificationSent
 
 
-class SlackIntegrationAssign(analytics.Event):  # type: ignore
-    type = "integrations.slack.assign"
-
-    attributes = (analytics.Attribute("actor_id", required=False),)
-
-
-class SlackIntegrationStatus(analytics.Event):  # type: ignore
-    type = "integrations.slack.status"
-
-    attributes = (
-        analytics.Attribute("status"),
-        analytics.Attribute("resolve_type", required=False),
-        analytics.Attribute("actor_id", required=False),
-    )
+@analytics.eventclass("integrations.slack.assign")
+class SlackIntegrationAssign(analytics.Event):
+    actor_id: int | None = None
 
 
-class SlackIntegrationNotificationSent(analytics.Event):  # type: ignore
-    type = "integrations.slack.notification_sent"
-
-    attributes = (
-        analytics.Attribute("organization_id"),
-        analytics.Attribute("project_id"),
-        analytics.Attribute("category"),
-        analytics.Attribute("actor_id"),
-    )
+@analytics.eventclass("integrations.slack.status")
+class SlackIntegrationStatus(analytics.Event):
+    organization_id: int
+    status: str
+    resolve_type: str | None = None
+    user_id: int | None = None
 
 
-class IntegrationSlackChartUnfurl(analytics.Event):  # type: ignore
-    type = "integrations.slack.chart_unfurl"
-
-    attributes = (
-        analytics.Attribute("user_id", required=False),
-        analytics.Attribute("organization_id"),
-        analytics.Attribute("unfurls_count", type=int),
-    )
+@analytics.eventclass("integrations.slack.notification_sent")
+class SlackIntegrationNotificationSent(BaseNotificationSent):
+    pass
 
 
-class IntegrationSlackLinkIdentity(analytics.Event):  # type: ignore
-    type = "integrations.slack.chart_unfurl_action"
+@analytics.eventclass("integrations.slack.identity_linked")
+class SlackIntegrationIdentityLinked(analytics.Event):
+    provider: str
+    actor_id: int
+    actor_type: str
 
-    attributes = (
-        analytics.Attribute("organization_id"),
-        analytics.Attribute("action"),
-    )
+
+@analytics.eventclass("integrations.slack.chart_unfurl")
+class SlackIntegrationChartUnfurl(analytics.Event):
+    user_id: int | None = None
+    organization_id: int
+    unfurls_count: int
+
+
+@analytics.eventclass("integrations.slack.chart_unfurl_action")
+class SlackIntegrationChartUnfurlAction(analytics.Event):
+    organization_id: int
+    action: str
+
+
+@analytics.eventclass("integrations.slack.approve_member_invitation")
+class SlackIntegrationApproveMemberInvitation(analytics.Event):
+    organization_id: int
+    actor_id: int
+    invitation_type: str
+    invited_member_id: int
+
+
+@analytics.eventclass("integrations.slack.reject_member_invitation")
+class SlackIntegrationRejectMemberInvitation(SlackIntegrationApproveMemberInvitation):
+    pass
 
 
 analytics.register(SlackIntegrationAssign)
-analytics.register(SlackIntegrationNotificationSent)
 analytics.register(SlackIntegrationStatus)
-analytics.register(IntegrationSlackChartUnfurl)
-analytics.register(IntegrationSlackLinkIdentity)
+analytics.register(SlackIntegrationIdentityLinked)
+analytics.register(SlackIntegrationChartUnfurl)
+analytics.register(SlackIntegrationChartUnfurlAction)
+analytics.register(SlackIntegrationApproveMemberInvitation)
+analytics.register(SlackIntegrationRejectMemberInvitation)

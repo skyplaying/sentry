@@ -1,15 +1,14 @@
-import moment from 'moment';
+import moment from 'moment-timezone';
 
-import {parseStatsPeriod} from 'app/components/organizations/globalSelectionHeader/getParams';
-import ConfigStore from 'app/stores/configStore';
-import {DateString} from 'app/types';
+import ConfigStore from 'sentry/stores/configStore';
 
-// TODO(billy): Move to TimeRangeSelector specific utils
+import type {TableDataRow} from './discover/discoverQuery';
+
 export const DEFAULT_DAY_START_TIME = '00:00:00';
 export const DEFAULT_DAY_END_TIME = '23:59:59';
 const DATE_FORMAT_NO_TIMEZONE = 'YYYY/MM/DD HH:mm:ss';
 
-function getParser(local: boolean = false): typeof moment | typeof moment.utc {
+export function getParser(local = false): typeof moment | typeof moment.utc {
   return local ? moment : moment.utc;
 }
 
@@ -34,6 +33,31 @@ export function getUtcDateString(dateObj: moment.MomentInput): string {
   return moment.utc(dateObj).format(moment.HTML5_FMT.DATETIME_LOCAL_SECONDS);
 }
 
+/**
+ * Given a date field from a table row, return a timestamp
+ * given: '2024-04-01T20:15:18+00:00'
+ * returns: 1712002518
+ */
+export function getTimeStampFromTableDateField(
+  date: keyof TableDataRow | undefined
+): number | undefined {
+  if (!date) {
+    return undefined;
+  }
+
+  if (typeof date === 'number') {
+    return date;
+  }
+
+  const timestamp = new Date(date).getTime();
+
+  if (isNaN(timestamp)) {
+    throw new Error('Invalid timestamp: NaN');
+  }
+
+  return timestamp / 1000;
+}
+
 export function getFormattedDate(
   dateObj: moment.MomentInput,
   format: string,
@@ -46,8 +70,7 @@ export function getFormattedDate(
  * Returns user timezone from their account preferences
  */
 export function getUserTimezone(): string {
-  const user = ConfigStore.get('user');
-  return user && user.options && user.options.timezone;
+  return ConfigStore.get('user')?.options?.timezone;
 }
 
 /**
@@ -60,14 +83,18 @@ export function getUtcToLocalDateObject(date: moment.MomentInput): Date {
 /**
  * Sets time (hours + minutes) of the current date object
  *
- * @param {String} timeStr Time in 24hr format (HH:mm)
+ * @param timeStr Time in 24hr format (HH:mm)
  */
 export function setDateToTime(
   dateObj: string | Date,
   timeStr: string,
   {local}: {local?: boolean} = {}
 ): Date {
-  const [hours, minutes, seconds] = timeStr.split(':').map(t => parseInt(t, 10));
+  const [hours, minutes, seconds] = timeStr.split(':').map(t => parseInt(t, 10)) as [
+    number,
+    number,
+    number,
+  ];
 
   const date = new Date(+dateObj);
 
@@ -113,8 +140,10 @@ export function getLocalToSystem(dateObj: moment.MomentInput): Date {
   return new Date(moment(dateObj).format(DATE_FORMAT_NO_TIMEZONE));
 }
 
-// Get the beginning of day (e.g. midnight)
-export function getStartOfDay(date: moment.MomentInput): Date {
+/**
+ * Get the beginning of day (e.g. midnight)
+ */
+function getStartOfDay(date: moment.MomentInput): Date {
   return moment(date)
     .startOf('day')
     .startOf('hour')
@@ -124,8 +153,9 @@ export function getStartOfDay(date: moment.MomentInput): Date {
     .toDate();
 }
 
-// Get tomorrow at midnight so that default endtime
-// is inclusive of today
+/**
+ * Get tomorrow at midnight so that default endtime is inclusive of today
+ */
 export function getEndOfDay(date: moment.MomentInput): Date {
   return moment(date)
     .add(1, 'day')
@@ -144,9 +174,11 @@ export function getPeriodAgo(
   return moment().local().subtract(unit, period);
 }
 
-// Get the start of the day (midnight) for a period ago
-//
-// e.g. 2 weeks ago at midnight
+/**
+ * Get the start of the day (midnight) for a period ago
+ *
+ * e.g. 2 weeks ago at midnight
+ */
 export function getStartOfPeriodAgo(
   period: moment.unitOfTime.DurationConstructor,
   unit: number
@@ -155,74 +187,156 @@ export function getStartOfPeriodAgo(
 }
 
 /**
- * Convert an interval string into a number of seconds.
- * This allows us to create end timestamps from starting ones
- * enabling us to find events in narrow windows.
- *
- * @param {String} interval The interval to convert.
- * @return {Integer}
+ * Does the user prefer a 24 hour clock?
  */
-export function intervalToMilliseconds(interval: string): number {
-  const pattern = /^(\d+)(d|h|m)$/;
-  const matches = pattern.exec(interval);
-  if (!matches) {
-    return 0;
-  }
-  const [, value, unit] = matches;
-  const multipliers = {
-    d: 60 * 60 * 24,
-    h: 60 * 60,
-    m: 60,
-  };
-  return parseInt(value, 10) * multipliers[unit] * 1000;
+export function shouldUse24Hours() {
+  return ConfigStore.get('user')?.options?.clock24Hours;
 }
 
 /**
- * This parses our period shorthand strings (e.g. <int><unit>)
- * and converts it into hours
+ * Get a common date format
  */
-export function parsePeriodToHours(str: string): number {
-  const result = parseStatsPeriod(str);
-
-  if (!result) {
-    return -1;
-  }
-
-  const {period, periodLength} = result;
-
-  const periodNumber = parseInt(period, 10);
-
-  switch (periodLength) {
-    case 's':
-      return periodNumber / (60 * 60);
-    case 'm':
-      return periodNumber / 60;
-    case 'h':
-      return periodNumber;
-    case 'd':
-      return periodNumber * 24;
-    case 'w':
-      return periodNumber * 24 * 7;
-    default:
-      return -1;
-  }
+function getDateFormat({year}: {year?: boolean}) {
+  // "Jan 1, 2022" or "Jan 1"
+  return year ? 'MMM D, YYYY' : 'MMM D';
 }
 
-export function statsPeriodToDays(
-  statsPeriod: string | undefined,
-  start: DateString | undefined,
-  end: DateString | undefined
-) {
-  if (statsPeriod && statsPeriod.endsWith('d')) {
-    return parseInt(statsPeriod.slice(0, -1), 10);
-  } else if (statsPeriod && statsPeriod.endsWith('h')) {
-    return parseInt(statsPeriod.slice(0, -1), 10) / 24;
-  } else if (start && end) {
-    return (new Date(end).getTime() - new Date(start).getTime()) / (24 * 60 * 60 * 1000);
+/**
+ * Get a common time format
+ */
+export function getTimeFormat({
+  clock24Hours,
+  seconds,
+  timeZone,
+  milliseconds,
+}: {
+  clock24Hours?: boolean;
+  milliseconds?: boolean;
+  seconds?: boolean;
+  timeZone?: boolean;
+} = {}) {
+  let format = '';
+
+  if (clock24Hours ?? shouldUse24Hours()) {
+    if (milliseconds) {
+      format = 'HH:mm:ss.SSS';
+    } else {
+      format = seconds ? 'HH:mm:ss' : 'HH:mm';
+    }
+  } else {
+    if (milliseconds) {
+      format = 'h:mm:ss.SSS A';
+    } else {
+      format = seconds ? 'LTS' : 'LT';
+    }
   }
-  return 0;
+
+  if (timeZone) {
+    format += ' z';
+  }
+
+  return format;
 }
 
-export const use24Hours = () => ConfigStore.get('user')?.options?.clock24Hours;
+interface FormatProps {
+  /**
+   * Should show a 24hour clock? If not set the users preference will be used
+   */
+  clock24Hours?: boolean;
+  /**
+   * If true, will only return the date part, e.g. "Jan 1".
+   */
+  dateOnly?: boolean;
+  /**
+   * Whether to show the milliseconds.
+   */
+  milliseconds?: boolean;
+  /**
+   * Whether to show the seconds.
+   */
+  seconds?: boolean;
+  /**
+   * If true, will only return the time part, e.g. "2:50 PM"
+   */
+  timeOnly?: boolean;
+  /**
+   * Whether to show the time zone.
+   */
+  timeZone?: boolean;
+  /**
+   * Whether to show the year. If not specified, the returned date string will
+   * not contain the year _if_ the date is not in the current calendar year.
+   * For example: "Feb 1" (2022), "Jan 1" (2022), "Dec 31, 2021".
+   */
+  year?: boolean;
+}
 
-export const getTimeFormat = () => (use24Hours() ? 'HH:mm' : 'LT');
+export function getFormat({
+  dateOnly,
+  timeOnly,
+  year,
+  seconds,
+  timeZone,
+  clock24Hours,
+  milliseconds,
+}: FormatProps = {}) {
+  if (dateOnly) {
+    return getDateFormat({year});
+  }
+
+  if (timeOnly) {
+    return getTimeFormat({clock24Hours, seconds, timeZone});
+  }
+
+  const dateFormat = getDateFormat({year});
+  const timeFormat = getTimeFormat({
+    clock24Hours,
+    seconds,
+    milliseconds,
+    timeZone,
+  });
+
+  // If the year is shown, then there's already a comma in dateFormat ("Jan 1, 2020"),
+  // so we don't need to add another comma between the date and time
+  return year ? `${dateFormat} ${timeFormat}` : `${dateFormat}, ${timeFormat}`;
+}
+
+export function getInternalDate(date: string | Date, utc?: boolean | null) {
+  if (utc) {
+    return getUtcToSystem(date);
+  }
+  return new Date(
+    moment.tz(moment.utc(date), getUserTimezone()).format('YYYY/MM/DD HH:mm:ss')
+  );
+}
+
+/**
+ * Strips timezone from local date, creates a new moment date object with timezone
+ * returns the moment as a Date object
+ */
+export function getDateWithTimezoneInUtc(date?: Date, utc?: boolean | null) {
+  return moment
+    .tz(
+      moment(date).local().format('YYYY-MM-DD HH:mm:ss'),
+      utc ? 'UTC' : getUserTimezone()
+    )
+    .utc()
+    .toDate();
+}
+
+/**
+ * Converts a string or timestamp in milliseconds to a Date
+ */
+export function getDateFromTimestamp(value: unknown): Date | null {
+  if (typeof value !== 'string' && typeof value !== 'number') {
+    return null;
+  }
+
+  const dateObj = new Date(value);
+
+  if (isNaN(dateObj.getTime())) {
+    return null;
+  }
+
+  return dateObj;
+}

@@ -1,11 +1,11 @@
 from django.urls import reverse
 
 from sentry.plugins.base import plugins
-from sentry.testutils import APITestCase
+from sentry.testutils.cases import APITestCase
 
 
 class OrganizationPluginsTest(APITestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         self.projectA = self.create_project()
         self.projectB = self.create_project(organization=self.projectA.organization)
 
@@ -14,10 +14,10 @@ class OrganizationPluginsTest(APITestCase):
 
         self.login_as(user=self.user)
 
-    def test_exposes_all_plugins_available_no_enabled_state(self):
+    def test_exposes_all_plugins_available_no_enabled_state(self) -> None:
         url = reverse(
             "sentry-api-0-organization-plugins",
-            kwargs={"organization_slug": self.projectA.organization.slug},
+            kwargs={"organization_id_or_slug": self.projectA.organization.slug},
         )
 
         url = f"{url}?plugins=_all"
@@ -34,10 +34,10 @@ class OrganizationPluginsTest(APITestCase):
         assert len(plugins) == 0
         assert len(response.data) > 0
 
-    def test_exposes_plugins_across_all_org_projects(self):
+    def test_exposes_plugins_across_all_org_projects(self) -> None:
         url = reverse(
             "sentry-api-0-organization-plugins",
-            kwargs={"organization_slug": self.projectA.organization.slug},
+            kwargs={"organization_id_or_slug": self.projectA.organization.slug},
         )
 
         url = f"{url}?plugins=slack&plugins=webhooks"
@@ -53,10 +53,10 @@ class OrganizationPluginsTest(APITestCase):
         assert (self.projectA.id, "webhooks") in enabled_plugins
         assert (self.projectB.id, "slack") in enabled_plugins
 
-    def test_exposes_specific_plugins_across_all_org_projects(self):
+    def test_exposes_specific_plugins_across_all_org_projects(self) -> None:
         url = reverse(
             "sentry-api-0-organization-plugins",
-            kwargs={"organization_slug": self.projectA.organization.slug},
+            kwargs={"organization_id_or_slug": self.projectA.organization.slug},
         )
 
         url = f"{url}?plugins=slack"
@@ -71,10 +71,10 @@ class OrganizationPluginsTest(APITestCase):
         assert (self.projectA.id, "webhooks") not in enabled_plugins
         assert (self.projectB.id, "slack") in enabled_plugins
 
-    def test_ignore_plugins_that_dont_exist(self):
+    def test_ignore_plugins_that_dont_exist(self) -> None:
         url = reverse(
             "sentry-api-0-organization-plugins",
-            kwargs={"organization_slug": self.projectA.organization.slug},
+            kwargs={"organization_id_or_slug": self.projectA.organization.slug},
         )
 
         url = f"{url}?plugins=nope&plugins=beep&plugins=slack"

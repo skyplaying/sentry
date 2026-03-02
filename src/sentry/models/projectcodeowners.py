@@ -1,20 +1,32 @@
-import logging
+from __future__ import annotations
 
+import logging
+from collections.abc import Iterable
+
+import sentry_sdk
 from django.db import models
-from django.db.models import Subquery
+from django.db.models.signals import post_delete, post_save, pre_save
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
-from sentry.db.models import DefaultFieldsModel, FlexibleForeignKey, JSONField, sane_repr
-from sentry.ownership.grammar import convert_codeowners_syntax, create_schema_from_issue_owners
+from sentry import analytics
+from sentry.analytics.events.codeowners_max_length_exceeded import CodeOwnersMaxLengthExceeded
+from sentry.backup.scopes import RelocationScope
+from sentry.db.models import FlexibleForeignKey, JSONField, Model, region_silo_model, sane_repr
+from sentry.issues.ownership.grammar import (
+    convert_codeowners_syntax,
+    create_schema_from_issue_owners,
+)
+from sentry.models.organization import Organization
 from sentry.utils.cache import cache
 
 logger = logging.getLogger(__name__)
 READ_CACHE_DURATION = 3600
 
 
-class ProjectCodeOwners(DefaultFieldsModel):
-    __include_in_export__ = False
+@region_silo_model
+class ProjectCodeOwners(Model):
+    __relocation_scope__ = RelocationScope.Excluded
     # no db constraint to prevent locks on the Project table
     project = FlexibleForeignKey("sentry.Project", db_constraint=False)
     # repository_project_path_config ⇒ use this to transform CODEOWNERS paths to stacktrace paths
@@ -22,10 +34,10 @@ class ProjectCodeOwners(DefaultFieldsModel):
         "sentry.RepositoryProjectPathConfig", unique=True, on_delete=models.PROTECT
     )
     # raw ⇒ original CODEOWNERS file.
-    raw = models.TextField(null=True)
+    raw = models.TextField()
     # schema ⇒ transformed into IssueOwner syntax
-    schema = JSONField(null=True)
-    # override date_added from DefaultFieldsModel
+    schema = JSONField()
+    date_updated = models.DateTimeField(default=timezone.now)
     date_added = models.DateTimeField(default=timezone.now)
 
     class Meta:
@@ -35,11 +47,11 @@ class ProjectCodeOwners(DefaultFieldsModel):
     __repr__ = sane_repr("project_id", "id")
 
     @classmethod
-    def get_cache_key(self, project_id):
+    def get_cache_key(self, project_id: int) -> str:
         return f"projectcodeowners_project_id:1:{project_id}"
 
     @classmethod
-    def get_codeowners_cached(self, project_id):
+    def get_codeowners_cached(self, project_id: int) -> ProjectCodeOwners | None:
         """
         Cached read access to sentry_projectcodeowners.
 
@@ -50,93 +62,21 @@ class ProjectCodeOwners(DefaultFieldsModel):
         cache_key = self.get_cache_key(project_id)
         code_owners = cache.get(cache_key)
         if code_owners is None:
-            query = self.objects.filter(project_id=project_id).order_by("-date_added") or False
+            query = self.objects.filter(project_id=project_id).order_by("-date_added") or ()
             code_owners = self.merge_code_owners_list(code_owners_list=query) if query else query
             cache.set(cache_key, code_owners, READ_CACHE_DURATION)
 
         return code_owners or None
 
     @classmethod
-    def validate_codeowners_associations(self, codeowners, project):
-        from sentry.api.endpoints.project_codeowners import validate_association
-        from sentry.models import (
-            ExternalActor,
-            OrganizationMember,
-            OrganizationMemberTeam,
-            Project,
-            UserEmail,
-            actor_type_to_string,
-        )
-        from sentry.ownership.grammar import parse_code_owners
-        from sentry.types.integrations import ExternalProviders
-
-        # Get list of team/user names from CODEOWNERS file
-        team_names, usernames, emails = parse_code_owners(codeowners)
-
-        # Check if there exists Sentry users with the emails listed in CODEOWNERS
-        user_emails = UserEmail.objects.filter(
-            email__in=emails,
-            user__sentry_orgmember_set__organization=project.organization,
-        )
-
-        # Check if the usernames/teamnames have an association
-        external_actors = ExternalActor.objects.filter(
-            external_name__in=usernames + team_names,
-            organization=project.organization,
-            provider__in=[ExternalProviders.GITHUB.value, ExternalProviders.GITLAB.value],
-        )
-
-        # Convert CODEOWNERS into IssueOwner syntax
-        users_dict = {}
-        teams_dict = {}
-        teams_without_access = []
-        users_without_access = []
-        for external_actor in external_actors:
-            type = actor_type_to_string(external_actor.actor.type)
-            if type == "user":
-                user = external_actor.actor.resolve()
-                organization_members_ids = OrganizationMember.objects.filter(
-                    user_id=user.id, organization_id=project.organization_id
-                ).values_list("id", flat=True)
-                team_ids = OrganizationMemberTeam.objects.filter(
-                    organizationmember_id__in=Subquery(organization_members_ids)
-                ).values_list("team_id", flat=True)
-                projects = Project.objects.get_for_team_ids(Subquery(team_ids))
-
-                if project in projects:
-                    users_dict[external_actor.external_name] = user.email
-                else:
-                    users_without_access.append(f"{user.get_display_name()}")
-            elif type == "team":
-                team = external_actor.actor.resolve()
-                # make sure the sentry team has access to the project
-                # tied to the codeowner
-                if project in team.get_projects():
-                    teams_dict[external_actor.external_name] = f"#{team.slug}"
-                else:
-                    teams_without_access.append(f"#{team.slug}")
-
-        emails_dict = {item.email: item.email for item in user_emails}
-        associations = {**users_dict, **teams_dict, **emails_dict}
-
-        errors = {
-            "missing_user_emails": validate_association(emails, user_emails, "emails"),
-            "missing_external_users": validate_association(usernames, external_actors, "usernames"),
-            "missing_external_teams": validate_association(
-                team_names, external_actors, "team names"
-            ),
-            "teams_without_access": teams_without_access,
-            "users_without_access": users_without_access,
-        }
-        return associations, errors
-
-    @classmethod
-    def merge_code_owners_list(self, code_owners_list):
+    def merge_code_owners_list(
+        self, code_owners_list: Iterable[ProjectCodeOwners]
+    ) -> ProjectCodeOwners | None:
         """
         Merge list of code_owners into a single code_owners object concatenating
         all the rules. We assume schema version is constant.
         """
-        merged_code_owners = None
+        merged_code_owners: ProjectCodeOwners | None = None
         for code_owners in code_owners_list:
             if code_owners.schema:
                 if merged_code_owners is None:
@@ -149,14 +89,36 @@ class ProjectCodeOwners(DefaultFieldsModel):
 
         return merged_code_owners
 
-    def update_schema(self):
+    def update_schema(self, organization: Organization, raw: str | None = None) -> None:
         """
         Updating the schema goes through the following steps:
-        1. parsing the original codeowner file to get the associations
-        2. convert the codeowner file to the ownership syntax
-        3. convert the ownership syntax to the schema
+        1. Update the raw content (original CODEOWNERS text)
+        2. Parse the original CODEOWNERS file to get the associations
+        3. Convert the CODEOWNERS file to the ownership syntax
+        4. Convert the ownership syntax to the schema
         """
-        associations, _ = self.validate_codeowners_associations(self.raw, self.project)
+        from sentry.api.validators.project_codeowners import build_codeowners_associations
+        from sentry.utils.codeowners import MAX_RAW_LENGTH
+
+        if raw and self.raw != raw:
+            self.raw = raw
+
+        if not self.raw:
+            return
+
+        if len(self.raw) > MAX_RAW_LENGTH:
+            try:
+                analytics.record(
+                    CodeOwnersMaxLengthExceeded(
+                        organization_id=organization.id,
+                    )
+                )
+            except Exception as e:
+                sentry_sdk.capture_exception(e)
+            logger.warning({"raw": f"Raw needs to be <= {MAX_RAW_LENGTH} characters in length"})
+            return
+
+        associations, _ = build_codeowners_associations(self.raw, self.project)
 
         issue_owner_rules = convert_codeowners_syntax(
             codeowners=self.raw,
@@ -167,11 +129,51 @@ class ProjectCodeOwners(DefaultFieldsModel):
         # Convert IssueOwner syntax into schema syntax
         try:
             schema = create_schema_from_issue_owners(
-                issue_owners=issue_owner_rules, project_id=self.project.id
+                project_id=self.project.id,
+                issue_owners=issue_owner_rules,
+                remove_deleted_owners=True,
             )
             # Convert IssueOwner syntax into schema syntax
             if schema:
                 self.schema = schema
                 self.save()
         except ValidationError:
+            logger.exception("Failed to create schema from issue owners.")
             return
+
+
+def modify_date_updated(instance, **kwargs):
+    if instance.id is None:
+        return
+    instance.date_updated = timezone.now()
+
+
+def process_resource_change(instance, change, **kwargs):
+    from sentry.models.groupowner import GroupOwner
+
+    cache.set(
+        ProjectCodeOwners.get_cache_key(instance.project_id),
+        None,
+        READ_CACHE_DURATION,
+    )
+
+    GroupOwner.set_project_ownership_version(instance.project_id)
+
+
+pre_save.connect(
+    modify_date_updated,
+    sender=ProjectCodeOwners,
+    dispatch_uid="projectcodeowners_modify_date_updated",
+    weak=False,
+)
+# Signals update the cached reads used in post_processing
+post_save.connect(
+    lambda instance, **kwargs: process_resource_change(instance, "updated", **kwargs),
+    sender=ProjectCodeOwners,
+    weak=False,
+)
+post_delete.connect(
+    lambda instance, **kwargs: process_resource_change(instance, "deleted", **kwargs),
+    sender=ProjectCodeOwners,
+    weak=False,
+)

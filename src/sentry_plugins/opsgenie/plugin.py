@@ -3,7 +3,7 @@ import logging
 from django import forms
 
 import sentry
-from sentry.integrations import FeatureDescription, IntegrationFeatures
+from sentry.integrations.base import FeatureDescription, IntegrationFeatures
 from sentry.plugins.bases import notify
 from sentry.utils import json
 from sentry_plugins.base import CorePluginMixin
@@ -14,15 +14,16 @@ DESCRIPTION = """
 Trigger alerts in Opsgenie from Sentry.
 
 Opsgenie is a cloud-based service for dev & ops teams, providing reliable
-alerts, on-call schedule management and escalations. OpsGenie integrates with
-monitoring tools & services, ensures the right people are notified.
+alerts, on-call schedule management and escalations. Opsgenie integrates with
+monitoring tools & services, ensures the right people are notified. This
+plugin only supports issue alerts.
 """
 
 
 class OpsGenieOptionsForm(notify.NotificationConfigurationForm):
     api_key = forms.CharField(
         max_length=255,
-        help_text="OpsGenie API key used for authenticating API requests",
+        help_text="Opsgenie API key used for authenticating API requests",
         required=True,
     )
     recipients = forms.CharField(
@@ -30,13 +31,14 @@ class OpsGenieOptionsForm(notify.NotificationConfigurationForm):
         help_text="The user names of individual users or groups (comma separated)",
         required=False,
     )
-    alert_url = forms.CharField(
+    alert_url = forms.URLField(
         max_length=255,
-        label="OpsGenie Alert URL",
+        label="Opsgenie Alert URL",
         widget=forms.TextInput(
             attrs={"class": "span6", "placeholder": "e.g. https://api.opsgenie.com/v2/alerts"}
         ),
         help_text="It must be visible to the Sentry server",
+        assume_scheme="https",
         required=True,
     )
 
@@ -44,7 +46,7 @@ class OpsGenieOptionsForm(notify.NotificationConfigurationForm):
 class OpsGeniePlugin(CorePluginMixin, notify.NotificationPlugin):
     author = "Sentry Team"
     author_url = "https://github.com/getsentry"
-    title = "OpsGenie"
+    title = "Opsgenie"
     slug = "opsgenie"
     description = DESCRIPTION
     conf_key = "opsgenie"
@@ -54,7 +56,7 @@ class OpsGeniePlugin(CorePluginMixin, notify.NotificationPlugin):
     feature_descriptions = [
         FeatureDescription(
             """
-            Manage incidents and outages by sending Sentry notifications to OpsGenie.
+            Manage incidents and outages by sending Sentry notifications to Opsgenie.
             """,
             IntegrationFeatures.INCIDENT_MANAGEMENT,
         ),
@@ -68,16 +70,14 @@ class OpsGeniePlugin(CorePluginMixin, notify.NotificationPlugin):
 
     logger = logging.getLogger("sentry.plugins.opsgenie")
 
-    def is_configured(self, project):
+    def is_configured(self, project) -> bool:
         return all(self.get_option(k, project) for k in ("api_key", "alert_url"))
 
-    def get_form_initial(self, project=None):
-        return {"alert_url": "https://api.opsgenie.com/v2/alerts"}
-
-    def build_payload(self, group, event, triggering_rules):
-        payload = {
+    @staticmethod
+    def build_payload(group, event, triggering_rules):
+        return {
             "message": event.message or event.title,
-            "alias": "sentry: %d" % group.id,
+            "alias": f"sentry: {group.id}",
             "source": "Sentry",
             "details": {
                 "Sentry ID": str(group.id),
@@ -87,18 +87,14 @@ class OpsGeniePlugin(CorePluginMixin, notify.NotificationPlugin):
                 "Logger": group.logger,
                 "Level": group.get_level_display(),
                 "URL": group.get_absolute_url(),
+                # TODO(ecosystem): We need to eventually change the key on this
                 "Triggering Rules": json.dumps(triggering_rules),
             },
             "entity": group.culprit,
+            "tags": [f"{str(x).replace(',', '')}:{str(y).replace(',', '')}" for x, y in event.tags],
         }
 
-        payload["tags"] = [
-            "{}:{}".format(str(x).replace(",", ""), str(y).replace(",", "")) for x, y in event.tags
-        ]
-
-        return payload
-
-    def notify_users(self, group, event, fail_silently=False, triggering_rules=None, **kwargs):
+    def notify_users(self, group, event, triggering_rules) -> None:
         if not self.is_configured(group.project):
             return
 

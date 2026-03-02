@@ -1,37 +1,36 @@
-import {Fragment} from 'react';
+import {useState} from 'react';
 import styled from '@emotion/styled';
 
-import Button from 'app/components/button';
-import Confirm from 'app/components/confirm';
-import DateTime from 'app/components/dateTime';
-import {Panel, PanelBody, PanelHeader, PanelItem} from 'app/components/panels';
-import Tooltip from 'app/components/tooltip';
-import {IconDelete} from 'app/icons';
-import {t} from 'app/locale';
-import space from 'app/styles/space';
-import {AuthenticatorDevice} from 'app/types';
-import ConfirmHeader from 'app/views/settings/account/accountSecurity/components/confirmHeader';
-import EmptyMessage from 'app/views/settings/components/emptyMessage';
-import TextBlock from 'app/views/settings/components/text/textBlock';
+import {Button, LinkButton} from '@sentry/scraps/button';
+import {Input} from '@sentry/scraps/input';
+import {Grid} from '@sentry/scraps/layout';
 
-type Props = {
-  isEnrolled: boolean;
+import Confirm from 'sentry/components/confirm';
+import {DateTime} from 'sentry/components/dateTime';
+import EmptyMessage from 'sentry/components/emptyMessage';
+import Panel from 'sentry/components/panels/panel';
+import PanelBody from 'sentry/components/panels/panelBody';
+import PanelFooter from 'sentry/components/panels/panelFooter';
+import PanelHeader from 'sentry/components/panels/panelHeader';
+import PanelItem from 'sentry/components/panels/panelItem';
+import {IconClose, IconDelete} from 'sentry/icons';
+import {t} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {AuthenticatorDevice} from 'sentry/types/auth';
+
+interface U2fEnrolledDetailsProps {
+  devices: AuthenticatorDevice[];
   id: string;
+  isEnrolled: boolean;
   onRemoveU2fDevice: (device: AuthenticatorDevice) => void;
-  devices?: AuthenticatorDevice[];
+  onRenameU2fDevice: (device: AuthenticatorDevice, deviceName: string) => void;
   className?: string;
-};
+}
 
-/**
- * List u2f devices w/ ability to remove a single device
- */
-function U2fEnrolledDetails({
-  className,
-  isEnrolled,
-  devices,
-  id,
-  onRemoveU2fDevice,
-}: Props) {
+function U2fEnrolledDetails(props: U2fEnrolledDetailsProps) {
+  const {className, isEnrolled, devices, id, onRemoveU2fDevice, onRenameU2fDevice} =
+    props;
+
   if (id !== 'u2f' || !isEnrolled) {
     return null;
   }
@@ -39,7 +38,6 @@ function U2fEnrolledDetails({
   const hasDevices = devices?.length;
   // Note Tooltip doesn't work because of bootstrap(?) pointer events for disabled buttons
   const isLastDevice = hasDevices === 1;
-
   return (
     <Panel className={className}>
       <PanelHeader>{t('Device name')}</PanelHeader>
@@ -49,83 +47,128 @@ function U2fEnrolledDetails({
           <EmptyMessage>{t('You have not added any U2F devices')}</EmptyMessage>
         )}
         {hasDevices &&
-          devices?.map(device => (
-            <DevicePanelItem key={device.name}>
-              <DeviceInformation>
-                <Name>{device.name}</Name>
-                <FadedDateTime date={device.timestamp} />
-              </DeviceInformation>
-
-              <Actions>
-                <Confirm
-                  onConfirm={() => onRemoveU2fDevice(device)}
-                  disabled={isLastDevice}
-                  message={
-                    <Fragment>
-                      <ConfirmHeader>
-                        {t('Do you want to remove U2F device?')}
-                      </ConfirmHeader>
-                      <TextBlock>
-                        {t(
-                          `Are you sure you want to remove the U2F device "${device.name}"?`
-                        )}
-                      </TextBlock>
-                    </Fragment>
-                  }
-                >
-                  <Button size="small" priority="danger">
-                    <Tooltip
-                      disabled={!isLastDevice}
-                      title={t('Can not remove last U2F device')}
-                    >
-                      <IconDelete size="xs" />
-                    </Tooltip>
-                  </Button>
-                </Confirm>
-              </Actions>
-            </DevicePanelItem>
+          devices?.map((device, i) => (
+            <Device
+              key={i}
+              device={device}
+              isLastDevice={isLastDevice}
+              onRenameU2fDevice={onRenameU2fDevice}
+              onRemoveU2fDevice={onRemoveU2fDevice}
+            />
           ))}
-        <AddAnotherPanelItem>
-          <Button
-            type="button"
-            to="/settings/account/security/mfa/u2f/enroll/"
-            size="small"
-          >
-            {t('Add Another Device')}
-          </Button>
-        </AddAnotherPanelItem>
       </PanelBody>
+      <AddAnotherFooter>
+        <LinkButton to="/settings/account/security/mfa/u2f/enroll/" size="sm">
+          {t('Add Another Device')}
+        </LinkButton>
+      </AddAnotherFooter>
     </Panel>
   );
 }
 
-const DevicePanelItem = styled(PanelItem)`
-  padding: 0;
+interface DeviceProps {
+  device: AuthenticatorDevice;
+  isLastDevice: boolean;
+  onRemoveU2fDevice: (device: AuthenticatorDevice) => void;
+  onRenameU2fDevice: (device: AuthenticatorDevice, deviceName: string) => void;
+}
+
+function Device(props: DeviceProps) {
+  const {device, isLastDevice, onRenameU2fDevice, onRemoveU2fDevice} = props;
+  const [deviceName, setDeviceName] = useState(device.name);
+  const [isEditing, setEditting] = useState(false);
+
+  if (!isEditing) {
+    return (
+      <PanelItem key={device.name}>
+        <DeviceInformation>
+          {device.name}
+          <FadedDateTime date={device.timestamp} />
+        </DeviceInformation>
+        <Grid flow="column" align="center" gap="md">
+          <Button size="sm" onClick={() => setEditting(true)}>
+            {t('Rename device')}
+          </Button>
+          <Confirm
+            onConfirm={() => onRemoveU2fDevice(device)}
+            disabled={isLastDevice}
+            message={t('Are you sure you want to remove the device "%s"?', device.name)}
+          >
+            <Button
+              aria-label={t('Remove device')}
+              size="sm"
+              priority="danger"
+              icon={<IconDelete />}
+              tooltipProps={{
+                title: isLastDevice ? t('Can not remove last U2F device') : undefined,
+              }}
+            />
+          </Confirm>
+        </Grid>
+      </PanelItem>
+    );
+  }
+
+  return (
+    <PanelItem key={device.name}>
+      <DeviceInformation>
+        <DeviceNameInput
+          size="sm"
+          type="text"
+          value={deviceName}
+          onChange={e => {
+            setDeviceName(e.target.value);
+          }}
+        />
+        <FadedDateTime date={device.timestamp} />
+      </DeviceInformation>
+      <Grid flow="column" align="center" gap="md">
+        <Button
+          priority="primary"
+          size="sm"
+          onClick={() => {
+            onRenameU2fDevice(device, deviceName);
+            setEditting(false);
+          }}
+        >
+          {t('Rename device')}
+        </Button>
+        <Button
+          size="sm"
+          tooltipProps={{title: t('Cancel Rename')}}
+          aria-label={t('Cancel Rename')}
+          icon={<IconClose />}
+          onClick={() => {
+            setDeviceName(device.name);
+            setEditting(false);
+          }}
+        />
+      </Grid>
+    </PanelItem>
+  );
+}
+
+const DeviceNameInput = styled(Input)`
+  width: 50%;
+  margin-right: ${space(2)};
 `;
 
 const DeviceInformation = styled('div')`
   display: flex;
   align-items: center;
-  flex: 1;
-
-  padding: ${space(2)};
-  padding-right: 0;
+  justify-content: space-between;
+  flex: 1 1;
+  gap: ${space(1)};
+  margin-right: ${space(1)};
 `;
 
 const FadedDateTime = styled(DateTime)`
-  font-size: ${p => p.theme.fontSizeRelativeSmall};
+  font-size: ${p => p.theme.font.size.sm};
   opacity: 0.6;
 `;
 
-const Name = styled('div')`
-  flex: 1;
-`;
-
-const Actions = styled('div')`
-  margin: ${space(2)};
-`;
-
-const AddAnotherPanelItem = styled(PanelItem)`
+const AddAnotherFooter = styled(PanelFooter)`
+  display: flex;
   justify-content: flex-end;
   padding: ${space(2)};
 `;

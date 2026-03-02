@@ -1,31 +1,19 @@
-import * as React from 'react';
 import pick from 'lodash/pick';
 
-import {MetaType} from 'app/utils/discover/eventView';
-import {WebVital} from 'app/utils/discover/fields';
-import GenericDiscoverQuery, {
+import type {
   DiscoverQueryPropsWithContext,
   GenericChildrenProps,
-} from 'app/utils/discover/genericDiscoverQuery';
-import {PERFORMANCE_URL_PARAM} from 'app/utils/performance/constants';
-import withApi from 'app/utils/withApi';
-
-export type TableDataRow = {
-  id: string;
-  [key: string]: React.ReactText;
-};
-
-export type TableData = {
-  data: Array<TableDataRow>;
-  meta?: MetaType;
-};
+} from 'sentry/utils/discover/genericDiscoverQuery';
+import {GenericDiscoverQuery} from 'sentry/utils/discover/genericDiscoverQuery';
+import type {WebVital} from 'sentry/utils/fields';
+import {PERFORMANCE_URL_PARAM} from 'sentry/utils/performance/constants';
 
 export type VitalData = {
-  poor: number;
-  meh: number;
   good: number;
-  total: number;
+  meh: number;
   p75: number | null;
+  poor: number;
+  total: number;
 };
 
 export type VitalsData = Record<string, VitalData>;
@@ -67,4 +55,4 @@ function VitalsCardsDiscoverQuery(props: Props) {
   );
 }
 
-export default withApi(VitalsCardsDiscoverQuery);
+export default VitalsCardsDiscoverQuery;

@@ -1,7 +1,10 @@
-import responses
-from exam import fixture
+from functools import cached_property
 
-from sentry.testutils import PluginTestCase
+import orjson
+import responses
+from django.urls import reverse
+
+from sentry.testutils.cases import PluginTestCase
 from sentry_plugins.sessionstack.plugin import SessionStackPlugin
 
 EXPECTED_SESSION_URL = (
@@ -10,24 +13,21 @@ EXPECTED_SESSION_URL = (
 )
 
 ACCESS_TOKENS_URL = (
-    "https://api.sessionstack.com/v1/websites/0/sessions/" "588778a6c5762c1d566653ff/access_tokens"
+    "https://api.sessionstack.com/v1/websites/0/sessions/588778a6c5762c1d566653ff/access_tokens"
 )
 
 
+def test_conf_key() -> None:
+    assert SessionStackPlugin().conf_key == "sessionstack"
+
+
 class SessionStackPluginTest(PluginTestCase):
-    @fixture
-    def plugin(self):
+    @cached_property
+    def plugin(self) -> SessionStackPlugin:
         return SessionStackPlugin()
 
-    def test_conf_key(self):
-        assert self.plugin.conf_key == "sessionstack"
-
-    def test_entry_point(self):
-        self.assertPluginInstalled("sessionstack", self.plugin)
-        self.assertAppInstalled("sessionstack", "sentry_plugins.sessionstack")
-
     @responses.activate
-    def test_config_validation(self):
+    def test_config_validation(self) -> None:
         responses.add(responses.GET, "https://api.sessionstack.com/v1/websites/0")
 
         config = {
@@ -39,7 +39,7 @@ class SessionStackPluginTest(PluginTestCase):
         self.plugin.validate_config(self.project, config)
 
     @responses.activate
-    def test_event_preprocessing(self):
+    def test_event_preprocessing(self) -> None:
         responses.add(
             responses.GET,
             ACCESS_TOKENS_URL,
@@ -68,9 +68,26 @@ class SessionStackPluginTest(PluginTestCase):
         add_sessionstack_context = event_preprocessors[0]
 
         processed_event = add_sessionstack_context(event)
+        assert processed_event is not None
 
         event_contexts = processed_event.get("contexts")
-        sessionstack_context = event_contexts.get("sessionstack")
-        session_url = sessionstack_context.get("session_url")
+        assert event_contexts is not None
 
+        sessionstack_context = event_contexts.get("sessionstack")
+        assert sessionstack_context is not None
+
+        session_url = sessionstack_context.get("session_url")
         assert session_url == EXPECTED_SESSION_URL
+
+    def test_no_secrets(self) -> None:
+        self.login_as(self.user)
+        self.plugin.set_option("api_token", "example-api-token", self.project)
+        url = reverse(
+            "sentry-api-0-project-plugin-details",
+            args=[self.organization.slug, self.project.slug, "sessionstack"],
+        )
+        res = self.client.get(url)
+        config = orjson.loads(res.content)["config"]
+        api_token_config = [item for item in config if item["name"] == "api_token"][0]
+        assert api_token_config.get("type") == "secret"
+        assert api_token_config.get("value") is None

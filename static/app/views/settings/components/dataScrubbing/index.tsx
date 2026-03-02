@@ -1,214 +1,239 @@
-import * as React from 'react';
+import {useCallback, useEffect, useMemo, useState} from 'react';
 import styled from '@emotion/styled';
 
-import {addErrorMessage, addSuccessMessage} from 'app/actionCreators/indicator';
-import {openModal} from 'app/actionCreators/modal';
-import {Client} from 'app/api';
-import Button from 'app/components/button';
-import ExternalLink from 'app/components/links/externalLink';
-import {Panel, PanelAlert, PanelBody, PanelHeader} from 'app/components/panels';
-import {t, tct} from 'app/locale';
-import space from 'app/styles/space';
-import {Organization, Project} from 'app/types';
+import {Button, LinkButton} from '@sentry/scraps/button';
+import {ExternalLink} from '@sentry/scraps/link';
+
+import {addErrorMessage, addSuccessMessage} from 'sentry/actionCreators/indicator';
+import {openModal} from 'sentry/actionCreators/modal';
+import EmptyMessage from 'sentry/components/emptyMessage';
+import Panel from 'sentry/components/panels/panel';
+import PanelAlert from 'sentry/components/panels/panelAlert';
+import PanelBody from 'sentry/components/panels/panelBody';
+import PanelHeader from 'sentry/components/panels/panelHeader';
+import {IconWarning} from 'sentry/icons';
+import {t, tct} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {Organization} from 'sentry/types/organization';
+import type {Project} from 'sentry/types/project';
+import {defined} from 'sentry/utils';
+import useApi from 'sentry/utils/useApi';
+import {useNavigate} from 'sentry/utils/useNavigate';
+import {useParams} from 'sentry/utils/useParams';
+import {useTraceItemAttributeKeys} from 'sentry/views/explore/hooks/useTraceItemAttributeKeys';
+import {TraceItemDataset} from 'sentry/views/explore/types';
+import {areScrubbingDatasetsEnabled} from 'sentry/views/settings/components/dataScrubbing/utils';
 
 import Add from './modals/add';
 import Edit from './modals/edit';
-import Content from './content';
-import convertRelayPiiConfig from './convertRelayPiiConfig';
-import OrganizationRules from './organizationRules';
+import {convertRelayPiiConfig} from './convertRelayPiiConfig';
+import {OrganizationRules} from './organizationRules';
+import Rules from './rules';
 import submitRules from './submitRules';
-import {ProjectId, Rule} from './types';
+import {AllowedDataScrubbingDatasets, type AttributeResults, type Rule} from './types';
 
 const ADVANCED_DATASCRUBBING_LINK =
   'https://docs.sentry.io/product/data-management-settings/scrubbing/advanced-datascrubbing/';
 
-type Props<T extends ProjectId> = {
+type Props = {
   endpoint: string;
   organization: Organization;
-  onSubmitSuccess?: (data: T extends undefined ? Organization : Project) => void;
-  projectId?: T;
-  relayPiiConfig?: string;
   additionalContext?: React.ReactNode;
   disabled?: boolean;
+  onSubmitSuccess?: (data: {relayPiiConfig: string}) => void;
+  project?: Project;
+  relayPiiConfig?: string | null;
 };
 
-type State = {
-  rules: Array<Rule>;
-  savedRules: Array<Rule>;
-  orgRules: Array<Rule>;
-  relayPiiConfig?: string;
-};
+export function DataScrubbing({
+  project,
+  endpoint,
+  organization,
+  disabled,
+  onSubmitSuccess,
+  additionalContext,
+  relayPiiConfig,
+}: Props) {
+  const api = useApi();
+  const [rules, setRules] = useState<Rule[]>([]);
+  const navigate = useNavigate();
+  const params = useParams();
 
-class DataScrubbing<T extends ProjectId = undefined> extends React.Component<
-  Props<T>,
-  State
-> {
-  state: State = {
-    rules: [],
-    savedRules: [],
-    relayPiiConfig: this.props.relayPiiConfig,
-    orgRules: [],
-  };
+  const successfullySaved = useCallback(
+    (response: {relayPiiConfig: string}, successMessage: string) => {
+      setRules(convertRelayPiiConfig(response.relayPiiConfig));
+      addSuccessMessage(successMessage);
+      onSubmitSuccess?.(response);
+    },
+    [onSubmitSuccess]
+  );
 
-  componentDidMount() {
-    this.loadRules();
-    this.loadOrganizationRules();
-  }
+  const traceItemDatasetsEnabled = areScrubbingDatasetsEnabled(organization);
+  const traceItemAttributeStringsResult = useTraceItemAttributeKeys({
+    enabled: traceItemDatasetsEnabled,
+    type: 'string',
+    traceItemType: TraceItemDataset.LOGS,
+    projects: project ? [project] : undefined,
+  });
+  const attributeResults: AttributeResults = useMemo(
+    () => ({
+      [AllowedDataScrubbingDatasets.DEFAULT]: null,
+      [AllowedDataScrubbingDatasets.LOGS]: traceItemAttributeStringsResult,
+    }),
+    [traceItemAttributeStringsResult]
+  );
 
-  componentDidUpdate(_prevProps: Props<T>, prevState: State) {
-    if (prevState.relayPiiConfig !== this.state.relayPiiConfig) {
-      this.loadRules();
+  const handleCloseModal = useCallback(() => {
+    const path = project?.slug
+      ? `/settings/${organization.slug}/projects/${project.slug}/security-and-privacy/`
+      : `/settings/${organization.slug}/security-and-privacy/`;
+
+    navigate(path);
+  }, [navigate, organization.slug, project?.slug]);
+
+  useEffect(() => {
+    if (
+      !defined(params.scrubbingId) ||
+      !rules.some(rule => String(rule.id) === params.scrubbingId)
+    ) {
+      return;
     }
-  }
 
-  componentWillUnmount() {
-    this.api.clear();
-  }
+    openModal(
+      modalProps => (
+        <Edit
+          {...modalProps}
+          // @ts-expect-error TS(7015): Element implicitly has an 'any' type because index... Remove this comment to see the full error message
+          rule={rules[params.scrubbingId!]}
+          projectId={project?.id}
+          savedRules={rules}
+          api={api}
+          endpoint={endpoint}
+          orgSlug={organization.slug}
+          attributeResults={attributeResults}
+          onSubmitSuccess={response => {
+            return successfullySaved(
+              response,
+              t('Successfully updated data scrubbing rule')
+            );
+          }}
+        />
+      ),
+      {onClose: handleCloseModal}
+    );
+  }, [
+    params.scrubbingId,
+    rules,
+    project?.id,
+    api,
+    endpoint,
+    organization.slug,
+    successfullySaved,
+    handleCloseModal,
+    attributeResults,
+  ]);
 
-  api = new Client();
-
-  loadOrganizationRules() {
-    const {organization, projectId} = this.props;
-
-    if (projectId) {
+  useEffect(() => {
+    function loadRules() {
       try {
-        this.setState({
-          orgRules: convertRelayPiiConfig(organization.relayPiiConfig),
-        });
+        setRules(convertRelayPiiConfig(relayPiiConfig));
       } catch {
-        addErrorMessage(t('Unable to load organization rules'));
+        addErrorMessage(t('Unable to load data scrubbing rules'));
       }
     }
+
+    loadRules();
+  }, [relayPiiConfig]);
+
+  function handleEdit(id: Rule['id']) {
+    const path = project
+      ? `/settings/${organization.slug}/projects/${project.slug}/security-and-privacy/advanced-data-scrubbing/${id}/`
+      : `/settings/${organization.slug}/security-and-privacy/advanced-data-scrubbing/${id}/`;
+
+    navigate(path);
   }
 
-  loadRules() {
-    try {
-      const convertedRules = convertRelayPiiConfig(this.state.relayPiiConfig);
-      this.setState({
-        rules: convertedRules,
-        savedRules: convertedRules,
-      });
-    } catch {
-      addErrorMessage(t('Unable to load project rules'));
-    }
-  }
-
-  successfullySaved(
-    response: T extends undefined ? Organization : Project,
-    successMessage: string
-  ) {
-    const {onSubmitSuccess} = this.props;
-    this.setState({rules: convertRelayPiiConfig(response.relayPiiConfig)});
-    addSuccessMessage(successMessage);
-    onSubmitSuccess?.(response);
-  }
-
-  handleOpenAddModal = () => {
-    const {rules} = this.state;
+  function handleAdd() {
     openModal(modalProps => (
       <Add
         {...modalProps}
-        projectId={this.props.projectId}
+        projectId={project?.id}
         savedRules={rules}
-        api={this.api}
-        endpoint={this.props.endpoint}
-        orgSlug={this.props.organization.slug}
+        api={api}
+        endpoint={endpoint}
+        orgSlug={organization.slug}
+        attributeResults={attributeResults}
         onSubmitSuccess={response => {
-          this.successfullySaved(response, t('Successfully added data scrubbing rule'));
+          return successfullySaved(response, t('Successfully added data scrubbing rule'));
         }}
       />
     ));
-  };
+  }
 
-  handleOpenEditModal = (id: Rule['id']) => () => {
-    const {rules} = this.state;
-    openModal(modalProps => (
-      <Edit
-        {...modalProps}
-        rule={rules[id]}
-        projectId={this.props.projectId}
-        savedRules={rules}
-        api={this.api}
-        endpoint={this.props.endpoint}
-        orgSlug={this.props.organization.slug}
-        onSubmitSuccess={response => {
-          this.successfullySaved(response, t('Successfully updated data scrubbing rule'));
-        }}
-      />
-    ));
-  };
-
-  handleDelete = (id: Rule['id']) => async () => {
-    const {rules} = this.state;
-    const filteredRules = rules.filter(rule => rule.id !== id);
-
+  async function handleDelete(id: Rule['id']) {
     try {
-      const data = await submitRules(this.api, this.props.endpoint, filteredRules);
+      const filteredRules = rules.filter(rule => rule.id !== id);
+      const data = await submitRules(api, endpoint, filteredRules);
       if (data?.relayPiiConfig) {
-        const convertedRules = convertRelayPiiConfig(data.relayPiiConfig);
-
-        this.setState({rules: convertedRules});
+        setRules(convertRelayPiiConfig(data.relayPiiConfig));
         addSuccessMessage(t('Successfully deleted data scrubbing rule'));
       }
     } catch {
       addErrorMessage(t('An unknown error occurred while deleting data scrubbing rule'));
     }
-  };
+  }
 
-  render() {
-    const {additionalContext, disabled, projectId} = this.props;
-    const {orgRules, rules} = this.state;
-
-    return (
-      <Panel data-test-id="advanced-data-scrubbing" id="advanced-data-scrubbing">
-        <PanelHeader>
-          <div>{t('Advanced Data Scrubbing')}</div>
-        </PanelHeader>
-        <PanelAlert type="info">
-          {additionalContext}{' '}
-          {`${t('The new rules will only apply to upcoming events. ')}`}{' '}
-          {tct('For more details, see [linkToDocs].', {
+  return (
+    <Panel data-test-id="advanced-data-scrubbing">
+      <PanelHeader>
+        <div>{t('Advanced Data Scrubbing')}</div>
+      </PanelHeader>
+      <PanelAlert variant="info">
+        {additionalContext}{' '}
+        {tct(
+          'The new rules will only apply to upcoming events. For more details, see [linkToDocs].',
+          {
             linkToDocs: (
               <ExternalLink href={ADVANCED_DATASCRUBBING_LINK}>
                 {t('full documentation on data scrubbing')}
               </ExternalLink>
             ),
-          })}
-        </PanelAlert>
-        <PanelBody>
-          {projectId && <OrganizationRules rules={orgRules} />}
-          <Content
+          }
+        )}
+      </PanelAlert>
+      <PanelBody>
+        {project && <OrganizationRules organization={organization} />}
+        {rules.length ? (
+          <Rules
             rules={rules}
-            onDeleteRule={this.handleDelete}
-            onEditRule={this.handleOpenEditModal}
+            onDeleteRule={handleDelete}
+            onEditRule={handleEdit}
             disabled={disabled}
           />
-          <PanelAction>
-            <Button href={ADVANCED_DATASCRUBBING_LINK} target="_blank">
-              {t('Read the docs')}
-            </Button>
-            <Button
-              disabled={disabled}
-              onClick={this.handleOpenAddModal}
-              priority="primary"
-            >
-              {t('Add Rule')}
-            </Button>
-          </PanelAction>
-        </PanelBody>
-      </Panel>
-    );
-  }
+        ) : (
+          <EmptyMessage icon={<IconWarning />}>
+            {t('You have no data scrubbing rules')}
+          </EmptyMessage>
+        )}
+        <PanelAction>
+          <LinkButton href={ADVANCED_DATASCRUBBING_LINK} external>
+            {t('Read Docs')}
+          </LinkButton>
+          <Button disabled={disabled} onClick={handleAdd} priority="primary">
+            {t('Add Rule')}
+          </Button>
+        </PanelAction>
+      </PanelBody>
+    </Panel>
+  );
 }
-
-export default DataScrubbing;
 
 const PanelAction = styled('div')`
   padding: ${space(1)} ${space(2)};
   position: relative;
   display: grid;
-  grid-gap: ${space(1)};
+  gap: ${space(1)};
   grid-template-columns: auto auto;
   justify-content: flex-end;
-  border-top: 1px solid ${p => p.theme.border};
+  border-top: 1px solid ${p => p.theme.tokens.border.primary};
 `;

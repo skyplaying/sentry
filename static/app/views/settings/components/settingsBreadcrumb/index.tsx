@@ -1,126 +1,95 @@
-import {Component} from 'react';
+import {Link as RouterLink} from 'react-router-dom';
 import styled from '@emotion/styled';
 
-import SettingsBreadcrumbActions from 'app/actions/settingsBreadcrumbActions';
-import Link from 'app/components/links/link';
-import SettingsBreadcrumbStore from 'app/stores/settingsBreadcrumbStore';
-import getRouteStringFromRoutes from 'app/utils/getRouteStringFromRoutes';
-import recreateRoute from 'app/utils/recreateRoute';
-import Crumb from 'app/views/settings/components/settingsBreadcrumb/crumb';
-import Divider from 'app/views/settings/components/settingsBreadcrumb/divider';
-import OrganizationCrumb from 'app/views/settings/components/settingsBreadcrumb/organizationCrumb';
-import ProjectCrumb from 'app/views/settings/components/settingsBreadcrumb/projectCrumb';
-import TeamCrumb from 'app/views/settings/components/settingsBreadcrumb/teamCrumb';
+import {Flex} from '@sentry/scraps/layout';
 
-import {RouteWithName} from './types';
+import {t} from 'sentry/locale';
+import {trackAnalytics} from 'sentry/utils/analytics';
+import getRouteStringFromRoutes from 'sentry/utils/getRouteStringFromRoutes';
+import recreateRoute from 'sentry/utils/recreateRoute';
 
-const MENUS = {
+import {useBreadcrumbsPathmap} from './context';
+import Divider from './divider';
+import {OrganizationCrumb} from './organizationCrumb';
+import ProjectCrumb from './projectCrumb';
+import TeamCrumb from './teamCrumb';
+import type {RouteWithName, SettingsBreadcrumbProps} from './types';
+
+const MENUS: Record<string, React.FC<SettingsBreadcrumbProps>> = {
   Organization: OrganizationCrumb,
   Project: ProjectCrumb,
   Team: TeamCrumb,
 } as const;
 
 type Props = {
-  className?: string;
+  params: Record<string, string | undefined>;
   routes: RouteWithName[];
-  pathMap: Record<string, string>;
-  params: {[param: string]: string | undefined};
-  route: any;
+  className?: string;
 };
 
-class SettingsBreadcrumb extends Component<Props> {
-  static defaultProps = {
-    pathMap: {},
-  };
+function SettingsBreadcrumb({className, routes, params}: Props) {
+  const pathMap = useBreadcrumbsPathmap();
 
-  componentDidUpdate(prevProps: Props) {
-    if (this.props.routes === prevProps.routes) {
-      return;
-    }
-    SettingsBreadcrumbActions.trimMappings(this.props.routes);
+  const lastRouteIndex = routes.map(r => !!r.name).lastIndexOf(true);
+
+  function onSettingsBreadcrumbLinkClick() {
+    trackAnalytics('breadcrumbs.link.clicked', {organization: null});
   }
 
-  render() {
-    const {className, routes, params, pathMap} = this.props;
-    const lastRouteIndex = routes.map(r => !!r.name).lastIndexOf(true);
+  return (
+    <Flex
+      as="nav"
+      align="center"
+      gap="sm"
+      aria-label={t('Settings Breadcrumbs')}
+      className={className}
+    >
+      {routes.map((route, i) => {
+        if (!route.name) {
+          return null;
+        }
+        const pathTitle = pathMap[getRouteStringFromRoutes(routes.slice(0, i + 1))];
+        const isLast = i === lastRouteIndex;
+        const Menu = MENUS[route.name];
+        const hasMenu = !!Menu;
 
-    return (
-      <Breadcrumbs className={className}>
-        {routes.map((route, i) => {
-          if (!route.name) {
-            return null;
-          }
-          const pathTitle = pathMap[getRouteStringFromRoutes(routes.slice(0, i + 1))];
-          const isLast = i === lastRouteIndex;
-          const createMenu = MENUS[route.name];
-          const Menu = typeof createMenu === 'function' && createMenu;
-          const hasMenu = !!Menu;
-          const CrumbPicker = hasMenu
-            ? Menu
-            : () => (
-                <Crumb>
-                  <CrumbLink to={recreateRoute(route, {routes, params})}>
-                    {pathTitle || route.name}{' '}
-                  </CrumbLink>
-                  <Divider isLast={isLast} />
-                </Crumb>
-              );
-
+        if (hasMenu) {
           return (
-            <CrumbPicker
+            <Menu
               key={`${route.name}:${route.path}`}
               routes={routes}
-              params={params}
               route={route}
               isLast={isLast}
             />
           );
-        })}
-      </Breadcrumbs>
-    );
-  }
-}
-
-type ConnectedState = Pick<Props, 'pathMap'>;
-
-class ConnectedSettingsBreadcrumb extends Component<
-  Omit<Props, 'pathMap'>,
-  ConnectedState
-> {
-  state: ConnectedState = {pathMap: SettingsBreadcrumbStore.getPathMap()};
-
-  componentWillUnmount() {
-    this.unsubscribe();
-  }
-  unsubscribe = SettingsBreadcrumbStore.listen(
-    (pathMap: ConnectedState['pathMap']) => this.setState({pathMap}),
-    undefined
+        }
+        return (
+          <Flex gap="sm" align="center" key={`${route.name}:${route.path}`}>
+            <CrumbLink
+              to={recreateRoute(route, {routes, params})}
+              onClick={onSettingsBreadcrumbLinkClick}
+            >
+              {pathTitle || route.name}
+            </CrumbLink>
+            {isLast ? null : <Divider />}
+          </Flex>
+        );
+      })}
+    </Flex>
   );
-
-  render() {
-    return <SettingsBreadcrumb {...this.props} {...this.state} />;
-  }
 }
 
-export default ConnectedSettingsBreadcrumb;
-
-const CrumbLink = styled(Link)`
+// Uses Link directly from react-router-dom to avoid the URL normalization
+// that happens in the internal Link component. It is unnecessary because we
+// get routes from the router, and will actually cause issues because the
+// routes do not have organization information.
+export const CrumbLink = styled(RouterLink)`
   display: block;
 
-  &.focus-visible {
-    outline: none;
-    box-shadow: ${p => p.theme.blue300} 0 2px 0;
-  }
-
-  color: ${p => p.theme.subText};
+  color: ${p => p.theme.tokens.content.secondary};
   &:hover {
-    color: ${p => p.theme.textColor};
+    color: ${p => p.theme.tokens.content.primary};
   }
 `;
 
-export {CrumbLink};
-
-const Breadcrumbs = styled('div')`
-  display: flex;
-  align-items: center;
-`;
+export default SettingsBreadcrumb;

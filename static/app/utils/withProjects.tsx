@@ -1,17 +1,10 @@
-import * as React from 'react';
-
-import ProjectsStore from 'app/stores/projectsStore';
-import {Project} from 'app/types';
-import getDisplayName from 'app/utils/getDisplayName';
+import type {Project} from 'sentry/types/project';
+import getDisplayName from 'sentry/utils/getDisplayName';
+import useProjects from 'sentry/utils/useProjects';
 
 type InjectedProjectsProps = {
   projects: Project[];
   loadingProjects?: boolean;
-};
-
-type State = {
-  projects: Project[];
-  loading: boolean;
 };
 
 /**
@@ -20,35 +13,19 @@ type State = {
 function withProjects<P extends InjectedProjectsProps>(
   WrappedComponent: React.ComponentType<P>
 ) {
-  class WithProjects extends React.Component<
-    Omit<P, keyof InjectedProjectsProps> & Partial<InjectedProjectsProps>,
-    State
-  > {
-    static displayName = `withProjects(${getDisplayName(WrappedComponent)})`;
+  type Props = Omit<P, keyof InjectedProjectsProps>;
 
-    state: State = ProjectsStore.getState();
+  function Wrapper(props: Props) {
+    const {projects, initiallyLoaded} = useProjects();
+    const loadingProjects = !initiallyLoaded;
 
-    componentWillUnmount() {
-      this.unsubscribe();
-    }
-
-    unsubscribe = ProjectsStore.listen(
-      () => this.setState(ProjectsStore.getState()),
-      undefined
-    );
-
-    render() {
-      return (
-        <WrappedComponent
-          {...(this.props as P)}
-          projects={this.state.projects}
-          loadingProjects={this.state.loading}
-        />
-      );
-    }
+    // TODO(any): HoC prop types not working w/ emotion https://github.com/emotion-js/emotion/issues/3261
+    return <WrappedComponent {...(props as P as any)} {...{projects, loadingProjects}} />;
   }
 
-  return WithProjects;
+  Wrapper.displayName = `withProjects(${getDisplayName(WrappedComponent)})`;
+
+  return Wrapper;
 }
 
 export default withProjects;

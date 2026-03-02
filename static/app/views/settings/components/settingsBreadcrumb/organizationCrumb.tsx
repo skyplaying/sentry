@@ -1,33 +1,31 @@
-import {browserHistory, RouteComponentProps} from 'react-router';
-import styled from '@emotion/styled';
+import sortBy from 'lodash/sortBy';
 
-import IdBadge from 'app/components/idBadge';
-import {Organization} from 'app/types';
-import recreateRoute from 'app/utils/recreateRoute';
-import withLatestContext from 'app/utils/withLatestContext';
-import BreadcrumbDropdown from 'app/views/settings/components/settingsBreadcrumb/breadcrumbDropdown';
-import findFirstRouteWithoutRouteParam from 'app/views/settings/components/settingsBreadcrumb/findFirstRouteWithoutRouteParam';
-import MenuItem from 'app/views/settings/components/settingsBreadcrumb/menuItem';
+import {OrganizationAvatar} from '@sentry/scraps/avatar';
 
-import {RouteWithName} from './types';
+import IdBadge from 'sentry/components/idBadge';
+import {t} from 'sentry/locale';
+import OrganizationsStore from 'sentry/stores/organizationsStore';
+import {useLegacyStore} from 'sentry/stores/useLegacyStore';
+import {trackAnalytics} from 'sentry/utils/analytics';
+import recreateRoute from 'sentry/utils/recreateRoute';
+import {resolveRoute} from 'sentry/utils/resolveRoute';
+import {testableWindowLocation} from 'sentry/utils/testableWindowLocation';
+import {useNavigate} from 'sentry/utils/useNavigate';
+import useOrganization from 'sentry/utils/useOrganization';
+import {useParams} from 'sentry/utils/useParams';
+
+import BreadcrumbDropdown from './breadcrumbDropdown';
+import findFirstRouteWithoutRouteParam from './findFirstRouteWithoutRouteParam';
+import type {SettingsBreadcrumbProps} from './types';
 import {CrumbLink} from '.';
 
-type Props = RouteComponentProps<{projectId?: string}, {}> & {
-  organizations: Organization[];
-  organization: Organization;
-  routes: RouteWithName[];
-  route: RouteWithName;
-};
+export function OrganizationCrumb({routes, route, ...props}: SettingsBreadcrumbProps) {
+  const navigate = useNavigate();
+  const {organizations} = useLegacyStore(OrganizationsStore);
+  const organization = useOrganization();
+  const params = useParams();
 
-const OrganizationCrumb = ({
-  organization,
-  organizations,
-  params,
-  routes,
-  route,
-  ...props
-}: Props) => {
-  const handleSelect = (item: {value: string}) => {
+  const handleSelect = (slug: string) => {
     // If we are currently in a project context, and we're attempting to switch organizations,
     // then we need to default to index route (e.g. `route`)
     //
@@ -35,26 +33,31 @@ const OrganizationCrumb = ({
     // e.g. if you are on API details, we want the API listing
     // This fails if our route tree is not nested
     const hasProjectParam = !!params.projectId;
-    let destination = hasProjectParam
+    let destinationRoute = hasProjectParam
       ? route
       : findFirstRouteWithoutRouteParam(routes.slice(routes.indexOf(route)));
 
     // It's possible there is no route without route params (e.g. organization settings index),
     // in which case, we can use the org settings index route (e.g. `route`)
-    if (!hasProjectParam && typeof destination === 'undefined') {
-      destination = route;
+    if (!hasProjectParam && typeof destinationRoute === 'undefined') {
+      destinationRoute = route;
     }
 
-    if (destination === undefined) {
+    if (destinationRoute === undefined) {
       return;
     }
-
-    browserHistory.push(
-      recreateRoute(destination, {
-        routes,
-        params: {...params, orgId: item.value},
-      })
-    );
+    const path = recreateRoute(destinationRoute, {
+      routes,
+      params: {...params, orgId: slug},
+    });
+    const newOrg = organizations.find(org => org.slug === slug)!;
+    const resolvedUrl = resolveRoute(path, organization, newOrg);
+    // If we have a shift in domains, we can't use history
+    if (resolvedUrl.startsWith('http')) {
+      testableWindowLocation.assign(resolvedUrl);
+    } else {
+      navigate(resolvedUrl);
+    }
   };
 
   if (!organization) {
@@ -62,42 +65,33 @@ const OrganizationCrumb = ({
   }
 
   const hasMenu = organizations.length > 1;
+  const orgSettings = `/settings/${organization.slug}/`;
 
   return (
     <BreadcrumbDropdown
       name={
-        <CrumbLink
-          to={recreateRoute(route, {
-            routes,
-            params: {...params, orgId: organization.slug},
-          })}
-        >
-          <BadgeWrapper>
-            <IdBadge avatarSize={18} organization={organization} />
-          </BadgeWrapper>
+        <CrumbLink to={orgSettings}>
+          <IdBadge avatarSize={18} organization={organization} />
         </CrumbLink>
       }
-      onSelect={handleSelect}
+      onCrumbSelect={handleSelect}
+      onOpenChange={open => {
+        if (open) {
+          trackAnalytics('breadcrumbs.menu.opened', {organization: null});
+        }
+      }}
       hasMenu={hasMenu}
       route={route}
-      items={organizations.map((org, index) => ({
-        index,
-        value: org.slug,
-        label: (
-          <MenuItem>
-            <IdBadge organization={org} />
-          </MenuItem>
-        ),
-      }))}
+      value={organization.slug}
+      search={{placeholder: t('Search Organizations')}}
+      options={sortBy(organizations, ['name'])
+        .filter(org => org.status.id === 'active')
+        .map(org => ({
+          value: org.slug,
+          leadingItems: <OrganizationAvatar organization={org} size={20} />,
+          label: org.name,
+        }))}
       {...props}
     />
   );
-};
-
-const BadgeWrapper = styled('div')`
-  display: flex;
-  align-items: center;
-`;
-
-export {OrganizationCrumb};
-export default withLatestContext(OrganizationCrumb);
+}

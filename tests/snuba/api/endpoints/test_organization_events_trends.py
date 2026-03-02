@@ -2,36 +2,35 @@ from datetime import timedelta
 
 from django.urls import reverse
 
-from sentry.api.endpoints.organization_events_trends import OrganizationEventsTrendsEndpointBase
-from sentry.search.events.filter import get_filter
-from sentry.testutils import APITestCase, SnubaTestCase
-from sentry.testutils.cases import TestCase
+from sentry.testutils.cases import APITestCase, SnubaTestCase
 from sentry.testutils.helpers import parse_link_header
-from sentry.testutils.helpers.datetime import before_now, iso_format
+from sentry.testutils.helpers.datetime import before_now
 from sentry.utils.samples import load_data
 
 
 class OrganizationEventsTrendsBase(APITestCase, SnubaTestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         super().setUp()
         self.login_as(user=self.user)
 
         self.day_ago = before_now(days=1).replace(hour=10, minute=0, second=0, microsecond=0)
         self.prototype = load_data("transaction")
         data = self.prototype.copy()
-        data["start_timestamp"] = iso_format(self.day_ago + timedelta(minutes=30))
+        data["start_timestamp"] = (self.day_ago + timedelta(minutes=30)).isoformat()
         data["user"] = {"email": "foo@example.com"}
-        data["timestamp"] = iso_format(self.day_ago + timedelta(minutes=30, seconds=2))
+        data["timestamp"] = (self.day_ago + timedelta(minutes=30, seconds=2)).isoformat()
         data["measurements"]["lcp"]["value"] = 2000
         self.store_event(data, project_id=self.project.id)
 
         second = [0, 2, 10]
         for i in range(3):
             data = self.prototype.copy()
-            data["start_timestamp"] = iso_format(self.day_ago + timedelta(hours=1, minutes=30 + i))
-            data["timestamp"] = iso_format(
+            data["start_timestamp"] = (
+                self.day_ago + timedelta(hours=1, minutes=30 + i)
+            ).isoformat()
+            data["timestamp"] = (
                 self.day_ago + timedelta(hours=1, minutes=30 + i, seconds=second[i])
-            )
+            ).isoformat()
             data["measurements"]["lcp"]["value"] = second[i] * 1000
             data["user"] = {"email": f"foo{i}@example.com"}
             self.store_event(data, project_id=self.project.id)
@@ -49,21 +48,22 @@ class OrganizationEventsTrendsBase(APITestCase, SnubaTestCase):
 
 
 class OrganizationEventsTrendsEndpointTest(OrganizationEventsTrendsBase):
-    def setUp(self):
+    def setUp(self) -> None:
         super().setUp()
         self.url = reverse(
             "sentry-api-0-organization-events-trends",
-            kwargs={"organization_slug": self.project.organization.slug},
+            kwargs={"organization_id_or_slug": self.project.organization.slug},
         )
+        self.features = {"organizations:performance-view": True}
 
-    def test_simple(self):
-        with self.feature("organizations:performance-view"):
+    def test_simple(self) -> None:
+        with self.feature(self.features):
             response = self.client.get(
                 self.url,
                 format="json",
                 data={
-                    "end": iso_format(self.day_ago + timedelta(hours=2)),
-                    "start": iso_format(self.day_ago),
+                    "end": (self.day_ago + timedelta(hours=2)).isoformat(),
+                    "start": self.day_ago.isoformat(),
                     "field": ["project", "transaction"],
                     "query": "event.type:transaction",
                     "trendType": "regression",
@@ -86,14 +86,14 @@ class OrganizationEventsTrendsEndpointTest(OrganizationEventsTrendsBase):
         )
         self.assert_event(events["data"][0])
 
-    def test_web_vital(self):
-        with self.feature("organizations:performance-view"):
+    def test_web_vital(self) -> None:
+        with self.feature(self.features):
             response = self.client.get(
                 self.url,
                 format="json",
                 data={
-                    "end": iso_format(self.day_ago + timedelta(hours=2)),
-                    "start": iso_format(self.day_ago),
+                    "end": (self.day_ago + timedelta(hours=2)).isoformat(),
+                    "start": self.day_ago.isoformat(),
                     "field": ["project", "transaction"],
                     "query": "event.type:transaction",
                     "trendType": "regression",
@@ -118,14 +118,14 @@ class OrganizationEventsTrendsEndpointTest(OrganizationEventsTrendsBase):
         )
         self.assert_event(events["data"][0])
 
-    def test_p75(self):
-        with self.feature("organizations:performance-view"):
+    def test_p75(self) -> None:
+        with self.feature(self.features):
             response = self.client.get(
                 self.url,
                 format="json",
                 data={
-                    "end": iso_format(self.day_ago + timedelta(hours=2)),
-                    "start": iso_format(self.day_ago),
+                    "end": (self.day_ago + timedelta(hours=2)).isoformat(),
+                    "start": self.day_ago.isoformat(),
                     "field": ["project", "transaction"],
                     "query": "event.type:transaction",
                     "trendFunction": "p75()",
@@ -148,14 +148,14 @@ class OrganizationEventsTrendsEndpointTest(OrganizationEventsTrendsBase):
         )
         self.assert_event(events["data"][0])
 
-    def test_p95(self):
-        with self.feature("organizations:performance-view"):
+    def test_p95(self) -> None:
+        with self.feature(self.features):
             response = self.client.get(
                 self.url,
                 format="json",
                 data={
-                    "end": iso_format(self.day_ago + timedelta(hours=2)),
-                    "start": iso_format(self.day_ago),
+                    "end": (self.day_ago + timedelta(hours=2)).isoformat(),
+                    "start": self.day_ago.isoformat(),
                     "field": ["project", "transaction"],
                     "query": "event.type:transaction",
                     "trendFunction": "p95()",
@@ -178,14 +178,14 @@ class OrganizationEventsTrendsEndpointTest(OrganizationEventsTrendsBase):
         )
         self.assert_event(events["data"][0])
 
-    def test_p99(self):
-        with self.feature("organizations:performance-view"):
+    def test_p99(self) -> None:
+        with self.feature(self.features):
             response = self.client.get(
                 self.url,
                 format="json",
                 data={
-                    "end": iso_format(self.day_ago + timedelta(hours=2)),
-                    "start": iso_format(self.day_ago),
+                    "end": (self.day_ago + timedelta(hours=2)).isoformat(),
+                    "start": self.day_ago.isoformat(),
                     "field": ["project", "transaction"],
                     "query": "event.type:transaction",
                     "trendFunction": "p99()",
@@ -208,7 +208,7 @@ class OrganizationEventsTrendsEndpointTest(OrganizationEventsTrendsBase):
         )
         self.assert_event(events["data"][0])
 
-    def test_trend_percentage_query_alias(self):
+    def test_trend_percentage_query_alias(self) -> None:
         queries = [
             ("trend_percentage():>0%", "regression", 1),
             ("trend_percentage():392%", "regression", 1),
@@ -216,13 +216,13 @@ class OrganizationEventsTrendsEndpointTest(OrganizationEventsTrendsBase):
             ("trend_percentage():392%", "improved", 0),
         ]
         for query_data in queries:
-            with self.feature("organizations:performance-view"):
+            with self.feature(self.features):
                 response = self.client.get(
                     self.url,
                     format="json",
                     data={
-                        "end": iso_format(self.day_ago + timedelta(hours=2)),
-                        "start": iso_format(self.day_ago),
+                        "end": (self.day_ago + timedelta(hours=2)).isoformat(),
+                        "start": self.day_ago.isoformat(),
                         "field": ["project", "transaction"],
                         "query": f"event.type:transaction {query_data[0]}",
                         "trendType": query_data[1],
@@ -237,7 +237,29 @@ class OrganizationEventsTrendsEndpointTest(OrganizationEventsTrendsBase):
 
             assert len(events["data"]) == query_data[2], query_data
 
-    def test_trend_difference_query_alias(self):
+    def test_trend_percentage_query_alias_as_sort(self) -> None:
+        with self.feature(self.features):
+            response = self.client.get(
+                self.url,
+                format="json",
+                data={
+                    "end": (self.day_ago + timedelta(hours=2)).isoformat(),
+                    "start": self.day_ago.isoformat(),
+                    "field": ["project", "transaction"],
+                    "query": "event.type:transaction",
+                    "trendType": "improved",
+                    "trendFunction": "p50()",
+                    "sort": "trend_percentage()",
+                },
+            )
+
+        assert response.status_code == 200, response.content
+
+        events = response.data
+
+        assert len(events["data"]) == 1
+
+    def test_trend_difference_query_alias(self) -> None:
         queries = [
             ("trend_difference():>7s", "regression", 1),
             ("trend_difference():7.84s", "regression", 1),
@@ -245,13 +267,13 @@ class OrganizationEventsTrendsEndpointTest(OrganizationEventsTrendsBase):
             ("trend_difference():7.84s", "improved", 0),
         ]
         for query_data in queries:
-            with self.feature("organizations:performance-view"):
+            with self.feature(self.features):
                 response = self.client.get(
                     self.url,
                     format="json",
                     data={
-                        "end": iso_format(self.day_ago + timedelta(hours=2)),
-                        "start": iso_format(self.day_ago),
+                        "end": (self.day_ago + timedelta(hours=2)).isoformat(),
+                        "start": self.day_ago.isoformat(),
                         "field": ["project", "transaction"],
                         "query": f"event.type:transaction {query_data[0]}",
                         "trendType": query_data[1],
@@ -266,14 +288,14 @@ class OrganizationEventsTrendsEndpointTest(OrganizationEventsTrendsBase):
 
             assert len(events["data"]) == query_data[2], query_data
 
-    def test_avg_trend_function(self):
-        with self.feature("organizations:performance-view"):
+    def test_avg_trend_function(self) -> None:
+        with self.feature(self.features):
             response = self.client.get(
                 self.url,
                 format="json",
                 data={
-                    "end": iso_format(self.day_ago + timedelta(hours=2)),
-                    "start": iso_format(self.day_ago),
+                    "end": (self.day_ago + timedelta(hours=2)).isoformat(),
+                    "start": self.day_ago.isoformat(),
                     "field": ["project", "transaction"],
                     "query": "event.type:transaction",
                     "trendFunction": "avg(transaction.duration)",
@@ -296,14 +318,14 @@ class OrganizationEventsTrendsEndpointTest(OrganizationEventsTrendsBase):
         )
         self.assert_event(events["data"][0])
 
-    def test_invalid_trend_function(self):
-        with self.feature("organizations:performance-view"):
+    def test_invalid_trend_function(self) -> None:
+        with self.feature(self.features):
             response = self.client.get(
                 self.url,
                 format="json",
                 data={
-                    "end": iso_format(self.day_ago + timedelta(hours=2)),
-                    "start": iso_format(self.day_ago),
+                    "end": (self.day_ago + timedelta(hours=2)).isoformat(),
+                    "start": self.day_ago.isoformat(),
                     "field": ["project", "transaction"],
                     "query": "event.type:transaction",
                     "trendFunction": "apdex(450)",
@@ -312,15 +334,15 @@ class OrganizationEventsTrendsEndpointTest(OrganizationEventsTrendsBase):
             )
             assert response.status_code == 400
 
-    def test_divide_by_zero(self):
-        with self.feature("organizations:performance-view"):
+    def test_divide_by_zero(self) -> None:
+        with self.feature(self.features):
             response = self.client.get(
                 self.url,
                 format="json",
                 data={
                     # Set the timeframe to where the second range has no transactions so all the counts/percentile are 0
-                    "end": iso_format(self.day_ago + timedelta(hours=2)),
-                    "start": iso_format(self.day_ago - timedelta(hours=2)),
+                    "end": (self.day_ago + timedelta(hours=2)).isoformat(),
+                    "start": (self.day_ago - timedelta(hours=2)).isoformat(),
                     "field": ["project", "transaction"],
                     "query": "event.type:transaction",
                     "project": [self.project.id],
@@ -344,16 +366,16 @@ class OrganizationEventsTrendsEndpointTest(OrganizationEventsTrendsBase):
         )
         self.assert_event(events["data"][0])
 
-    def test_auto_aggregation(self):
+    def test_auto_aggregation(self) -> None:
         # absolute_correlation is automatically added, and not a part of data otherwise
-        with self.feature("organizations:performance-view"):
+        with self.feature(self.features):
             response = self.client.get(
                 self.url,
                 format="json",
                 data={
                     # Set the timeframe to where the second range has no transactions so all the counts/percentile are 0
-                    "end": iso_format(self.day_ago + timedelta(hours=2)),
-                    "start": iso_format(self.day_ago - timedelta(hours=2)),
+                    "end": (self.day_ago + timedelta(hours=2)).isoformat(),
+                    "start": (self.day_ago - timedelta(hours=2)).isoformat(),
                     "field": ["project", "transaction"],
                     "query": "event.type:transaction absolute_correlation():>0.2",
                     "project": [self.project.id],
@@ -364,7 +386,6 @@ class OrganizationEventsTrendsEndpointTest(OrganizationEventsTrendsBase):
         events = response.data
 
         assert len(events["data"]) == 1
-        assert events["data"][0].pop("absolute_correlation") > 0.2
         self.expected_data.update(
             {
                 "count_range_2": 4,
@@ -380,21 +401,22 @@ class OrganizationEventsTrendsEndpointTest(OrganizationEventsTrendsBase):
 
 
 class OrganizationEventsTrendsStatsEndpointTest(OrganizationEventsTrendsBase):
-    def setUp(self):
+    def setUp(self) -> None:
         super().setUp()
         self.url = reverse(
             "sentry-api-0-organization-events-trends-stats",
-            kwargs={"organization_slug": self.project.organization.slug},
+            kwargs={"organization_id_or_slug": self.project.organization.slug},
         )
+        self.features = {"organizations:performance-view": True}
 
-    def test_simple(self):
-        with self.feature("organizations:performance-view"):
+    def test_simple(self) -> None:
+        with self.feature(self.features):
             response = self.client.get(
                 self.url,
                 format="json",
                 data={
-                    "end": iso_format(self.day_ago + timedelta(hours=2)),
-                    "start": iso_format(self.day_ago),
+                    "end": (self.day_ago + timedelta(hours=2)).isoformat(),
+                    "start": self.day_ago.isoformat(),
                     "interval": "1h",
                     "field": ["project", "transaction"],
                     "query": "event.type:transaction",
@@ -424,14 +446,14 @@ class OrganizationEventsTrendsStatsEndpointTest(OrganizationEventsTrendsBase):
             [{"count": 2000}],
         ]
 
-    def test_web_vital(self):
-        with self.feature("organizations:performance-view"):
+    def test_web_vital(self) -> None:
+        with self.feature(self.features):
             response = self.client.get(
                 self.url,
                 format="json",
                 data={
-                    "end": iso_format(self.day_ago + timedelta(hours=2)),
-                    "start": iso_format(self.day_ago),
+                    "end": (self.day_ago + timedelta(hours=2)).isoformat(),
+                    "start": self.day_ago.isoformat(),
                     "interval": "1h",
                     "field": ["project", "transaction"],
                     "query": "event.type:transaction",
@@ -462,14 +484,14 @@ class OrganizationEventsTrendsStatsEndpointTest(OrganizationEventsTrendsBase):
             [{"count": 2000}],
         ]
 
-    def test_p75(self):
-        with self.feature("organizations:performance-view"):
+    def test_p75(self) -> None:
+        with self.feature(self.features):
             response = self.client.get(
                 self.url,
                 format="json",
                 data={
-                    "end": iso_format(self.day_ago + timedelta(hours=2)),
-                    "start": iso_format(self.day_ago),
+                    "end": (self.day_ago + timedelta(hours=2)).isoformat(),
+                    "start": self.day_ago.isoformat(),
                     "interval": "1h",
                     "field": ["project", "transaction"],
                     "query": "event.type:transaction",
@@ -500,14 +522,14 @@ class OrganizationEventsTrendsStatsEndpointTest(OrganizationEventsTrendsBase):
             [{"count": 6000}],
         ]
 
-    def test_p95(self):
-        with self.feature("organizations:performance-view"):
+    def test_p95(self) -> None:
+        with self.feature(self.features):
             response = self.client.get(
                 self.url,
                 format="json",
                 data={
-                    "end": iso_format(self.day_ago + timedelta(hours=2)),
-                    "start": iso_format(self.day_ago),
+                    "end": (self.day_ago + timedelta(hours=2)).isoformat(),
+                    "start": self.day_ago.isoformat(),
                     "interval": "1h",
                     "field": ["project", "transaction"],
                     "query": "event.type:transaction",
@@ -538,14 +560,14 @@ class OrganizationEventsTrendsStatsEndpointTest(OrganizationEventsTrendsBase):
             [{"count": 9200}],
         ]
 
-    def test_p99(self):
-        with self.feature("organizations:performance-view"):
+    def test_p99(self) -> None:
+        with self.feature(self.features):
             response = self.client.get(
                 self.url,
                 format="json",
                 data={
-                    "end": iso_format(self.day_ago + timedelta(hours=2)),
-                    "start": iso_format(self.day_ago),
+                    "end": (self.day_ago + timedelta(hours=2)).isoformat(),
+                    "start": self.day_ago.isoformat(),
                     "interval": "1h",
                     "field": ["project", "transaction"],
                     "query": "event.type:transaction",
@@ -576,15 +598,15 @@ class OrganizationEventsTrendsStatsEndpointTest(OrganizationEventsTrendsBase):
             [{"count": 9840}],
         ]
 
-    def test_avg_trend_function(self):
-        with self.feature("organizations:performance-view"):
+    def test_avg_trend_function(self) -> None:
+        with self.feature(self.features):
             response = self.client.get(
                 self.url,
                 format="json",
                 data={
-                    "end": iso_format(self.day_ago + timedelta(hours=2)),
+                    "end": (self.day_ago + timedelta(hours=2)).isoformat(),
                     "interval": "1h",
-                    "start": iso_format(self.day_ago),
+                    "start": self.day_ago.isoformat(),
                     "field": ["project", "transaction"],
                     "query": "event.type:transaction",
                     "trendFunction": "avg(transaction.duration)",
@@ -614,15 +636,61 @@ class OrganizationEventsTrendsStatsEndpointTest(OrganizationEventsTrendsBase):
             [{"count": 4000}],
         ]
 
-    def test_trend_with_middle(self):
-        with self.feature("organizations:performance-view"):
+    def test_alias_in_conditions(self) -> None:
+        query_parts = [
+            "event.type:transaction",
+            "count_percentage():>0.25",
+            "count_percentage():<4",
+            "trend_percentage():>0%",
+        ]
+        queries = [" ".join(query_parts), " AND ".join(query_parts)]
+        for query in queries:
+            with self.feature(self.features):
+                response = self.client.get(
+                    self.url,
+                    format="json",
+                    data={
+                        "end": (self.day_ago + timedelta(hours=2)).isoformat(),
+                        "interval": "1h",
+                        "start": self.day_ago.isoformat(),
+                        "field": ["project", "transaction"],
+                        "query": query,
+                        "trendFunction": "avg(transaction.duration)",
+                        "project": [self.project.id],
+                    },
+                )
+            assert response.status_code == 200, response.content
+
+            events = response.data["events"]
+            result_stats = response.data["stats"]
+
+            assert len(events["data"]) == 1
+            self.expected_data.update(
+                {
+                    "aggregate_range_1": 2000,
+                    "aggregate_range_2": 4000,
+                    "count_percentage": 3.0,
+                    "trend_difference": 2000.0,
+                    "trend_percentage": 2.0,
+                }
+            )
+            self.assert_event(events["data"][0])
+
+            stats = result_stats[f"{self.project.slug},{self.prototype['transaction']}"]
+            assert [attrs for time, attrs in stats["data"]] == [
+                [{"count": 2000}],
+                [{"count": 4000}],
+            ]
+
+    def test_trend_with_middle(self) -> None:
+        with self.feature(self.features):
             response = self.client.get(
                 self.url,
                 format="json",
                 data={
-                    "end": iso_format(self.day_ago + timedelta(hours=2)),
-                    "middle": iso_format(self.day_ago + timedelta(hours=1, minutes=31)),
-                    "start": iso_format(self.day_ago),
+                    "end": (self.day_ago + timedelta(hours=2)).isoformat(),
+                    "middle": (self.day_ago + timedelta(hours=1, minutes=31)).isoformat(),
+                    "start": self.day_ago.isoformat(),
                     "interval": "1h",
                     "field": ["project", "transaction"],
                     "query": "event.type:transaction",
@@ -655,15 +723,15 @@ class OrganizationEventsTrendsStatsEndpointTest(OrganizationEventsTrendsBase):
             [{"count": 4000}],
         ]
 
-    def test_invalid_middle_date(self):
-        with self.feature("organizations:performance-view"):
+    def test_invalid_middle_date(self) -> None:
+        with self.feature(self.features):
             response = self.client.get(
                 self.url,
                 format="json",
                 data={
-                    "start": iso_format(self.day_ago),
+                    "start": self.day_ago.isoformat(),
                     "middle": "blah",
-                    "end": iso_format(self.day_ago + timedelta(hours=2)),
+                    "end": (self.day_ago + timedelta(hours=2)).isoformat(),
                     "field": ["project", "transaction"],
                     "query": "event.type:transaction",
                     "trendFunction": "p50()",
@@ -676,9 +744,9 @@ class OrganizationEventsTrendsStatsEndpointTest(OrganizationEventsTrendsBase):
                 self.url,
                 format="json",
                 data={
-                    "start": iso_format(self.day_ago),
-                    "middle": iso_format(self.day_ago - timedelta(hours=2)),
-                    "end": iso_format(self.day_ago + timedelta(hours=2)),
+                    "start": self.day_ago.isoformat(),
+                    "middle": (self.day_ago - timedelta(hours=2)).isoformat(),
+                    "end": (self.day_ago + timedelta(hours=2)).isoformat(),
                     "field": ["project", "transaction"],
                     "query": "event.type:transaction",
                     "trendFunction": "apdex(450)",
@@ -691,9 +759,9 @@ class OrganizationEventsTrendsStatsEndpointTest(OrganizationEventsTrendsBase):
                 self.url,
                 format="json",
                 data={
-                    "start": iso_format(self.day_ago),
-                    "middle": iso_format(self.day_ago + timedelta(hours=4)),
-                    "end": iso_format(self.day_ago + timedelta(hours=2)),
+                    "start": self.day_ago.isoformat(),
+                    "middle": (self.day_ago + timedelta(hours=4)).isoformat(),
+                    "end": (self.day_ago + timedelta(hours=2)).isoformat(),
                     "field": ["project", "transaction"],
                     "query": "event.type:transaction",
                     "trendFunction": "apdex(450)",
@@ -702,14 +770,14 @@ class OrganizationEventsTrendsStatsEndpointTest(OrganizationEventsTrendsBase):
             )
             assert response.status_code == 400
 
-    def test_invalid_trend_function(self):
-        with self.feature("organizations:performance-view"):
+    def test_invalid_trend_function(self) -> None:
+        with self.feature(self.features):
             response = self.client.get(
                 self.url,
                 format="json",
                 data={
-                    "end": iso_format(self.day_ago + timedelta(hours=2)),
-                    "start": iso_format(self.day_ago),
+                    "end": (self.day_ago + timedelta(hours=2)).isoformat(),
+                    "start": self.day_ago.isoformat(),
                     "field": ["project", "transaction"],
                     "query": "event.type:transaction",
                     "trendFunction": "apdex(450)",
@@ -718,15 +786,15 @@ class OrganizationEventsTrendsStatsEndpointTest(OrganizationEventsTrendsBase):
             )
             assert response.status_code == 400
 
-    def test_divide_by_zero(self):
-        with self.feature("organizations:performance-view"):
+    def test_divide_by_zero(self) -> None:
+        with self.feature(self.features):
             response = self.client.get(
                 self.url,
                 format="json",
                 data={
                     # Set the timeframe to where the second range has no transactions so all the counts/percentile are 0
-                    "end": iso_format(self.day_ago + timedelta(hours=2)),
-                    "start": iso_format(self.day_ago - timedelta(hours=2)),
+                    "end": (self.day_ago + timedelta(hours=2)).isoformat(),
+                    "start": (self.day_ago - timedelta(hours=2)).isoformat(),
                     "interval": "1h",
                     "field": ["project", "transaction"],
                     "query": "event.type:transaction",
@@ -762,27 +830,28 @@ class OrganizationEventsTrendsStatsEndpointTest(OrganizationEventsTrendsBase):
 
 
 class OrganizationEventsTrendsPagingTest(APITestCase, SnubaTestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         super().setUp()
         self.login_as(user=self.user)
         self.url = reverse(
             "sentry-api-0-organization-events-trends-stats",
-            kwargs={"organization_slug": self.project.organization.slug},
+            kwargs={"organization_id_or_slug": self.project.organization.slug},
         )
 
         self.day_ago = before_now(days=1).replace(hour=10, minute=0, second=0, microsecond=0)
 
         self.prototype = load_data("transaction")
+        self.features = {"organizations:performance-view": True}
 
         # Make 10 transactions for paging
         for i in range(10):
             for j in range(2):
                 data = self.prototype.copy()
                 data["user"] = {"email": "foo@example.com"}
-                data["start_timestamp"] = iso_format(self.day_ago + timedelta(minutes=30))
-                data["timestamp"] = iso_format(
+                data["start_timestamp"] = (self.day_ago + timedelta(minutes=30)).isoformat()
+                data["timestamp"] = (
                     self.day_ago + timedelta(hours=j, minutes=30, seconds=2)
-                )
+                ).isoformat()
                 if i < 5:
                     data["transaction"] = f"transaction_1{i}"
                 else:
@@ -797,15 +866,15 @@ class OrganizationEventsTrendsPagingTest(APITestCase, SnubaTestCase):
             attrs["href"] = url
         return links
 
-    def test_pagination(self):
-        with self.feature("organizations:performance-view"):
+    def test_pagination(self) -> None:
+        with self.feature(self.features):
             response = self.client.get(
                 self.url,
                 format="json",
                 data={
                     # Set the timeframe to where the second range has no transactions so all the counts/percentile are 0
-                    "end": iso_format(self.day_ago + timedelta(hours=2)),
-                    "start": iso_format(self.day_ago - timedelta(hours=2)),
+                    "end": (self.day_ago + timedelta(hours=2)).isoformat(),
+                    "start": (self.day_ago - timedelta(hours=2)).isoformat(),
                     "field": ["project", "transaction"],
                     "query": "event.type:transaction",
                     "project": [self.project.id],
@@ -826,15 +895,15 @@ class OrganizationEventsTrendsPagingTest(APITestCase, SnubaTestCase):
             assert links["next"]["results"] == "false"
             assert len(response.data["events"]["data"]) == 5
 
-    def test_pagination_with_query(self):
-        with self.feature("organizations:performance-view"):
+    def test_pagination_with_query(self) -> None:
+        with self.feature(self.features):
             response = self.client.get(
                 self.url,
                 format="json",
                 data={
                     # Set the timeframe to where the second range has no transactions so all the counts/percentile are 0
-                    "end": iso_format(self.day_ago + timedelta(hours=2)),
-                    "start": iso_format(self.day_ago - timedelta(hours=2)),
+                    "end": (self.day_ago + timedelta(hours=2)).isoformat(),
+                    "start": (self.day_ago - timedelta(hours=2)).isoformat(),
                     "field": ["project", "transaction"],
                     "query": "event.type:transaction transaction:transaction_1*",
                     "project": [self.project.id],
@@ -846,107 +915,3 @@ class OrganizationEventsTrendsPagingTest(APITestCase, SnubaTestCase):
             assert links["previous"]["results"] == "false"
             assert links["next"]["results"] == "false"
             assert len(response.data["events"]["data"]) == 5
-
-
-class OrganizationEventsTrendsAliasTest(TestCase):
-    def setUp(self):
-        self.improved_aliases = OrganizationEventsTrendsEndpointBase.get_function_aliases(
-            "improved"
-        )
-        self.regression_aliases = OrganizationEventsTrendsEndpointBase.get_function_aliases(
-            "regression"
-        )
-
-    def test_simple(self):
-        result = get_filter(
-            "trend_percentage():>0% trend_difference():>0", {"aliases": self.improved_aliases}
-        )
-
-        assert result.having == [
-            ["trend_percentage", "<", 1.0],
-            ["trend_difference", "<", 0.0],
-        ]
-
-        result = get_filter(
-            "trend_percentage():>0% trend_difference():>0", {"aliases": self.regression_aliases}
-        )
-
-        assert result.having == [
-            ["trend_percentage", ">", 1.0],
-            ["trend_difference", ">", 0.0],
-        ]
-
-    def test_and_query(self):
-        result = get_filter(
-            "trend_percentage():>0% AND trend_percentage():<100%",
-            {"aliases": self.improved_aliases},
-        )
-
-        assert result.having == [["trend_percentage", "<", 1.0], ["trend_percentage", ">", 0.0]]
-
-        result = get_filter(
-            "trend_percentage():>0% AND trend_percentage():<100%",
-            {"aliases": self.regression_aliases},
-        )
-
-        assert result.having == [["trend_percentage", ">", 1.0], ["trend_percentage", "<", 2.0]]
-
-    def test_or_query(self):
-        result = get_filter(
-            "trend_percentage():>0% OR trend_percentage():<100%",
-            {"aliases": self.improved_aliases},
-        )
-
-        assert result.having == [
-            [
-                [
-                    "or",
-                    [["less", ["trend_percentage", 1.0]], ["greater", ["trend_percentage", 0.0]]],
-                ],
-                "=",
-                1,
-            ]
-        ]
-
-        result = get_filter(
-            "trend_percentage():>0% OR trend_percentage():<100%",
-            {"aliases": self.regression_aliases},
-        )
-
-        assert result.having == [
-            [
-                [
-                    "or",
-                    [["greater", ["trend_percentage", 1.0]], ["less", ["trend_percentage", 2.0]]],
-                ],
-                "=",
-                1,
-            ]
-        ]
-
-    def test_greater_than(self):
-        result = get_filter("trend_difference():>=0", {"aliases": self.improved_aliases})
-
-        assert result.having == [["trend_difference", "<=", 0.0]]
-
-        result = get_filter("trend_difference():>=0", {"aliases": self.regression_aliases})
-
-        assert result.having == [["trend_difference", ">=", 0.0]]
-
-    def test_negation(self):
-        result = get_filter("!trend_difference():>=0", {"aliases": self.improved_aliases})
-
-        assert result.having == [["trend_difference", ">", 0.0]]
-
-        result = get_filter("!trend_difference():>=0", {"aliases": self.regression_aliases})
-
-        assert result.having == [["trend_difference", "<", 0.0]]
-
-    def test_confidence(self):
-        result = get_filter("confidence():>6", {"aliases": self.improved_aliases})
-
-        assert result.having == [["t_test", ">", 6.0]]
-
-        result = get_filter("confidence():>6", {"aliases": self.regression_aliases})
-
-        assert result.having == [["t_test", "<", -6.0]]

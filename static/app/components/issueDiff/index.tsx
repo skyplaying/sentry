@@ -1,186 +1,224 @@
-import {Component} from 'react';
-import isPropValid from '@emotion/is-prop-valid';
+import {lazy, useEffect, useMemo, useRef} from 'react';
+import {css} from '@emotion/react';
 import styled from '@emotion/styled';
+import {useQuery} from '@tanstack/react-query';
 
-import {addErrorMessage} from 'app/actionCreators/indicator';
-import {Client} from 'app/api';
-import Button from 'app/components/button';
-import ButtonBar from 'app/components/buttonBar';
-import LoadingIndicator from 'app/components/loadingIndicator';
-import SplitDiff from 'app/components/splitDiff';
-import {t} from 'app/locale';
-import space from 'app/styles/space';
-import {Project} from 'app/types';
-import getStacktraceBody from 'app/utils/getStacktraceBody';
-import withApi from 'app/utils/withApi';
+import {isStacktraceNewestFirst} from 'sentry/components/events/interfaces/utils';
+import LazyLoad from 'sentry/components/lazyLoad';
+import LoadingError from 'sentry/components/loadingError';
+import LoadingIndicator from 'sentry/components/loadingIndicator';
+import {t} from 'sentry/locale';
+import type {Event} from 'sentry/types/event';
+import {trackAnalytics} from 'sentry/utils/analytics';
+import {apiOptions} from 'sentry/utils/api/apiOptions';
+import getStacktraceBody from 'sentry/utils/getStacktraceBody';
+import {useLocation} from 'sentry/utils/useLocation';
+import useOrganization from 'sentry/utils/useOrganization';
 
-import renderGroupingInfo from './renderGroupingInfo';
+const SplitDiffLazy = lazy(() => import('../splitDiff'));
 
-const defaultProps = {
-  baseEventId: 'latest',
-  targetEventId: 'latest',
-};
-
-type DefaultProps = typeof defaultProps;
-
-type Props = {
-  api: Client;
+interface IssueDiffProps {
   baseIssueId: string;
   targetIssueId: string;
-  orgId: string;
-  project: Project;
   baseEventId?: string;
+  hasSimilarityEmbeddingsProjectFeature?: boolean;
+  shouldBeGrouped?: string;
   targetEventId?: string;
-  className?: string;
-};
+}
 
-type State = {
-  loading: boolean;
-  groupingDiff: boolean;
-  baseEvent: Array<string>;
-  targetEvent: Array<string>;
-  SplitDiffAsync?: typeof SplitDiff;
-};
+export function IssueDiff({
+  baseIssueId,
+  targetIssueId,
+  baseEventId = 'latest',
+  targetEventId = 'latest',
+  hasSimilarityEmbeddingsProjectFeature,
+  shouldBeGrouped,
+}: IssueDiffProps) {
+  const organization = useOrganization();
+  const location = useLocation();
+  const hasTrackedAnalytics = useRef(false);
 
-class IssueDiff extends Component<Props, State> {
-  static defaultProps: DefaultProps = defaultProps;
+  const hasSimilarityEmbeddingsFeature =
+    hasSimilarityEmbeddingsProjectFeature || location.query.similarityEmbeddings === '1';
 
-  state: State = {
-    loading: true,
-    groupingDiff: false,
-    baseEvent: [],
-    targetEvent: [],
+  const newestFirst = isStacktraceNewestFirst();
 
-    // `SplitDiffAsync` is an async-loaded component
-    // This will eventually contain a reference to the exported component from `./splitDiff`
-    SplitDiffAsync: undefined,
-  };
+  const baseLatestQuery = useQuery({
+    ...apiOptions.as<{eventID: string}>()(
+      '/organizations/$organizationIdOrSlug/issues/$issueId/events/$eventId/',
+      {
+        path: {
+          organizationIdOrSlug: organization.slug,
+          issueId: baseIssueId,
+          eventId: 'latest',
+        },
+        staleTime: 60_000,
+      }
+    ),
+    enabled: baseEventId === 'latest',
+  });
 
-  componentDidMount() {
-    this.fetchData();
-  }
+  const targetLatestQuery = useQuery({
+    ...apiOptions.as<{eventID: string}>()(
+      '/organizations/$organizationIdOrSlug/issues/$issueId/events/$eventId/',
+      {
+        path: {
+          organizationIdOrSlug: organization.slug,
+          issueId: targetIssueId,
+          eventId: 'latest',
+        },
+        staleTime: 60_000,
+      }
+    ),
+    enabled: targetEventId === 'latest',
+  });
 
-  fetchData() {
-    const {baseIssueId, targetIssueId, baseEventId, targetEventId} = this.props;
+  const resolvedBaseEventId =
+    baseEventId === 'latest' ? baseLatestQuery.data?.eventID : baseEventId;
+  const resolvedTargetEventId =
+    targetEventId === 'latest' ? targetLatestQuery.data?.eventID : targetEventId;
 
-    // Fetch component and event data
-    Promise.all([
-      import('../splitDiff'),
-      this.fetchEventData(baseIssueId, baseEventId ?? 'latest'),
-      this.fetchEventData(targetIssueId, targetEventId ?? 'latest'),
-    ])
-      .then(([{default: SplitDiffAsync}, baseEvent, targetEvent]) => {
-        this.setState({
-          SplitDiffAsync,
-          baseEvent,
-          targetEvent,
-          loading: false,
-        });
-      })
-      .catch(() => {
-        addErrorMessage(t('Error loading events'));
-      });
-  }
+  const baseEventQuery = useQuery({
+    ...apiOptions.as<Event>()(
+      '/organizations/$organizationIdOrSlug/issues/$issueId/events/$eventId/',
+      {
+        path: {
+          organizationIdOrSlug: organization.slug,
+          issueId: baseIssueId,
+          eventId: resolvedBaseEventId ?? '',
+        },
+        staleTime: 60_000,
+      }
+    ),
+    enabled: Boolean(resolvedBaseEventId),
+  });
 
-  toggleDiffMode = () => {
-    this.setState(
-      state => ({groupingDiff: !state.groupingDiff, loading: true}),
-      this.fetchData
-    );
-  };
+  const targetEventQuery = useQuery({
+    ...apiOptions.as<Event>()(
+      '/organizations/$organizationIdOrSlug/issues/$issueId/events/$eventId/',
+      {
+        path: {
+          organizationIdOrSlug: organization.slug,
+          issueId: targetIssueId,
+          eventId: resolvedTargetEventId ?? '',
+        },
+        staleTime: 60_000,
+      }
+    ),
+    enabled: Boolean(resolvedTargetEventId),
+  });
 
-  fetchEventData = async (issueId: string, eventId: string) => {
-    const {orgId, project, api} = this.props;
-    const {groupingDiff} = this.state;
+  const baseStacktrace = useMemo(() => {
+    if (!baseEventQuery.data) {
+      return [];
+    }
+    return getStacktraceBody({
+      event: baseEventQuery.data,
+      hasSimilarityEmbeddingsFeature,
+      includeLocation: false,
+      rawTrace: false,
+      newestFirst,
+      includeJSContext: true,
+    });
+  }, [baseEventQuery.data, hasSimilarityEmbeddingsFeature, newestFirst]);
 
-    let paramEventId = eventId;
-
-    if (eventId === 'latest') {
-      const event = await api.requestPromise(`/issues/${issueId}/events/latest/`);
-      paramEventId = event.eventID;
+  const targetStacktrace = useMemo(() => {
+    if (!targetEventQuery.data) {
+      return [];
     }
 
-    if (groupingDiff) {
-      const groupingInfo = await api.requestPromise(
-        `/projects/${orgId}/${project.slug}/events/${paramEventId}/grouping-info/`
-      );
-      return renderGroupingInfo(groupingInfo);
+    return getStacktraceBody({
+      event: targetEventQuery.data,
+      hasSimilarityEmbeddingsFeature,
+      includeLocation: false,
+      rawTrace: false,
+      newestFirst,
+      includeJSContext: true,
+    });
+  }, [targetEventQuery.data, hasSimilarityEmbeddingsFeature, newestFirst]);
+
+  useEffect(() => {
+    if (
+      hasTrackedAnalytics.current ||
+      !organization ||
+      !hasSimilarityEmbeddingsFeature ||
+      !baseEventQuery.data ||
+      !targetEventQuery.data
+    ) {
+      return;
     }
 
-    const event = await api.requestPromise(
-      `/projects/${orgId}/${project.slug}/events/${paramEventId}/`
-    );
-    return getStacktraceBody(event);
-  };
+    hasTrackedAnalytics.current = true;
+    trackAnalytics('issue_details.similar_issues.diff_clicked', {
+      organization,
+      project_id: baseEventQuery.data?.projectID,
+      group_id: baseEventQuery.data?.groupID,
+      parent_group_id: targetEventQuery.data?.groupID,
+      shouldBeGrouped,
+    });
+  }, [
+    baseEventQuery.data,
+    hasSimilarityEmbeddingsFeature,
+    organization,
+    shouldBeGrouped,
+    targetEventQuery.data,
+  ]);
 
-  render() {
-    const {className, project} = this.props;
-    const {
-      SplitDiffAsync: DiffComponent,
-      loading,
-      groupingDiff,
-      baseEvent,
-      targetEvent,
-    } = this.state;
+  const baseArray = useMemo(() => {
+    return newestFirst ? baseStacktrace.toReversed() : baseStacktrace;
+  }, [baseStacktrace, newestFirst]);
 
-    const showDiffToggle = project.features.includes('similarity-view-v2');
+  const targetArray = useMemo(() => {
+    return newestFirst ? targetStacktrace.toReversed() : targetStacktrace;
+  }, [newestFirst, targetStacktrace]);
 
+  const hasError =
+    baseLatestQuery.isError ||
+    targetLatestQuery.isError ||
+    baseEventQuery.isError ||
+    targetEventQuery.isError;
+
+  const loading = baseEventQuery.isPending || targetEventQuery.isPending;
+
+  if (hasError) {
     return (
-      <StyledIssueDiff className={className} loading={loading}>
-        {loading && <LoadingIndicator />}
-        {!loading && showDiffToggle && (
-          <HeaderWrapper>
-            <ButtonBar merged active={groupingDiff ? 'grouping' : 'event'}>
-              <Button barId="event" size="small" onClick={this.toggleDiffMode}>
-                {t('Diff stack trace and message')}
-              </Button>
-              <Button barId="grouping" size="small" onClick={this.toggleDiffMode}>
-                {t('Diff grouping information')}
-              </Button>
-            </ButtonBar>
-          </HeaderWrapper>
-        )}
-        {!loading &&
-          DiffComponent &&
-          baseEvent.map((value, i) => (
-            <DiffComponent
-              key={i}
-              base={value}
-              target={targetEvent[i] ?? ''}
-              type="words"
-            />
-          ))}
+      <StyledIssueDiff isLoading={false}>
+        <LoadingError message={t('Error loading events')} />
       </StyledIssueDiff>
     );
   }
+
+  return (
+    <StyledIssueDiff isLoading={loading}>
+      {loading ? (
+        <LoadingIndicator />
+      ) : (
+        baseArray.map((value: string, index: number) => (
+          <LazyLoad
+            key={index}
+            LazyComponent={SplitDiffLazy}
+            base={value}
+            target={targetArray[index] ?? ''}
+            type="lines"
+          />
+        ))
+      )}
+    </StyledIssueDiff>
+  );
 }
 
-export default withApi(IssueDiff);
-
-// required for tests which do not provide API as context
-export {IssueDiff};
-
-const StyledIssueDiff = styled('div', {
-  shouldForwardProp: p => typeof p === 'string' && isPropValid(p) && p !== 'loading',
-})<Pick<State, 'loading'>>`
-  background-color: ${p => p.theme.backgroundSecondary};
+const StyledIssueDiff = styled('div')<{isLoading: boolean}>`
+  background-color: ${p => p.theme.tokens.background.secondary};
   overflow: auto;
-  padding: ${space(1)};
-  flex: 1;
+  padding: ${p => p.theme.space.md};
   display: flex;
   flex-direction: column;
 
   ${p =>
-    p.loading &&
-    `
-        background-color: ${p.theme.background};
-        justify-content: center;
-        align-items: center;
-      `};
-`;
-
-const HeaderWrapper = styled('div')`
-  display: flex;
-  align-items: center;
-  margin-bottom: ${space(2)};
+    p.isLoading &&
+    css`
+      background-color: ${p.theme.tokens.background.primary};
+      justify-content: center;
+      align-items: center;
+    `};
 `;

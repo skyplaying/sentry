@@ -1,5 +1,6 @@
 import functools
-import sys
+
+import pytest
 
 from sentry.utils.strings import (
     codec_lookup,
@@ -7,7 +8,6 @@ from sentry.utils.strings import (
     oxfordize_list,
     soft_break,
     soft_hyphenate,
-    tokens_from_name,
     truncatechars,
     unescape_string,
 )
@@ -16,68 +16,48 @@ ZWSP = "\u200b"  # zero width space
 SHY = "\u00ad"  # soft hyphen
 
 
-def test_unescape_string():
-    # For raw string literals, python escapes any backslash,
-    # regardless if it's part of a recognized escape sequence or not.
-    value = r"\x80"
-    assert r"\x80" == "\\x80"
-
-    # We want to unescape that.
-    assert unescape_string(value) == "\x80"
-    assert r"\x80" != "\x80"
-
-    # For string literals, python leaves recognized escape sequences alone,
-    # and we should as well.
-    assert unescape_string("\x80") == "\x80"
-
-    # Essentially, we want the resulting str to
-    # have the same number of backslashes as the raw string.
-    assert unescape_string(r"\\x80") == "\\x80"
-    assert unescape_string(r"\\\x80") == "\\\x80"
-    assert unescape_string(r"\\\\x80") == "\\\\x80"
-
-    # Now for a real world example.
-    # If we specify this value as a string literal, we'll get a DeprecationWarning
-    # because \* is not a recognized escape sequence.
-    # This raw string literal reflects what was read off disk from our grouping
-    # enhancement config text files, before they were corrected to be \\**.
-    value = r"C:/WINDOWS/system32/DriverStore\**"
-    assert value == "C:/WINDOWS/system32/DriverStore\\**"
-
-    # This string should remain unchanged after unescape_string,
-    # because there are no recognized escape sequences to unescape.
-    # From 3.6 to 3.8 a DeprecationWarning which we suppress will
-    # be emitted during .decode("unicode-escape", "unicode-escape-recovery"),
-    # because \* isn't a recognized escape sequence.
-    # We just want this to be a reminder if the warning is upgraded to a
-    # behavior change in 3.9+.
-    assert unescape_string(value) == "C:/WINDOWS/system32/DriverStore\\**"
+@pytest.mark.parametrize(
+    ("s", "expected"),
+    (
+        # the literal \x escape sequence is converted to the character
+        (r"\x80", "\x80"),
+        # the result should have the same number of backslashes as the raw string
+        (r"\\x80", "\\x80"),
+        (r"\\\x80", "\\\x80"),
+        (r"\\\\x80", "\\\\x80"),
+        # this string has an invalid escape sequence: \*
+        (r"C:/WINDOWS/system32/DriverStore\**", "C:/WINDOWS/system32/DriverStore\\**"),
+        # this string has an unterminated invalid escape sequence: \x
+        (r"\x", "\\x"),
+        (r"\\\x", "\\\\x"),
+        # decodes character escapes
+        (r"\t", "\t"),
+        (r"\0", "\0"),
+        (r"\11", "\11"),
+        (r"\111", "\111"),
+        (r"\u2603", "☃"),
+        (r"\U0001f643", "🙃"),
+        # probably a mistake in the configuration but it allows quoted strings
+        # with embedded newlines
+        ("hello\nworld", "hello\nworld"),
+    ),
+)
+def test_unescape_string(s: str, expected: str) -> None:
+    assert unescape_string(s) == expected
 
 
-def test_codec_lookup():
-    def assert_match(enc, ref=None):
-        if ref is None:
-            ref = enc
-        rv = codec_lookup(enc)
-        if rv is None:
-            assert ref is rv is None
-        else:
-            assert rv.name == ref
-
+def test_codec_lookup() -> None:
     assert codec_lookup("utf-8").name == "utf-8"
     assert codec_lookup("utf8").name == "utf-8"
-    if sys.version_info[:3] >= (2, 7, 12):
-        assert codec_lookup("zlib").name == "utf-8"
+    assert codec_lookup("zlib").name == "utf-8"
     assert codec_lookup("utf16").name == "utf-16"
     assert codec_lookup("undefined").name == "utf-8"
-    assert codec_lookup("undefined", default=None) is None
     assert codec_lookup("undefined", default="latin1").name == "iso8859-1"
-    if sys.version_info[:3] >= (2, 7, 12):
-        assert codec_lookup("zlib", default="latin1").name == "iso8859-1"
-    assert codec_lookup("unknownshit", default="latin1").name == "iso8859-1"
+    assert codec_lookup("zlib", default="latin1").name == "iso8859-1"
+    assert codec_lookup("unknowable", default="latin1").name == "iso8859-1"
 
 
-def test_soft_break():
+def test_soft_break() -> None:
     assert soft_break(
         "com.example.package.method(argument).anotherMethod(argument)", 15
     ) == ZWSP.join(
@@ -85,38 +65,14 @@ def test_soft_break():
     )
 
 
-def test_soft_break_and_hyphenate():
+def test_soft_break_and_hyphenate() -> None:
     hyphenate = functools.partial(soft_hyphenate, length=6)
     assert soft_break("com.reallyreallyreally.long.path", 6, hyphenate) == ZWSP.join(
         ["com.", SHY.join(["really"] * 3) + ".", "long.", "path"]
     )
 
 
-def test_tokens_from_name():
-    assert list(tokens_from_name("MyHTTPProject42")) == ["my", "http", "project42"]
-    assert list(tokens_from_name("MyHTTPProject42", remove_digits=True)) == [
-        "my",
-        "http",
-        "project",
-    ]
-    assert list(tokens_from_name("MyHTTPProject Awesome 42 Stuff")) == [
-        "my",
-        "http",
-        "project",
-        "awesome",
-        "42",
-        "stuff",
-    ]
-    assert list(tokens_from_name("MyHTTPProject Awesome 42 Stuff", remove_digits=True)) == [
-        "my",
-        "http",
-        "project",
-        "awesome",
-        "stuff",
-    ]
-
-
-def test_is_valid_dot_atom():
+def test_is_valid_dot_atom() -> None:
     assert is_valid_dot_atom("foo")
     assert is_valid_dot_atom("foo.bar")
     assert not is_valid_dot_atom(".foo.bar")
@@ -124,7 +80,7 @@ def test_is_valid_dot_atom():
     assert not is_valid_dot_atom("foo.\x00")
 
 
-def test_truncatechars():
+def test_truncatechars() -> None:
     assert truncatechars("12345", 6) == "12345"
     assert truncatechars("12345", 5) == "12345"
     assert truncatechars("12345", 4) == "1..."
@@ -144,7 +100,7 @@ def test_truncatechars():
     assert truncatechars(None, 1) is None
 
 
-def test_oxfordize_list():
+def test_oxfordize_list() -> None:
     assert oxfordize_list([]) == ""
     assert oxfordize_list(["A"]) == "A"
     assert oxfordize_list(["A", "B"]) == "A and B"

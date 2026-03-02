@@ -1,191 +1,161 @@
 import styled from '@emotion/styled';
-import {Location} from 'history';
+import type {Location} from 'history';
 import pick from 'lodash/pick';
 
-import AsyncComponent from 'app/components/asyncComponent';
-import {SectionHeading} from 'app/components/charts/styles';
-import EmptyStateWarning from 'app/components/emptyStateWarning';
-import Link from 'app/components/links/link';
-import Placeholder from 'app/components/placeholder';
-import TimeSince from 'app/components/timeSince';
-import {URL_PARAM} from 'app/constants/globalSelectionHeader';
-import {IconCheckmark, IconFire, IconOpen, IconWarning} from 'app/icons';
-import {t, tct} from 'app/locale';
-import overflowEllipsis from 'app/styles/overflowEllipsis';
-import space from 'app/styles/space';
-import {Organization} from 'app/types';
-import {Theme} from 'app/utils/theme';
+import {AlertBadge} from '@sentry/scraps/badge';
+import {Link} from '@sentry/scraps/link';
 
-import {Incident, IncidentStatus} from '../alerts/types';
+import {SectionHeading} from 'sentry/components/charts/styles';
+import EmptyStateWarning from 'sentry/components/emptyStateWarning';
+import LoadingError from 'sentry/components/loadingError';
+import {URL_PARAM} from 'sentry/components/pageFilters/constants';
+import {extractSelectionParameters} from 'sentry/components/pageFilters/parse';
+import Placeholder from 'sentry/components/placeholder';
+import TimeSince from 'sentry/components/timeSince';
+import {IconCheckmark, IconExclamation, IconFire, IconOpen} from 'sentry/icons';
+import {t} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {Organization} from 'sentry/types/organization';
+import getApiUrl from 'sentry/utils/api/getApiUrl';
+import {useApiQuery} from 'sentry/utils/queryClient';
+import useOrganization from 'sentry/utils/useOrganization';
+import {makeAlertsPathname} from 'sentry/views/alerts/pathnames';
+import type {Incident} from 'sentry/views/alerts/types';
+import {IncidentStatus} from 'sentry/views/alerts/types';
 
 import MissingAlertsButtons from './missingFeatureButtons/missingAlertsButtons';
-import {SectionHeadingLink, SectionHeadingWrapper, SidebarSection} from './styles';
-import {didProjectOrEnvironmentChange} from './utils';
+import {SectionHeadingWrapper, SidebarSection} from './styles';
 
 const PLACEHOLDER_AND_EMPTY_HEIGHT = '172px';
 
-type Props = AsyncComponent['props'] & {
+interface AlertRowProps {
+  alert: Incident;
+}
+
+function AlertRow({alert}: AlertRowProps) {
+  const organization = useOrganization();
+  const {status, identifier, title, dateClosed, dateStarted} = alert;
+  const isResolved = status === IncidentStatus.CLOSED;
+  const isWarning = status === IncidentStatus.WARNING;
+
+  const Icon = isResolved ? IconCheckmark : isWarning ? IconExclamation : IconFire;
+
+  const statusProps = {isResolved, isWarning};
+
+  return (
+    <AlertRowLink
+      aria-label={title}
+      to={makeAlertsPathname({
+        path: `/${identifier}/`,
+        organization,
+      })}
+    >
+      <AlertBadgeWrapper icon={Icon}>
+        <AlertBadge status={status} />
+      </AlertBadgeWrapper>
+      <AlertDetails>
+        <AlertTitle>{title}</AlertTitle>
+        <AlertDate {...statusProps}>
+          {isResolved ? t('Resolved') : t('Triggered')}{' '}
+          {isResolved ? (
+            dateClosed ? (
+              <TimeSince date={dateClosed} />
+            ) : null
+          ) : (
+            <TimeSince
+              date={dateStarted}
+              tooltipUnderlineColor={
+                isResolved ? 'success' : isWarning ? 'warning' : 'danger'
+              }
+            />
+          )}
+        </AlertDate>
+      </AlertDetails>
+    </AlertRowLink>
+  );
+}
+
+interface ProjectLatestAlertsProps {
+  isProjectStabilized: boolean;
+  location: Location;
   organization: Organization;
   projectSlug: string;
-  location: Location;
-  isProjectStabilized: boolean;
-};
+}
 
-type State = {
-  unresolvedAlerts: Incident[] | null;
-  resolvedAlerts: Incident[] | null;
-  hasAlertRule?: boolean;
-} & AsyncComponent['state'];
+function ProjectLatestAlerts({
+  location,
+  organization,
+  isProjectStabilized,
+  projectSlug,
+}: ProjectLatestAlertsProps) {
+  const query = {
+    ...pick(location.query, Object.values(URL_PARAM)),
+    per_page: 3,
+  };
+  const {
+    data: unresolvedAlerts = [],
+    isPending: unresolvedAlertsIsLoading,
+    isError: unresolvedAlertsIsError,
+  } = useApiQuery<Incident[]>(
+    [
+      getApiUrl(`/organizations/$organizationIdOrSlug/incidents/`, {
+        path: {organizationIdOrSlug: organization.slug},
+      }),
+      {query: {...query, status: 'open'}},
+    ],
+    {staleTime: 0, enabled: isProjectStabilized}
+  );
+  const {
+    data: resolvedAlerts = [],
+    isPending: resolvedAlertsIsLoading,
+    isError: resolvedAlertsIsError,
+  } = useApiQuery<Incident[]>(
+    [
+      getApiUrl(`/organizations/$organizationIdOrSlug/incidents/`, {
+        path: {organizationIdOrSlug: organization.slug},
+      }),
+      {query: {...query, status: 'closed'}},
+    ],
+    {staleTime: 0, enabled: isProjectStabilized}
+  );
 
-class ProjectLatestAlerts extends AsyncComponent<Props, State> {
-  shouldComponentUpdate(nextProps: Props, nextState: State) {
-    const {location, isProjectStabilized} = this.props;
-    // TODO(project-detail): we temporarily removed refetching based on timeselector
-    if (
-      this.state !== nextState ||
-      didProjectOrEnvironmentChange(location, nextProps.location) ||
-      isProjectStabilized !== nextProps.isProjectStabilized
-    ) {
-      return true;
-    }
-
-    return false;
-  }
-
-  componentDidUpdate(prevProps: Props) {
-    const {location, isProjectStabilized} = this.props;
-
-    if (
-      didProjectOrEnvironmentChange(prevProps.location, location) ||
-      prevProps.isProjectStabilized !== isProjectStabilized
-    ) {
-      this.remountComponent();
-    }
-  }
-
-  getEndpoints(): ReturnType<AsyncComponent['getEndpoints']> {
-    const {location, organization, isProjectStabilized} = this.props;
-
-    if (!isProjectStabilized) {
-      return [];
-    }
-
-    const query = {
-      ...pick(location.query, Object.values(URL_PARAM)),
-      per_page: 3,
-    };
-
-    // we are listing 3 alerts total, first unresolved and then we fill with resolved
-    return [
-      [
-        'unresolvedAlerts',
-        `/organizations/${organization.slug}/incidents/`,
-        {query: {...query, status: 'open'}},
-      ],
-      [
-        'resolvedAlerts',
-        `/organizations/${organization.slug}/incidents/`,
-        {query: {...query, status: 'closed'}},
-      ],
-    ];
-  }
-
-  /**
-   * If our alerts are empty, determine if we've configured alert rules (empty message differs then)
-   */
-  async onLoadAllEndpointsSuccess() {
-    const {unresolvedAlerts, resolvedAlerts} = this.state;
-    const {location, organization, isProjectStabilized} = this.props;
-
-    if (!isProjectStabilized) {
-      return;
-    }
-
-    if ([...(unresolvedAlerts ?? []), ...(resolvedAlerts ?? [])].length !== 0) {
-      this.setState({hasAlertRule: true});
-      return;
-    }
-
-    this.setState({loading: true});
-
-    const alertRules = await this.api.requestPromise(
-      `/organizations/${organization.slug}/alert-rules/`,
+  const alertsUnresolvedAndResolved = [...unresolvedAlerts, ...resolvedAlerts];
+  const shouldLoadAlertRules =
+    alertsUnresolvedAndResolved.length === 0 &&
+    !unresolvedAlertsIsLoading &&
+    !resolvedAlertsIsLoading;
+  // This is only used to determine if we should show the "Create Alert" button
+  const {data: alertRules = [], isPending: alertRulesLoading} = useApiQuery<any[]>(
+    [
+      getApiUrl(`/organizations/$organizationIdOrSlug/alert-rules/`, {
+        path: {organizationIdOrSlug: organization.slug},
+      }),
       {
-        method: 'GET',
         query: {
-          ...pick(location.query, [...Object.values(URL_PARAM)]),
+          ...pick(location.query, Object.values(URL_PARAM)),
+          // Sort by name
+          asc: 1,
           per_page: 1,
         },
-      }
-    );
-
-    this.setState({hasAlertRule: alertRules.length > 0, loading: false});
-  }
-
-  get alertsLink() {
-    const {organization} = this.props;
-
-    // as this is a link to latest alerts, we want to only preserve project and environment
-    return {
-      pathname: `/organizations/${organization.slug}/alerts/`,
-      query: {
-        statsPeriod: undefined,
-        start: undefined,
-        end: undefined,
-        utc: undefined,
       },
-    };
-  }
+    ],
+    {
+      staleTime: 0,
+      enabled: shouldLoadAlertRules,
+    }
+  );
 
-  renderAlertRow = (alert: Incident) => {
-    const {organization} = this.props;
-    const {status, id, identifier, title, dateClosed, dateStarted} = alert;
-    const isResolved = status === IncidentStatus.CLOSED;
-    const isWarning = status === IncidentStatus.WARNING;
+  function renderAlertRules() {
+    if (unresolvedAlertsIsError || resolvedAlertsIsError) {
+      return <LoadingError message={t('Unable to load latest alerts')} />;
+    }
 
-    const Icon = isResolved ? IconCheckmark : isWarning ? IconWarning : IconFire;
-
-    const statusProps = {isResolved, isWarning};
-
-    return (
-      <AlertRowLink
-        to={`/organizations/${organization.slug}/alerts/${identifier}/`}
-        key={id}
-      >
-        <AlertBadge {...statusProps} icon={Icon}>
-          <AlertIconWrapper>
-            <Icon color="white" />
-          </AlertIconWrapper>
-        </AlertBadge>
-        <AlertDetails>
-          <AlertTitle>{title}</AlertTitle>
-          <AlertDate {...statusProps}>
-            {isResolved
-              ? tct('Resolved [date]', {
-                  date: dateClosed ? <TimeSince date={dateClosed} /> : null,
-                })
-              : tct('Triggered [date]', {date: <TimeSince date={dateStarted} />})}
-          </AlertDate>
-        </AlertDetails>
-      </AlertRowLink>
-    );
-  };
-
-  renderInnerBody() {
-    const {organization, projectSlug, isProjectStabilized} = this.props;
-    const {loading, unresolvedAlerts, resolvedAlerts, hasAlertRule} = this.state;
-    const alertsUnresolvedAndResolved = [
-      ...(unresolvedAlerts ?? []),
-      ...(resolvedAlerts ?? []),
-    ];
-    const checkingForAlertRules =
-      alertsUnresolvedAndResolved.length === 0 && hasAlertRule === undefined;
-    const showLoadingIndicator = loading || checkingForAlertRules || !isProjectStabilized;
-
-    if (showLoadingIndicator) {
+    const isLoading = unresolvedAlertsIsLoading || resolvedAlertsIsLoading;
+    if (isLoading || (shouldLoadAlertRules && alertRulesLoading)) {
       return <Placeholder height={PLACEHOLDER_AND_EMPTY_HEIGHT} />;
     }
 
+    const hasAlertRule = alertsUnresolvedAndResolved.length > 0 || alertRules?.length > 0;
     if (!hasAlertRule) {
       return (
         <MissingAlertsButtons organization={organization} projectSlug={projectSlug} />
@@ -198,28 +168,43 @@ class ProjectLatestAlerts extends AsyncComponent<Props, State> {
       );
     }
 
-    return alertsUnresolvedAndResolved.slice(0, 3).map(this.renderAlertRow);
+    return alertsUnresolvedAndResolved
+      .slice(0, 3)
+      .map(alert => <AlertRow key={alert.id} alert={alert} />);
   }
 
-  renderLoading() {
-    return this.renderBody();
-  }
+  return (
+    <SidebarSection>
+      <SectionHeadingWrapper>
+        <SectionHeading>{t('Latest Alerts')}</SectionHeading>
+        {/* as this is a link to latest alerts, we want to only preserve project and environment */}
+        <StyledIconLink
+          to={{
+            pathname: makeAlertsPathname({
+              path: `/`,
+              organization,
+            }),
+            query: {
+              ...extractSelectionParameters(location.query),
+              statsPeriod: undefined,
+              start: undefined,
+              end: undefined,
+              utc: undefined,
+            },
+          }}
+        >
+          <IconOpen aria-label={t('Metric Alert History')} />
+        </StyledIconLink>
+      </SectionHeadingWrapper>
 
-  renderBody() {
-    return (
-      <SidebarSection>
-        <SectionHeadingWrapper>
-          <SectionHeading>{t('Latest Alerts')}</SectionHeading>
-          <SectionHeadingLink to={this.alertsLink}>
-            <IconOpen />
-          </SectionHeadingLink>
-        </SectionHeadingWrapper>
-
-        <div>{this.renderInnerBody()}</div>
-      </SidebarSection>
-    );
-  }
+      <div>{renderAlertRules()}</div>
+    </SidebarSection>
+  );
 }
+
+const StyledIconLink = styled(Link)`
+  display: flex;
+`;
 
 const AlertRowLink = styled(Link)`
   display: flex;
@@ -242,49 +227,39 @@ type StatusColorProps = {
   isWarning: boolean;
 };
 
-const getStatusColor = ({
-  theme,
-  isResolved,
-  isWarning,
-}: {theme: Theme} & StatusColorProps) =>
-  isResolved ? theme.green300 : isWarning ? theme.yellow300 : theme.red300;
-
-const AlertBadge = styled('div')<{icon: React.ReactNode} & StatusColorProps>`
+const AlertBadgeWrapper = styled('div')<{icon: typeof IconExclamation}>`
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
   /* icon warning needs to be treated differently to look visually centered */
-  line-height: ${p => (p.icon === IconWarning ? undefined : 1)};
-
-  &:before {
-    content: '';
-    width: 30px;
-    height: 30px;
-    border-radius: ${p => p.theme.borderRadius};
-    background-color: ${p => getStatusColor(p)};
-    transform: rotate(45deg);
-  }
-`;
-
-const AlertIconWrapper = styled('div')`
-  position: absolute;
+  line-height: ${p => (p.icon === IconExclamation ? undefined : 1)};
 `;
 
 const AlertDetails = styled('div')`
-  font-size: ${p => p.theme.fontSizeMedium};
-  margin-left: ${space(2)};
-  ${overflowEllipsis}
+  font-size: ${p => p.theme.font.size.md};
+  margin-left: ${space(1.5)};
+  display: block;
+  width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.35;
 `;
 
 const AlertTitle = styled('div')`
-  font-weight: 400;
+  font-weight: ${p => p.theme.font.weight.sans.regular};
   overflow: hidden;
   text-overflow: ellipsis;
 `;
 
 const AlertDate = styled('span')<StatusColorProps>`
-  color: ${p => getStatusColor(p)};
+  color: ${p =>
+    p.isResolved
+      ? p.theme.tokens.content.success
+      : p.isWarning
+        ? p.theme.tokens.content.warning
+        : p.theme.tokens.content.danger};
 `;
 
 const StyledEmptyStateWarning = styled(EmptyStateWarning)`

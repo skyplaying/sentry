@@ -1,8 +1,12 @@
-from sentry.rules.base import RuleBase
+import abc
+
+from sentry.rules.base import EventState, RuleBase
+from sentry.services.eventstore.models import GroupEvent
 
 
-class EventFilter(RuleBase):
+class EventFilter(RuleBase, abc.ABC):
     rule_type = "filter/event"
 
-    def passes(self, event, state):
-        raise NotImplementedError
+    @abc.abstractmethod
+    def passes(self, event: GroupEvent, state: EventState) -> bool:
+        pass

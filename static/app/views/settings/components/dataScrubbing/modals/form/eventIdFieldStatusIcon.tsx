@@ -1,18 +1,18 @@
 import styled from '@emotion/styled';
 
-import Tooltip from 'app/components/tooltip';
-import {IconCheckmark, IconClose} from 'app/icons';
-import {t} from 'app/locale';
-import ControlState from 'app/views/settings/components/forms/field/controlState';
+import {Tooltip} from '@sentry/scraps/tooltip';
 
-import {EventIdStatus} from '../../types';
+import {ControlState} from 'sentry/components/forms/fieldGroup/controlState';
+import {IconCheckmark, IconClose} from 'sentry/icons';
+import {t} from 'sentry/locale';
+import {EventIdStatus} from 'sentry/views/settings/components/dataScrubbing/types';
 
 type Props = {
   onClickIconClose: () => void;
   status?: EventIdStatus;
 };
 
-const EventIdFieldStatusIcon = ({status, onClickIconClose}: Props) => {
+function EventIdFieldStatusIcon({status, onClickIconClose}: Props) {
   switch (status) {
     case EventIdStatus.ERROR:
     case EventIdStatus.INVALID:
@@ -27,11 +27,11 @@ const EventIdFieldStatusIcon = ({status, onClickIconClose}: Props) => {
     case EventIdStatus.LOADING:
       return <ControlState isSaving />;
     case EventIdStatus.LOADED:
-      return <IconCheckmark color="green300" />;
+      return <IconCheckmark variant="success" />;
     default:
       return null;
   }
-};
+}
 
 export default EventIdFieldStatusIcon;
 
@@ -42,9 +42,9 @@ const CloseIcon = styled('div')`
 `;
 
 const StyledIconClose = styled(IconClose)`
-  color: ${p => p.theme.gray200};
+  color: ${p => p.theme.colors.gray200};
   :hover {
-    color: ${p => p.theme.gray300};
+    color: ${p => p.theme.tokens.content.secondary};
   }
   cursor: pointer;
 `;

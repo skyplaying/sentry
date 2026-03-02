@@ -1,28 +1,48 @@
-from django.utils.datastructures import OrderedSet
-from django.utils.translation import ugettext_lazy as _
+from __future__ import annotations
 
-from sentry.identity.pipeline import IdentityProviderPipeline
-from sentry.integrations import (
+from collections.abc import Mapping, Sequence
+from typing import Any
+
+from django.http.request import HttpRequest
+from django.http.response import HttpResponseBase
+from django.utils.datastructures import OrderedSet
+from django.utils.translation import gettext_lazy as _
+
+from sentry.identity.pipeline import IdentityPipeline
+from sentry.integrations.base import (
     FeatureDescription,
+    IntegrationData,
+    IntegrationDomain,
     IntegrationFeatures,
-    IntegrationInstallation,
     IntegrationMetadata,
     IntegrationProvider,
 )
-from sentry.integrations.atlassian_connect import (
+from sentry.integrations.models.integration import Integration
+from sentry.integrations.pipeline import IntegrationPipeline
+from sentry.integrations.services.repository import RpcRepository, repository_service
+from sentry.integrations.source_code_management.repository import RepositoryIntegration
+from sentry.integrations.tasks.migrate_repo import migrate_repo
+from sentry.integrations.types import IntegrationProviderSlug
+from sentry.integrations.utils.atlassian_connect import (
     AtlassianConnectValidationError,
     get_integration_from_request,
 )
-from sentry.integrations.repositories import RepositoryMixin
-from sentry.models import Repository
-from sentry.pipeline import NestedPipelineView, PipelineView
+from sentry.integrations.utils.metrics import (
+    IntegrationPipelineViewEvent,
+    IntegrationPipelineViewType,
+)
+from sentry.models.apitoken import generate_token
+from sentry.models.repository import Repository
+from sentry.organizations.services.organization.model import RpcOrganization
+from sentry.pipeline.views.base import PipelineView
+from sentry.pipeline.views.nested import NestedPipelineView
 from sentry.shared_integrations.exceptions import ApiError
-from sentry.tasks.integrations import migrate_repo
 from sentry.utils.http import absolute_uri
 
 from .client import BitbucketApiClient
-from .issues import BitbucketIssueBasicMixin
+from .issues import BitbucketIssuesSpec
 from .repository import BitbucketRepositoryProvider
+from .utils import parse_bitbucket_src_url
 
 DESCRIPTION = """
 Connect your Sentry organization to Bitbucket, enabling the following features:
@@ -55,6 +75,19 @@ FEATURES = [
         """,
         IntegrationFeatures.ISSUE_BASIC,
     ),
+    FeatureDescription(
+        """
+        Link your Sentry stack traces back to your Bitbucket source code with stack
+        trace linking.
+        """,
+        IntegrationFeatures.STACKTRACE_LINK,
+    ),
+    FeatureDescription(
+        """
+        Import your Bitbucket [CODEOWNERS file](https://support.atlassian.com/bitbucket-cloud/docs/set-up-and-use-code-owners/) and use it alongside your ownership rules to assign Sentry issues.
+        """,
+        IntegrationFeatures.CODEOWNERS,
+    ),
 ]
 
 metadata = IntegrationMetadata(
@@ -70,24 +103,26 @@ metadata = IntegrationMetadata(
 scopes = ("issue:write", "pullrequest", "webhook", "repository")
 
 
-class BitbucketIntegration(IntegrationInstallation, BitbucketIssueBasicMixin, RepositoryMixin):
-    repo_search = True
-
-    def get_client(self):
-        return BitbucketApiClient(
-            self.model.metadata["base_url"],
-            self.model.metadata["shared_secret"],
-            self.model.external_id,
-        )
+class BitbucketIntegration(RepositoryIntegration, BitbucketIssuesSpec):
+    codeowners_locations = [".bitbucket/CODEOWNERS"]
 
     @property
-    def username(self):
-        return self.model.name
+    def integration_name(self) -> str:
+        return IntegrationProviderSlug.BITBUCKET.value
+
+    def get_client(self):
+        return BitbucketApiClient(integration=self.model)
+
+    # IntegrationInstallation methods
 
     def error_message_from_json(self, data):
         return data.get("error", {}).get("message", "unknown error")
 
-    def get_repositories(self, query=None):
+    # RepositoryIntegration methods
+
+    def get_repositories(
+        self, query: str | None = None, page_number_limit: int | None = None
+    ) -> list[dict[str, Any]]:
         username = self.model.metadata.get("uuid", self.username)
         if not query:
             resp = self.get_client().get_repos(username)
@@ -96,12 +131,12 @@ class BitbucketIntegration(IntegrationInstallation, BitbucketIssueBasicMixin, Re
                 for repo in resp.get("values", [])
             ]
 
-        exact_query = ('name="%s"' % (query)).encode("utf-8")
-        fuzzy_query = ('name~"%s"' % (query)).encode("utf-8")
+        exact_query = f'name="{query}"'
+        fuzzy_query = f'name~"{query}"'
         exact_search_resp = self.get_client().search_repositories(username, exact_query)
         fuzzy_search_resp = self.get_client().search_repositories(username, fuzzy_query)
 
-        result = OrderedSet()
+        result: OrderedSet[str] = OrderedSet()
 
         for j in exact_search_resp.get("values", []):
             result.add(j["full_name"])
@@ -111,7 +146,7 @@ class BitbucketIntegration(IntegrationInstallation, BitbucketIssueBasicMixin, Re
 
         return [{"identifier": full_name, "name": full_name} for full_name in result]
 
-    def has_repo_access(self, repo):
+    def has_repo_access(self, repo: RpcRepository) -> bool:
         client = self.get_client()
         try:
             client.get_hooks(repo.config["name"])
@@ -119,72 +154,115 @@ class BitbucketIntegration(IntegrationInstallation, BitbucketIssueBasicMixin, Re
             return False
         return True
 
-    def get_unmigratable_repositories(self):
-        repos = Repository.objects.filter(
-            organization_id=self.organization_id, provider="bitbucket"
+    def get_unmigratable_repositories(self) -> list[RpcRepository]:
+        repos = repository_service.get_repositories(
+            organization_id=self.organization_id,
+            providers=[IntegrationProviderSlug.BITBUCKET.value],
         )
 
         accessible_repos = [r["identifier"] for r in self.get_repositories()]
 
         return [repo for repo in repos if repo.name not in accessible_repos]
 
-    def reinstall(self):
-        self.reinstall_repositories()
+    def source_url_matches(self, url: str) -> bool:
+        return url.startswith(f"https://{self.model.metadata['domain_name']}") or url.startswith(
+            "https://bitbucket.org",
+        )
+
+    def format_source_url(self, repo: Repository, filepath: str, branch: str | None) -> str:
+        return f"https://bitbucket.org/{repo.name}/src/{branch}/{filepath}"
+
+    def extract_branch_from_source_url(self, repo: Repository, url: str) -> str:
+        if not repo.url:
+            return ""
+        branch, _ = parse_bitbucket_src_url(repo.url, url)
+        return branch
+
+    def extract_source_path_from_source_url(self, repo: Repository, url: str) -> str:
+        if not repo.url:
+            return ""
+        _, source_path = parse_bitbucket_src_url(repo.url, url)
+        return source_path
+
+    # Bitbucket only methods
+
+    @property
+    def username(self):
+        return self.model.name
 
 
 class BitbucketIntegrationProvider(IntegrationProvider):
-    key = "bitbucket"
+    key = IntegrationProviderSlug.BITBUCKET.value
     name = "Bitbucket"
     metadata = metadata
     scopes = scopes
     integration_cls = BitbucketIntegration
-    features = frozenset([IntegrationFeatures.ISSUE_BASIC, IntegrationFeatures.COMMITS])
+    features = frozenset(
+        [
+            IntegrationFeatures.ISSUE_BASIC,
+            IntegrationFeatures.COMMITS,
+            IntegrationFeatures.STACKTRACE_LINK,
+            IntegrationFeatures.CODEOWNERS,
+        ]
+    )
 
-    def get_pipeline_views(self):
-        identity_pipeline_config = {"redirect_url": absolute_uri("/extensions/bitbucket/setup/")}
-        identity_pipeline_view = NestedPipelineView(
-            bind_key="identity",
-            provider_key="bitbucket",
-            pipeline_cls=IdentityProviderPipeline,
-            config=identity_pipeline_config,
-        )
-        return [identity_pipeline_view, VerifyInstallation()]
+    def get_pipeline_views(self) -> Sequence[PipelineView[IntegrationPipeline]]:
+        return [
+            NestedPipelineView(
+                bind_key="identity",
+                provider_key=IntegrationProviderSlug.BITBUCKET.value,
+                pipeline_cls=IdentityPipeline,
+                config={"redirect_url": absolute_uri("/extensions/bitbucket/setup/")},
+            ),
+            VerifyInstallation(),
+        ]
 
-    def post_install(self, integration, organization, extra=None):
-        repo_ids = Repository.objects.filter(
+    def post_install(
+        self,
+        integration: Integration,
+        organization: RpcOrganization,
+        *,
+        extra: dict[str, Any],
+    ) -> None:
+        repos = repository_service.get_repositories(
             organization_id=organization.id,
-            provider__in=["bitbucket", "integrations:bitbucket"],
-            integration_id__isnull=True,
-        ).values_list("id", flat=True)
+            providers=[IntegrationProviderSlug.BITBUCKET.value, "integrations:bitbucket"],
+            has_integration=False,
+        )
 
-        for repo_id in repo_ids:
+        for repo in repos:
             migrate_repo.apply_async(
                 kwargs={
-                    "repo_id": repo_id,
+                    "repo_id": repo.id,
                     "integration_id": integration.id,
                     "organization_id": organization.id,
                 }
             )
 
-    def build_integration(self, state):
+    def build_integration(self, state: Mapping[str, Any]) -> IntegrationData:
         if state.get("publicKey"):
             principal_data = state["principal"]
-
-            domain = principal_data["links"]["html"]["href"].replace("https://", "").rstrip("/")
+            base_url = state["baseUrl"].replace("https://", "")
+            # fall back to display name, user installations will use this primarily
+            username = principal_data.get("username", principal_data["display_name"])
+            account_type = principal_data["type"]
+            domain = f"{base_url}/{username}" if account_type == "team" else username
+            secret = generate_token()
 
             return {
                 "provider": self.key,
                 "external_id": state["clientKey"],
-                "name": principal_data.get("username", principal_data["uuid"]),
+                "name": username,
                 "metadata": {
                     "public_key": state["publicKey"],
                     "shared_secret": state["sharedSecret"],
+                    "webhook_secret": secret,
                     "base_url": state["baseApiUrl"],
                     "domain_name": domain,
                     "icon": principal_data["links"]["avatar"]["href"],
                     "scopes": self.scopes,
                     "uuid": principal_data["uuid"],
-                    "type": principal_data["type"],  # team or user account
+                    "type": account_type,  # team or user account
                 },
             }
         else:
@@ -204,11 +282,20 @@ class BitbucketIntegrationProvider(IntegrationProvider):
         )
 
 
-class VerifyInstallation(PipelineView):
-    def dispatch(self, request, pipeline):
-        try:
-            integration = get_integration_from_request(request, BitbucketIntegrationProvider.key)
-        except AtlassianConnectValidationError:
-            return pipeline.error("Unable to verify installation.")
-        pipeline.bind_state("external_id", integration.external_id)
-        return pipeline.next_step()
+class VerifyInstallation:
+    def dispatch(self, request: HttpRequest, pipeline: IntegrationPipeline) -> HttpResponseBase:
+        with IntegrationPipelineViewEvent(
+            IntegrationPipelineViewType.VERIFY_INSTALLATION,
+            IntegrationDomain.SOURCE_CODE_MANAGEMENT,
+            BitbucketIntegrationProvider.key,
+        ).capture() as lifecycle:
+            try:
+                integration = get_integration_from_request(
+                    request, BitbucketIntegrationProvider.key
+                )
+            except AtlassianConnectValidationError as e:
+                lifecycle.record_failure(str(e))
+                return pipeline.error("Unable to verify installation.")
+
+            pipeline.bind_state("external_id", integration.external_id)
+            return pipeline.next_step()

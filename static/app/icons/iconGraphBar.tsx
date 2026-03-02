@@ -1,22 +1,10 @@
-import * as React from 'react';
+import type {SVGIconProps} from './svgIcon';
+import {SvgIcon} from './svgIcon';
 
-import SvgIcon from './svgIcon';
-
-type Props = React.ComponentProps<typeof SvgIcon>;
-
-const IconGraphBar = React.forwardRef(function IconGraphBar(
-  props: Props,
-  ref: React.Ref<SVGSVGElement>
-) {
+export function IconGraphBar(props: SVGIconProps) {
   return (
-    <SvgIcon {...props} ref={ref}>
-      <path d="M4.06,16H.74A.75.75,0,0,1,0,15.24v-4a.74.74,0,0,1,.75-.75H4.06a.75.75,0,0,1,.75.75v4A.76.76,0,0,1,4.06,16Zm-2.57-1.5H3.31V12H1.49Z" />
-      <path d="M9.65,16H6.33a.76.76,0,0,1-.75-.75V6.06a.75.75,0,0,1,.75-.75H9.65a.74.74,0,0,1,.75.75v9.18A.75.75,0,0,1,9.65,16Zm-2.57-1.5H8.9V6.81H7.08Z" />
-      <path d="M15.25,16H11.93a.75.75,0,0,1-.75-.75V.76A.75.75,0,0,1,11.93,0h3.32A.76.76,0,0,1,16,.76V15.24A.76.76,0,0,1,15.25,16Zm-2.57-1.5H14.5v-13H12.68Z" />
+    <SvgIcon {...props}>
+      <path d="M1.75 1C2.16 1 2.5 1.34 2.5 1.75V13.25C2.5 13.39 2.61 13.5 2.75 13.5L14.25 13.5C14.66 13.5 15 13.84 15 14.25C15 14.66 14.66 15 14.25 15L2.75 15C1.78 15 1 14.22 1 13.25V1.75C1 1.34 1.34 1 1.75 1ZM4.75 8C5.16 8 5.5 8.34 5.5 8.75V11.25C5.5 11.66 5.16 12 4.75 12C4.34 12 4 11.66 4 11.25V8.75C4 8.34 4.34 8 4.75 8ZM7.75 4C8.16 4 8.5 4.34 8.5 4.75V11.23C8.5 11.65 8.16 11.98 7.75 11.98C7.34 11.98 7 11.65 7 11.23V4.75C7 4.34 7.34 4 7.75 4ZM10.75 6C11.16 6 11.5 6.34 11.5 6.75V11.23C11.5 11.65 11.16 11.98 10.75 11.98C10.34 11.98 10 11.65 10 11.23V6.75C10 6.34 10.34 6 10.75 6ZM13.75 2C14.16 2 14.5 2.34 14.5 2.75V11.23C14.5 11.65 14.16 11.98 13.75 11.98C13.34 11.98 13 11.65 13 11.23V2.75C13 2.34 13.34 2 13.75 2Z" />
     </SvgIcon>
   );
-});
-
-IconGraphBar.displayName = 'IconGraphBar';
-
-export {IconGraphBar};
+}

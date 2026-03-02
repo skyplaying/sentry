@@ -1,42 +1,39 @@
-import * as React from 'react';
-import {EChartOption} from 'echarts';
+import type {LineSeriesOption} from 'echarts';
 
-import {Series} from 'app/types/echarts';
+import type {Series} from 'sentry/types/echarts';
 
 import LineSeries from './series/lineSeries';
+import type {BaseChartProps} from './baseChart';
 import BaseChart from './baseChart';
 
-type ChartProps = React.ComponentProps<typeof BaseChart>;
+export interface LineChartSeries
+  extends Series, Omit<LineSeriesOption, 'data' | 'name' | 'color' | 'id' | 'areaStyle'> {
+  dataArray?: LineSeriesOption['data'];
+}
 
-export type LineChartSeries = Series &
-  Omit<EChartOption.SeriesLine, 'data' | 'name'> & {
-    dataArray?: EChartOption.SeriesLine['data'];
-  };
-
-type Props = Omit<ChartProps, 'series'> & {
+export interface LineChartProps extends Omit<BaseChartProps, 'series'> {
   series: LineChartSeries[];
-  seriesOptions?: EChartOption.SeriesLine;
-};
+  additionalSeries?: LineSeriesOption[];
+  seriesOptions?: LineSeriesOption;
+}
 
-export default class LineChart extends React.Component<Props> {
-  render() {
-    const {series, seriesOptions, ...props} = this.props;
+export function transformToLineSeries({
+  series,
+  seriesOptions,
+}: Pick<LineChartProps, 'series' | 'seriesOptions'>) {
+  return series.map(({seriesName, data, dataArray, ...options}) =>
+    LineSeries({
+      ...seriesOptions,
+      ...options,
+      name: seriesName,
+      data: dataArray || data?.map(({value, name}) => [name, value]),
+      animation: false,
+      animationThreshold: 1,
+      animationDuration: 0,
+    })
+  );
+}
 
-    return (
-      <BaseChart
-        {...props}
-        series={series.map(({seriesName, data, dataArray, ...options}) =>
-          LineSeries({
-            ...seriesOptions,
-            ...options,
-            name: seriesName,
-            data: dataArray || data.map(({value, name}) => [name, value]),
-            animation: false,
-            animationThreshold: 1,
-            animationDuration: 0,
-          })
-        )}
-      />
-    );
-  }
+export function LineChart({series, seriesOptions, ...props}: LineChartProps) {
+  return <BaseChart {...props} series={transformToLineSeries({series, seriesOptions})} />;
 }

@@ -1,186 +1,333 @@
-import * as React from 'react';
+import {useCallback, useEffect, useMemo, useState} from 'react';
+import {css} from '@emotion/react';
 import styled from '@emotion/styled';
-import isEqual from 'lodash/isEqual';
+import {Observer} from 'mobx-react-lite';
 
-import Button from 'app/components/button';
-import FormContext, {FormContextData} from 'app/components/forms/formContext';
-import FormState from 'app/components/forms/state';
-import {t} from 'app/locale';
+import type {ButtonProps} from '@sentry/scraps/button';
+import {Button} from '@sentry/scraps/button';
 
-type FormProps = {
+import FormContext from 'sentry/components/forms/formContext';
+import type {FormOptions} from 'sentry/components/forms/model';
+import FormModel, {fieldIsRequiredMessage} from 'sentry/components/forms/model';
+import type {Data, OnSubmitCallback} from 'sentry/components/forms/types';
+import Panel from 'sentry/components/panels/panel';
+import {t} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+
+type RenderProps = {
+  model: FormModel;
+};
+
+type RenderFunc = (props: RenderProps) => React.ReactNode;
+
+export interface FormProps extends Pick<
+  FormOptions,
+  | 'allowUndo'
+  | 'resetOnError'
+  | 'saveOnBlur'
+  | 'apiEndpoint'
+  | 'apiMethod'
+  | 'onFieldChange'
+  | 'onSubmitError'
+  | 'onSubmitSuccess'
+  | 'mapFormErrors'
+> {
+  additionalFieldProps?: Record<string, any>;
   cancelLabel?: string;
-  onCancel?: () => void;
-  onSubmit?: (
-    data: object,
-    onSubmitSuccess: (data: object) => void,
-    onSubmitError: (error: object) => void
-  ) => void;
-  initialData?: object;
-  onSubmitSuccess?: (data: object) => void;
-  onSubmitError?: (error: object) => void;
-  resetOnError?: boolean;
-  requireChanges?: boolean;
-  errorMessage?: React.ReactNode;
-  hideErrors?: boolean;
+  children?: React.ReactNode | RenderFunc;
   className?: string;
+  'data-test-id'?: string;
+  extraButton?: React.ReactNode;
   footerClass?: string;
+  footerStyle?: React.CSSProperties;
+  hideFooter?: boolean;
+  initialData?: Data;
+  /**
+   * A FormModel instance. If undefined a FormModel will be created for you.
+   */
+  model?: FormModel;
+  /**
+   * Callback fired when the form is cancelled via the cancel button.
+   */
+  onCancel?: (e: React.MouseEvent) => void;
+  onPreSubmit?: () => void;
+  /**
+   * Callback to handle form submission.
+   *
+   * Defining this prop will replace the normal API submission behavior
+   * and instead only call the provided callback.
+   *
+   * Your callback is expected to call `onSubmitSuccess` when the action succeeds and
+   * `onSubmitError` when the action fails.
+   */
+  onSubmit?: OnSubmitCallback;
+  /**
+   * Ensure the form model isn't reset when the form unmounts
+   */
+  preventFormResetOnUnmount?: boolean;
+  /**
+   * Are changed required before the form can be submitted.
+   */
+  requireChanges?: boolean;
+  /**
+   * If set to true, preventDefault is not called
+   */
+  skipPreventDefault?: boolean;
+  /**
+   * Should the submit button be disabled.
+   */
   submitDisabled?: boolean;
   submitLabel?: string;
-  extraButton?: React.ReactNode;
-};
-
-type FormClassState = {
-  data: any;
-  errors: {non_field_errors?: object[]} & object;
-  initialData: object;
-  state: FormState;
-};
-
-// Re-export for compatibility alias.
-export type Context = FormContextData;
-
-class Form<
-  Props extends FormProps = FormProps,
-  State extends FormClassState = FormClassState
-> extends React.Component<Props, State> {
-  static defaultProps = {
-    cancelLabel: t('Cancel'),
-    submitLabel: t('Save Changes'),
-    submitDisabled: false,
-    footerClass: 'form-actions align-right',
-    className: 'form-stacked',
-    requireChanges: false,
-    hideErrors: false,
-    resetOnError: false,
-    errorMessage: t(
-      'Unable to save your changes. Please ensure all fields are valid and try again.'
-    ),
-  };
-
-  constructor(props: Props, context: Context) {
-    super(props, context);
-    this.state = {
-      data: {...this.props.initialData},
-      errors: {},
-      initialData: {...this.props.initialData},
-      state: FormState.READY,
-    } as State;
-  }
-
-  getContext() {
-    const {data, errors} = this.state;
-    return {
-      form: {
-        data,
-        errors,
-        onFieldChange: this.onFieldChange,
-      },
-    };
-  }
-
-  onSubmit = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    if (!this.props.onSubmit) {
-      throw new Error('onSubmit is a required prop');
-    }
-    this.props.onSubmit(this.state.data, this.onSubmitSuccess, this.onSubmitError);
-  };
-
-  onSubmitSuccess = (data: object) => {
-    this.setState({
-      state: FormState.READY,
-      errors: {},
-      initialData: {...this.state.data, ...(data || {})},
-    });
-    this.props.onSubmitSuccess && this.props.onSubmitSuccess(data);
-  };
-
-  onSubmitError = error => {
-    this.setState({
-      state: FormState.ERROR,
-      errors: error.responseJSON,
-    });
-
-    if (this.props.resetOnError) {
-      this.setState({
-        initialData: {},
-      });
-    }
-
-    this.props.onSubmitError && this.props.onSubmitError(error);
-  };
-
-  onFieldChange = (name: string, value: string | number) => {
-    this.setState(state => ({
-      data: {
-        ...state.data,
-        [name]: value,
-      },
-    }));
-  };
-
-  render() {
-    const isSaving = this.state.state === FormState.SAVING;
-    const {initialData, data} = this.state;
-    const {errorMessage, hideErrors, requireChanges} = this.props;
-    const hasChanges = requireChanges
-      ? Object.keys(data).length && !isEqual(data, initialData)
-      : true;
-    const isError = this.state.state === FormState.ERROR;
-    const nonFieldErrors = this.state.errors && this.state.errors.non_field_errors;
-
-    return (
-      <FormContext.Provider value={this.getContext()}>
-        <StyledForm onSubmit={this.onSubmit} className={this.props.className}>
-          {isError && !hideErrors && (
-            <div className="alert alert-error alert-block">
-              {nonFieldErrors ? (
-                <div>
-                  <p>
-                    {t(
-                      'Unable to save your changes. Please correct the following errors try again.'
-                    )}
-                  </p>
-                  <ul>
-                    {nonFieldErrors.map((e, i) => (
-                      <li key={i}>{e}</li>
-                    ))}
-                  </ul>
-                </div>
-              ) : (
-                errorMessage
-              )}
-            </div>
-          )}
-          {this.props.children}
-          <div className={this.props.footerClass} style={{marginTop: 25}}>
-            <Button
-              priority="primary"
-              disabled={isSaving || this.props.submitDisabled || !hasChanges}
-              type="submit"
-            >
-              {this.props.submitLabel}
-            </Button>
-            {this.props.onCancel && (
-              <Button
-                type="button"
-                disabled={isSaving}
-                onClick={this.props.onCancel}
-                style={{marginLeft: 5}}
-              >
-                {this.props.cancelLabel}
-              </Button>
-            )}
-            {this.props.extraButton}
-          </div>
-        </StyledForm>
-      </FormContext.Provider>
-    );
-  }
+  submitPriority?: ButtonProps['priority'];
 }
 
-// Note: this is so we can use this as a selector for SelectField
-// We need to keep `Form` as a React Component because ApiForm extends it :/
-export const StyledForm = styled('form')``;
+export function getSubmitButtonTitle(form: FormModel) {
+  if (form.isFormIncomplete) {
+    return t('Required fields must be filled out');
+  }
+
+  if (!form.isError) {
+    return undefined;
+  }
+
+  const errors = form.getErrors();
+  const hasRequiredFieldError = [...errors].some(
+    ([_field, message]) => message === fieldIsRequiredMessage
+  );
+
+  if (hasRequiredFieldError) {
+    const allRequiredFieldErrors = [...errors].every(
+      ([_field, message]) => message === fieldIsRequiredMessage
+    );
+
+    if (allRequiredFieldErrors) {
+      return t('Required fields must be filled out');
+    }
+
+    return t('Required fields must be filled out and inputs must be valid');
+  }
+
+  return t('Fields must contain valid inputs');
+}
+
+function Form({
+  'data-test-id': dataTestId,
+  allowUndo,
+  apiEndpoint,
+  apiMethod,
+  cancelLabel,
+  children,
+  className,
+  extraButton,
+  footerClass,
+  footerStyle,
+  hideFooter,
+  initialData,
+  mapFormErrors,
+  model,
+  onCancel,
+  onFieldChange,
+  onPreSubmit,
+  onSubmit,
+  onSubmitError,
+  onSubmitSuccess,
+  preventFormResetOnUnmount,
+  requireChanges,
+  resetOnError,
+  saveOnBlur,
+  skipPreventDefault,
+  submitDisabled,
+  submitLabel,
+  submitPriority,
+}: FormProps) {
+  const [formModel] = useState(() => {
+    const resolvedModel = model ?? new FormModel();
+
+    // XXX(epurkhiser): We do this as part of the state construction to ensure
+    // model data and options are set immediately
+    //
+    // TODO(epurkhiser): To have options and initialData be reactive properties
+    // we'll have to make some changes to the cosnumers of models.
+    if (initialData) {
+      resolvedModel.setInitialData(initialData);
+    }
+
+    resolvedModel.setFormOptions({
+      resetOnError,
+      allowUndo,
+      onFieldChange,
+      onSubmitSuccess,
+      onSubmitError,
+      saveOnBlur,
+      apiEndpoint,
+      apiMethod,
+      mapFormErrors,
+    });
+
+    return resolvedModel;
+  });
+
+  // Reset form model on unmount
+  useEffect(
+    () => () => {
+      if (!preventFormResetOnUnmount) {
+        formModel.reset();
+      }
+    },
+    [formModel, preventFormResetOnUnmount]
+  );
+
+  const contextData = useMemo(
+    () => ({saveOnBlur, form: formModel}),
+    [formModel, saveOnBlur]
+  );
+
+  const handleSubmitSuccess = useCallback(
+    (data: any) => {
+      formModel.submitSuccess(data);
+      onSubmitSuccess?.(data, formModel);
+    },
+    [formModel, onSubmitSuccess]
+  );
+
+  const handleSubmitError = useCallback(
+    (error: any) => {
+      formModel.submitError(error);
+      onSubmitError?.(error, formModel);
+    },
+    [formModel, onSubmitError]
+  );
+
+  const handleSubmit = useCallback(
+    (e: any) => {
+      if (!skipPreventDefault) {
+        e.preventDefault();
+      }
+      if (formModel.isSaving) {
+        return;
+      }
+
+      onPreSubmit?.();
+
+      onSubmit?.(
+        formModel.getData(),
+        handleSubmitSuccess,
+        handleSubmitError,
+        e,
+        formModel
+      );
+
+      if (!onSubmit) {
+        formModel.saveForm();
+      }
+    },
+    [
+      formModel,
+      handleSubmitError,
+      handleSubmitSuccess,
+      onPreSubmit,
+      onSubmit,
+      skipPreventDefault,
+    ]
+  );
+
+  const shouldShowFooter = typeof hideFooter === 'undefined' ? !saveOnBlur : !hideFooter;
+
+  return (
+    <FormContext value={contextData}>
+      <form
+        onSubmit={handleSubmit}
+        className={className ?? 'form-stacked'}
+        data-test-id={dataTestId}
+      >
+        <div>
+          {typeof children === 'function' ? children({model: formModel}) : children}
+        </div>
+
+        {shouldShowFooter && (
+          <StyledFooter
+            className={footerClass}
+            style={footerStyle}
+            saveOnBlur={saveOnBlur}
+          >
+            {extraButton}
+            <DefaultButtons>
+              {onCancel && (
+                <Observer>
+                  {() => (
+                    <Button
+                      disabled={formModel.isSaving}
+                      onClick={onCancel}
+                      style={{marginLeft: 5}}
+                    >
+                      {cancelLabel ?? t('Cancel')}
+                    </Button>
+                  )}
+                </Observer>
+              )}
+
+              <Observer>
+                {() => (
+                  <Button
+                    tooltipProps={{title: getSubmitButtonTitle(formModel)}}
+                    data-test-id="form-submit"
+                    priority={submitPriority ?? 'primary'}
+                    disabled={
+                      formModel.isFormIncomplete ||
+                      formModel.isError ||
+                      formModel.isSaving ||
+                      submitDisabled ||
+                      (requireChanges ? !formModel.formChanged : false)
+                    }
+                    type="submit"
+                  >
+                    {submitLabel ?? t('Save Changes')}
+                  </Button>
+                )}
+              </Observer>
+            </DefaultButtons>
+          </StyledFooter>
+        )}
+      </form>
+    </FormContext>
+  );
+}
 
 export default Form;
+
+const StyledFooter = styled('div')<{saveOnBlur?: boolean}>`
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 25px;
+  border-top: 1px solid ${p => p.theme.tokens.border.secondary};
+  background: none;
+  padding: 16px 0 0;
+  margin-bottom: 16px;
+
+  ${p =>
+    !p.saveOnBlur &&
+    css`
+      ${Panel} & {
+        margin-top: 0;
+        padding-right: ${space(2)};
+      }
+
+      /* Better padding with form inside of a modal */
+      [role='document'] & {
+        padding-right: 30px;
+        margin-left: -30px;
+        margin-right: -30px;
+        margin-bottom: -30px;
+        margin-top: 16px;
+        padding-bottom: 16px;
+      }
+    `};
+`;
+
+const DefaultButtons = styled('div')`
+  display: grid;
+  gap: ${space(1)};
+  grid-auto-flow: column;
+  justify-content: flex-end;
+  flex: 1;
+`;

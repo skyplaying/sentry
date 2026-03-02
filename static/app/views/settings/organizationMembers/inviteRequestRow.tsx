@@ -1,57 +1,45 @@
-import * as React from 'react';
+import {Fragment} from 'react';
 import styled from '@emotion/styled';
 
-import Button from 'app/components/button';
-import Confirm from 'app/components/confirm';
-import MultiSelectControl, {
-  MultiControlProps,
-} from 'app/components/forms/multiSelectControl';
-import HookOrDefault from 'app/components/hookOrDefault';
-import {PanelItem} from 'app/components/panels';
-import RoleSelectControl from 'app/components/roleSelectControl';
-import Tag from 'app/components/tag';
-import Tooltip from 'app/components/tooltip';
-import {IconCheckmark, IconClose} from 'app/icons';
-import {t, tct} from 'app/locale';
-import space from 'app/styles/space';
-import {Member, MemberRole, Organization, Team} from 'app/types';
+import {Tag} from '@sentry/scraps/badge';
+import {Button} from '@sentry/scraps/button';
+import {Tooltip} from '@sentry/scraps/tooltip';
+
+import Confirm from 'sentry/components/confirm';
+import type {InviteModalRenderFunc} from 'sentry/components/modals/memberInviteModalCustomization';
+import {InviteModalHook} from 'sentry/components/modals/memberInviteModalCustomization';
+import PanelItem from 'sentry/components/panels/panelItem';
+import RoleSelectControl from 'sentry/components/roleSelectControl';
+import {TeamSelector} from 'sentry/components/teamSelector';
+import {IconCheckmark, IconClose} from 'sentry/icons';
+import {t, tct} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {Member, Organization, OrgRole} from 'sentry/types/organization';
 
 type Props = {
+  allRoles: OrgRole[];
   inviteRequest: Member;
-  inviteRequestBusy: {[key: string]: boolean};
-  organization: Organization;
+  inviteRequestBusy: Record<string, boolean>;
   onApprove: (inviteRequest: Member) => void;
   onDeny: (inviteRequest: Member) => void;
   onUpdate: (data: Partial<Member>) => void;
-  allTeams: Team[];
-  allRoles: MemberRole[];
+  organization: Organization;
 };
 
-const InviteModalHook = HookOrDefault({
-  hookName: 'member-invite-modal:customization',
-  defaultComponent: ({onSendInvites, children}) =>
-    children({sendInvites: onSendInvites, canSend: true}),
-});
-
-type InviteModalRenderFunc = React.ComponentProps<typeof InviteModalHook>['children'];
-type OnChangeArgs = Parameters<NonNullable<MultiControlProps['onChange']>>[0];
-
-const InviteRequestRow = ({
+function InviteRequestRow({
   inviteRequest,
   inviteRequestBusy,
   organization,
   onApprove,
   onDeny,
   onUpdate,
-  allTeams,
   allRoles,
-}: Props) => {
+}: Props) {
   const role = allRoles.find(r => r.id === inviteRequest.role);
-  const roleDisallowed = !(role && role.allowed);
+  const roleDisallowed = !role?.isAllowed;
   const {access} = organization;
   const canApprove = access.includes('member:admin');
 
-  // eslint-disable-next-line react/prop-types
   const hookRenderer: InviteModalRenderFunc = ({sendInvites, canSend, headerInfo}) => (
     <StyledPanelItem>
       <div>
@@ -73,11 +61,12 @@ const InviteRequestRow = ({
             </Description>
           )
         ) : (
-          <JoinRequestIndicator
-            tooltipText={t('This user has asked to join your organization.')}
+          <Tag
+            variant="muted"
+            title={t('This user has asked to join your organization.')}
           >
             {t('Join request')}
-          </JoinRequestIndicator>
+          </Tag>
         )}
       </div>
 
@@ -88,6 +77,7 @@ const InviteRequestRow = ({
           onChange={r => onUpdate({role: r.value})}
           value={inviteRequest.role}
           roles={allRoles}
+          aria-label={t('Role: %s', role?.name)}
         />
       ) : (
         <div>{inviteRequest.roleName}</div>
@@ -95,16 +85,13 @@ const InviteRequestRow = ({
       {canApprove ? (
         <TeamSelectControl
           name="teams"
-          placeholder={t('Add to teams\u2026')}
-          onChange={(teams: OnChangeArgs) =>
-            onUpdate({teams: (teams || []).map(team => team.value)})
+          placeholder={t('None')}
+          onChange={(teams: any) =>
+            onUpdate({teams: (teams || []).map((team: any) => team.value)})
           }
           value={inviteRequest.teams}
-          options={allTeams.map(({slug}) => ({
-            value: slug,
-            label: `#${slug}`,
-          }))}
           clearable
+          multiple
         />
       ) : (
         <div>{inviteRequest.teams.join(', ')}</div>
@@ -112,16 +99,16 @@ const InviteRequestRow = ({
 
       <ButtonGroup>
         <Button
-          size="small"
+          size="sm"
           busy={inviteRequestBusy[inviteRequest.id]}
           onClick={() => onDeny(inviteRequest)}
           icon={<IconClose />}
           disabled={!canApprove}
-          title={
-            canApprove
+          tooltipProps={{
+            title: canApprove
               ? undefined
-              : t('This request needs to be reviewed by a privileged user')
-          }
+              : t('This request needs to be reviewed by a privileged user'),
+          }}
         >
           {t('Deny')}
         </Button>
@@ -130,28 +117,28 @@ const InviteRequestRow = ({
           disableConfirmButton={!canSend}
           disabled={!canApprove || roleDisallowed}
           message={
-            <React.Fragment>
+            <Fragment>
               {tct('Are you sure you want to invite [email] to your organization?', {
                 email: inviteRequest.email,
               })}
               {headerInfo}
-            </React.Fragment>
+            </Fragment>
           }
         >
           <Button
             priority="primary"
-            size="small"
+            size="sm"
             busy={inviteRequestBusy[inviteRequest.id]}
-            title={
-              canApprove
+            tooltipProps={{
+              title: canApprove
                 ? roleDisallowed
                   ? t(
                       `You do not have permission to approve a user of this role.
                       Select a different role to approve this user.`
                     )
                   : undefined
-                : t('This request needs to be reviewed by a privileged user')
-            }
+                : t('This request needs to be reviewed by a privileged user'),
+            }}
             icon={<IconCheckmark />}
           >
             {t('Approve')}
@@ -170,28 +157,24 @@ const InviteRequestRow = ({
       {hookRenderer}
     </InviteModalHook>
   );
-};
-
-const JoinRequestIndicator = styled(Tag)`
-  text-transform: uppercase;
-`;
+}
 
 const StyledPanelItem = styled(PanelItem)`
   display: grid;
   grid-template-columns: minmax(150px, auto) minmax(100px, 140px) 220px max-content;
-  grid-gap: ${space(2)};
+  gap: ${space(2)};
   align-items: center;
 `;
 
 const UserName = styled('div')`
-  font-size: ${p => p.theme.fontSizeLarge};
+  font-size: ${p => p.theme.font.size.lg};
   overflow: hidden;
   text-overflow: ellipsis;
 `;
 
 const Description = styled('div')`
   display: block;
-  color: ${p => p.theme.subText};
+  color: ${p => p.theme.tokens.content.secondary};
   font-size: 14px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -201,7 +184,7 @@ const StyledRoleSelectControl = styled(RoleSelectControl)`
   max-width: 140px;
 `;
 
-const TeamSelectControl = styled(MultiSelectControl)`
+const TeamSelectControl = styled(TeamSelector)`
   max-width: 220px;
   .Select-value-label {
     max-width: 150px;
@@ -212,7 +195,7 @@ const TeamSelectControl = styled(MultiSelectControl)`
 const ButtonGroup = styled('div')`
   display: inline-grid;
   grid-template-columns: repeat(2, max-content);
-  grid-gap: ${space(1)};
+  gap: ${space(1)};
 `;
 
 export default InviteRequestRow;

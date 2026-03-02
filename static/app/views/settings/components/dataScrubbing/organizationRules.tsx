@@ -1,29 +1,48 @@
 import {Component, createRef} from 'react';
+import {css} from '@emotion/react';
 import styled from '@emotion/styled';
 
-import Button from 'app/components/button';
-import {IconChevron} from 'app/icons';
-import {t} from 'app/locale';
-import space from 'app/styles/space';
+import {Button} from '@sentry/scraps/button';
+
+import {addErrorMessage} from 'sentry/actionCreators/indicator';
+import PanelAlert from 'sentry/components/panels/panelAlert';
+import {IconChevron} from 'sentry/icons';
+import {t} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {Organization} from 'sentry/types/organization';
+import {convertRelayPiiConfig} from 'sentry/views/settings/components/dataScrubbing/convertRelayPiiConfig';
 
 import Rules from './rules';
-import {Rule} from './types';
+import type {Rule} from './types';
 
 type Props = {
-  rules: Array<Rule>;
+  organization: Organization;
 };
 
 type State = {
   isCollapsed: boolean;
+  rules: Rule[];
   contentHeight?: string;
 };
 
-class OrganizationRules extends Component<Props, State> {
+export class OrganizationRules extends Component<Props, State> {
   state: State = {
     isCollapsed: true,
+    rules: [],
   };
 
-  componentDidUpdate() {
+  componentDidMount() {
+    this.loadRules();
+  }
+
+  componentDidUpdate(prevProps: Props) {
+    if (
+      prevProps.organization.relayPiiConfig !== this.props.organization.relayPiiConfig
+    ) {
+      this.loadRules();
+      return;
+    }
+
     this.loadContentHeight();
   }
 
@@ -44,15 +63,24 @@ class OrganizationRules extends Component<Props, State> {
     }));
   };
 
+  loadRules() {
+    try {
+      this.setState({
+        rules: convertRelayPiiConfig(this.props.organization.relayPiiConfig),
+      });
+    } catch {
+      addErrorMessage(t('Unable to load data scrubbing rules'));
+    }
+  }
+
   render() {
-    const {rules} = this.props;
-    const {isCollapsed, contentHeight} = this.state;
+    const {isCollapsed, contentHeight, rules} = this.state;
 
     if (rules.length === 0) {
       return (
-        <Wrapper>
+        <PanelAlert variant="info">
           {t('There are no data scrubbing rules at the organization level')}
-        </Wrapper>
+        </PanelAlert>
       );
     }
     return (
@@ -60,13 +88,14 @@ class OrganizationRules extends Component<Props, State> {
         <Header onClick={this.handleToggleCollapsed}>
           <div>{t('Organization Rules')}</div>
           <Button
-            title={
-              isCollapsed
+            tooltipProps={{
+              title: isCollapsed
                 ? t('Expand Organization Rules')
-                : t('Collapse Organization Rules')
-            }
-            icon={<IconChevron size="xs" direction={isCollapsed ? 'down' : 'up'} />}
-            size="xsmall"
+                : t('Collapse Organization Rules'),
+            }}
+            icon={<IconChevron direction={isCollapsed ? 'down' : 'up'} />}
+            size="xs"
+            aria-label={t('Toggle Organization Rules')}
           />
         </Header>
         <Content>
@@ -76,8 +105,6 @@ class OrganizationRules extends Component<Props, State> {
     );
   }
 }
-
-export default OrganizationRules;
 
 const Content = styled('div')`
   transition: height 300ms cubic-bezier(0.4, 0, 0.2, 1) 0ms;
@@ -90,19 +117,19 @@ const Header = styled('div')`
   display: grid;
   grid-template-columns: 1fr auto;
   align-items: center;
-  border-bottom: 1px solid ${p => p.theme.border};
+  border-bottom: 1px solid ${p => p.theme.tokens.border.primary};
   padding: ${space(1)} ${space(2)};
 `;
 
-const Wrapper = styled('div')<{isCollapsed?: boolean; contentHeight?: string}>`
-  color: ${p => p.theme.gray200};
-  background: ${p => p.theme.backgroundSecondary};
+const Wrapper = styled('div')<{contentHeight?: string; isCollapsed?: boolean}>`
+  color: ${p => p.theme.tokens.content.secondary};
+  background: ${p => p.theme.tokens.background.secondary};
   ${p => !p.contentHeight && `padding: ${space(1)} ${space(2)}`};
-  ${p => !p.isCollapsed && ` border-bottom: 1px solid ${p.theme.border}`};
+  ${p => !p.isCollapsed && ` border-bottom: 1px solid ${p.theme.tokens.border.primary}`};
   ${p =>
     !p.isCollapsed &&
     p.contentHeight &&
-    `
+    css`
       ${Content} {
         height: ${p.contentHeight};
       }

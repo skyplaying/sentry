@@ -13,14 +13,14 @@ python to allow us to size up the lengths without any
 migrations.
 """
 
-
 from django.db import models
+from django.db.backends.base.base import BaseDatabaseWrapper
 
 __all__ = ("CharField", "EmailField")
 
 
 class TextType:
-    def db_type(self, connection):
+    def db_type(self, connection: BaseDatabaseWrapper) -> str:
         return "text"
 
 

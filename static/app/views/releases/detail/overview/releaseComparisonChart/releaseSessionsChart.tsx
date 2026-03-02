@@ -1,65 +1,61 @@
-import * as React from 'react';
-import {withRouter, WithRouterProps} from 'react-router';
+import {Component} from 'react';
+import type {Theme} from '@emotion/react';
 import {withTheme} from '@emotion/react';
+import type {Location} from 'history';
 import round from 'lodash/round';
 
-import AreaChart from 'app/components/charts/areaChart';
-import ChartZoom from 'app/components/charts/chartZoom';
-import StackedAreaChart from 'app/components/charts/stackedAreaChart';
-import {HeaderTitleLegend, HeaderValue} from 'app/components/charts/styles';
-import TransitionChart from 'app/components/charts/transitionChart';
-import TransparentLoadingMask from 'app/components/charts/transparentLoadingMask';
-import QuestionTooltip from 'app/components/questionTooltip';
-import {PlatformKey} from 'app/data/platformCategories';
-import {t} from 'app/locale';
+import type {AreaChartProps} from 'sentry/components/charts/areaChart';
+import {AreaChart} from 'sentry/components/charts/areaChart';
+import ChartZoom from 'sentry/components/charts/chartZoom';
+import StackedAreaChart from 'sentry/components/charts/stackedAreaChart';
+import {HeaderTitleLegend, HeaderValue} from 'sentry/components/charts/styles';
+import TransitionChart from 'sentry/components/charts/transitionChart';
+import TransparentLoadingMask from 'sentry/components/charts/transparentLoadingMask';
+import QuestionTooltip from 'sentry/components/questionTooltip';
+import {t} from 'sentry/locale';
+import type {SessionApiResponse} from 'sentry/types/organization';
+import {SessionFieldWithOperation, SessionStatus} from 'sentry/types/organization';
+import type {PlatformKey} from 'sentry/types/project';
+import type {ReleaseProject, ReleaseWithHealth} from 'sentry/types/release';
+import {ReleaseComparisonChartType} from 'sentry/types/release';
+import {defined} from 'sentry/utils';
 import {
-  ReleaseComparisonChartType,
-  ReleaseProject,
-  ReleaseWithHealth,
-  SessionApiResponse,
-  SessionField,
-  SessionStatus,
-} from 'app/types';
-import {defined} from 'app/utils';
-import {getDuration, getExactDuration} from 'app/utils/formatters';
-import {
+  getCountSeries,
   getCrashFreeRateSeries,
-  getSessionP50Series,
   getSessionStatusRateSeries,
-} from 'app/utils/sessions';
-import {Theme} from 'app/utils/theme';
-import {displayCrashFreePercent, roundDuration} from 'app/views/releases/utils';
-
+  initSessionsChart,
+  MINUTES_THRESHOLD_TO_DISPLAY_SECONDS,
+} from 'sentry/utils/sessions';
+// eslint-disable-next-line no-restricted-imports
+import withSentryRouter from 'sentry/utils/withSentryRouter';
 import {
   generateReleaseMarkLines,
   releaseComparisonChartHelp,
   releaseComparisonChartTitles,
   releaseMarkLinesLabels,
-} from '../../utils';
-import {
-  fillChartDataFromSessionsResponse,
-  initSessionsBreakdownChartData,
-} from '../chart/utils';
+} from 'sentry/views/releases/detail/utils';
+import {displayCrashFreePercent} from 'sentry/views/releases/utils';
 
 type Props = {
-  theme: Theme;
-  release: ReleaseWithHealth;
-  project: ReleaseProject;
-  releaseSessions: SessionApiResponse | null;
   allSessions: SessionApiResponse | null;
   chartType: ReleaseComparisonChartType;
-  platform: PlatformKey;
-  value: React.ReactNode;
   diff: React.ReactNode;
   loading: boolean;
+  location: Location;
+  platform: PlatformKey;
+  project: ReleaseProject;
+  release: ReleaseWithHealth;
+  releaseSessions: SessionApiResponse | null;
   reloading: boolean;
-  period?: string;
-  start?: string;
+  theme: Theme;
+  value: React.ReactNode;
   end?: string;
+  period?: string | null;
+  start?: string;
   utc?: boolean;
-} & WithRouterProps;
+};
 
-class ReleaseSessionsChart extends React.Component<Props> {
+class ReleaseSessionsChart extends Component<Props> {
   formatTooltipValue = (value: string | number | null, label?: string) => {
     if (label && Object.values(releaseMarkLinesLabels).includes(label)) {
       return '';
@@ -75,17 +71,15 @@ class ReleaseSessionsChart extends React.Component<Props> {
       case ReleaseComparisonChartType.HEALTHY_SESSIONS:
       case ReleaseComparisonChartType.ABNORMAL_SESSIONS:
       case ReleaseComparisonChartType.ERRORED_SESSIONS:
+      case ReleaseComparisonChartType.UNHANDLED_SESSIONS:
       case ReleaseComparisonChartType.CRASHED_SESSIONS:
       case ReleaseComparisonChartType.CRASH_FREE_USERS:
       case ReleaseComparisonChartType.HEALTHY_USERS:
       case ReleaseComparisonChartType.ABNORMAL_USERS:
       case ReleaseComparisonChartType.ERRORED_USERS:
+      case ReleaseComparisonChartType.UNHANDLED_USERS:
       case ReleaseComparisonChartType.CRASHED_USERS:
         return defined(value) ? `${value}%` : '\u2015';
-      case ReleaseComparisonChartType.SESSION_DURATION:
-        return defined(value) && typeof value === 'number'
-          ? getExactDuration(value, true)
-          : '\u2015';
       case ReleaseComparisonChartType.SESSION_COUNT:
       case ReleaseComparisonChartType.USER_COUNT:
       default:
@@ -103,30 +97,24 @@ class ReleaseSessionsChart extends React.Component<Props> {
           scale: true,
           axisLabel: {
             formatter: (value: number) => displayCrashFreePercent(value),
-            color: theme.chartLabel,
+            color: theme.tokens.content.secondary,
           },
         };
       case ReleaseComparisonChartType.HEALTHY_SESSIONS:
       case ReleaseComparisonChartType.ABNORMAL_SESSIONS:
       case ReleaseComparisonChartType.ERRORED_SESSIONS:
+      case ReleaseComparisonChartType.UNHANDLED_SESSIONS:
       case ReleaseComparisonChartType.CRASHED_SESSIONS:
       case ReleaseComparisonChartType.HEALTHY_USERS:
       case ReleaseComparisonChartType.ABNORMAL_USERS:
       case ReleaseComparisonChartType.ERRORED_USERS:
+      case ReleaseComparisonChartType.UNHANDLED_USERS:
       case ReleaseComparisonChartType.CRASHED_USERS:
         return {
           scale: true,
           axisLabel: {
             formatter: (value: number) => `${round(value, 2)}%`,
-            color: theme.chartLabel,
-          },
-        };
-      case ReleaseComparisonChartType.SESSION_DURATION:
-        return {
-          scale: true,
-          axisLabel: {
-            formatter: (value: number) => getDuration(value, undefined, true),
-            color: theme.chartLabel,
+            color: theme.tokens.content.secondary,
           },
         };
       case ReleaseComparisonChartType.SESSION_COUNT:
@@ -138,54 +126,58 @@ class ReleaseSessionsChart extends React.Component<Props> {
 
   getChart():
     | React.ComponentType<StackedAreaChart['props']>
-    | React.ComponentType<AreaChart['props']> {
+    | React.ComponentType<AreaChartProps> {
     const {chartType} = this.props;
     switch (chartType) {
       case ReleaseComparisonChartType.CRASH_FREE_SESSIONS:
       case ReleaseComparisonChartType.HEALTHY_SESSIONS:
       case ReleaseComparisonChartType.ABNORMAL_SESSIONS:
       case ReleaseComparisonChartType.ERRORED_SESSIONS:
+      case ReleaseComparisonChartType.UNHANDLED_SESSIONS:
       case ReleaseComparisonChartType.CRASHED_SESSIONS:
       case ReleaseComparisonChartType.CRASH_FREE_USERS:
       case ReleaseComparisonChartType.HEALTHY_USERS:
       case ReleaseComparisonChartType.ABNORMAL_USERS:
       case ReleaseComparisonChartType.ERRORED_USERS:
+      case ReleaseComparisonChartType.UNHANDLED_USERS:
       case ReleaseComparisonChartType.CRASHED_USERS:
       default:
         return AreaChart;
       case ReleaseComparisonChartType.SESSION_COUNT:
-      case ReleaseComparisonChartType.SESSION_DURATION:
       case ReleaseComparisonChartType.USER_COUNT:
         return StackedAreaChart;
     }
   }
 
-  getColors() {
+  getColors(): string[] | undefined {
     const {theme, chartType} = this.props;
-    const colors = theme.charts.getColorPalette(14);
+    const colors = theme.chart.getColorPalette(15);
     switch (chartType) {
       case ReleaseComparisonChartType.CRASH_FREE_SESSIONS:
         return [colors[0]];
       case ReleaseComparisonChartType.HEALTHY_SESSIONS:
-        return [theme.green300];
+        return [theme.colors.green400];
       case ReleaseComparisonChartType.ABNORMAL_SESSIONS:
         return [colors[15]];
       case ReleaseComparisonChartType.ERRORED_SESSIONS:
         return [colors[12]];
+      case ReleaseComparisonChartType.UNHANDLED_SESSIONS:
+        return [colors[13]];
       case ReleaseComparisonChartType.CRASHED_SESSIONS:
-        return [theme.red300];
+        return [theme.colors.red400];
       case ReleaseComparisonChartType.CRASH_FREE_USERS:
         return [colors[6]];
       case ReleaseComparisonChartType.HEALTHY_USERS:
-        return [theme.green300];
+        return [theme.colors.green400];
       case ReleaseComparisonChartType.ABNORMAL_USERS:
         return [colors[15]];
       case ReleaseComparisonChartType.ERRORED_USERS:
         return [colors[12]];
+      case ReleaseComparisonChartType.UNHANDLED_USERS:
+        return [colors[13]];
       case ReleaseComparisonChartType.CRASHED_USERS:
-        return [theme.red300];
+        return [theme.colors.red400];
       case ReleaseComparisonChartType.SESSION_COUNT:
-      case ReleaseComparisonChartType.SESSION_DURATION:
       case ReleaseComparisonChartType.USER_COUNT:
       default:
         return undefined;
@@ -194,6 +186,7 @@ class ReleaseSessionsChart extends React.Component<Props> {
 
   getSeries(chartType: ReleaseComparisonChartType) {
     const {releaseSessions, allSessions, release, location, project, theme} = this.props;
+    const countCharts = initSessionsChart(theme);
 
     if (!releaseSessions) {
       return {};
@@ -211,7 +204,7 @@ class ReleaseSessionsChart extends React.Component<Props> {
               data: getCrashFreeRateSeries(
                 releaseSessions?.groups,
                 releaseSessions?.intervals,
-                SessionField.SESSIONS
+                SessionFieldWithOperation.SESSIONS
               ),
             },
           ],
@@ -221,7 +214,7 @@ class ReleaseSessionsChart extends React.Component<Props> {
               data: getCrashFreeRateSeries(
                 allSessions?.groups,
                 allSessions?.intervals,
-                SessionField.SESSIONS
+                SessionFieldWithOperation.SESSIONS
               ),
             },
           ],
@@ -236,7 +229,7 @@ class ReleaseSessionsChart extends React.Component<Props> {
               data: getSessionStatusRateSeries(
                 releaseSessions?.groups,
                 releaseSessions?.intervals,
-                SessionField.SESSIONS,
+                SessionFieldWithOperation.SESSIONS,
                 SessionStatus.HEALTHY
               ),
             },
@@ -247,7 +240,7 @@ class ReleaseSessionsChart extends React.Component<Props> {
               data: getSessionStatusRateSeries(
                 allSessions?.groups,
                 allSessions?.intervals,
-                SessionField.SESSIONS,
+                SessionFieldWithOperation.SESSIONS,
                 SessionStatus.HEALTHY
               ),
             },
@@ -263,7 +256,7 @@ class ReleaseSessionsChart extends React.Component<Props> {
               data: getSessionStatusRateSeries(
                 releaseSessions?.groups,
                 releaseSessions?.intervals,
-                SessionField.SESSIONS,
+                SessionFieldWithOperation.SESSIONS,
                 SessionStatus.ABNORMAL
               ),
             },
@@ -274,7 +267,7 @@ class ReleaseSessionsChart extends React.Component<Props> {
               data: getSessionStatusRateSeries(
                 allSessions?.groups,
                 allSessions?.intervals,
-                SessionField.SESSIONS,
+                SessionFieldWithOperation.SESSIONS,
                 SessionStatus.ABNORMAL
               ),
             },
@@ -290,7 +283,7 @@ class ReleaseSessionsChart extends React.Component<Props> {
               data: getSessionStatusRateSeries(
                 releaseSessions?.groups,
                 releaseSessions?.intervals,
-                SessionField.SESSIONS,
+                SessionFieldWithOperation.SESSIONS,
                 SessionStatus.ERRORED
               ),
             },
@@ -301,8 +294,35 @@ class ReleaseSessionsChart extends React.Component<Props> {
               data: getSessionStatusRateSeries(
                 allSessions?.groups,
                 allSessions?.intervals,
-                SessionField.SESSIONS,
+                SessionFieldWithOperation.SESSIONS,
                 SessionStatus.ERRORED
+              ),
+            },
+          ],
+          markLines,
+        };
+      case ReleaseComparisonChartType.UNHANDLED_SESSIONS:
+        return {
+          series: [
+            {
+              seriesName: t('This Release'),
+              connectNulls: true,
+              data: getSessionStatusRateSeries(
+                releaseSessions?.groups,
+                releaseSessions?.intervals,
+                SessionFieldWithOperation.SESSIONS,
+                SessionStatus.UNHANDLED
+              ),
+            },
+          ],
+          previousSeries: [
+            {
+              seriesName: t('All Releases'),
+              data: getSessionStatusRateSeries(
+                allSessions?.groups,
+                allSessions?.intervals,
+                SessionFieldWithOperation.SESSIONS,
+                SessionStatus.UNHANDLED
               ),
             },
           ],
@@ -317,7 +337,7 @@ class ReleaseSessionsChart extends React.Component<Props> {
               data: getSessionStatusRateSeries(
                 releaseSessions?.groups,
                 releaseSessions?.intervals,
-                SessionField.SESSIONS,
+                SessionFieldWithOperation.SESSIONS,
                 SessionStatus.CRASHED
               ),
             },
@@ -328,7 +348,7 @@ class ReleaseSessionsChart extends React.Component<Props> {
               data: getSessionStatusRateSeries(
                 allSessions?.groups,
                 allSessions?.intervals,
-                SessionField.SESSIONS,
+                SessionFieldWithOperation.SESSIONS,
                 SessionStatus.CRASHED
               ),
             },
@@ -344,7 +364,7 @@ class ReleaseSessionsChart extends React.Component<Props> {
               data: getCrashFreeRateSeries(
                 releaseSessions?.groups,
                 releaseSessions?.intervals,
-                SessionField.USERS
+                SessionFieldWithOperation.USERS
               ),
             },
           ],
@@ -354,7 +374,7 @@ class ReleaseSessionsChart extends React.Component<Props> {
               data: getCrashFreeRateSeries(
                 allSessions?.groups,
                 allSessions?.intervals,
-                SessionField.USERS
+                SessionFieldWithOperation.USERS
               ),
             },
           ],
@@ -369,7 +389,7 @@ class ReleaseSessionsChart extends React.Component<Props> {
               data: getSessionStatusRateSeries(
                 releaseSessions?.groups,
                 releaseSessions?.intervals,
-                SessionField.USERS,
+                SessionFieldWithOperation.USERS,
                 SessionStatus.HEALTHY
               ),
             },
@@ -380,7 +400,7 @@ class ReleaseSessionsChart extends React.Component<Props> {
               data: getSessionStatusRateSeries(
                 allSessions?.groups,
                 allSessions?.intervals,
-                SessionField.USERS,
+                SessionFieldWithOperation.USERS,
                 SessionStatus.HEALTHY
               ),
             },
@@ -396,7 +416,7 @@ class ReleaseSessionsChart extends React.Component<Props> {
               data: getSessionStatusRateSeries(
                 releaseSessions?.groups,
                 releaseSessions?.intervals,
-                SessionField.USERS,
+                SessionFieldWithOperation.USERS,
                 SessionStatus.ABNORMAL
               ),
             },
@@ -407,7 +427,7 @@ class ReleaseSessionsChart extends React.Component<Props> {
               data: getSessionStatusRateSeries(
                 allSessions?.groups,
                 allSessions?.intervals,
-                SessionField.USERS,
+                SessionFieldWithOperation.USERS,
                 SessionStatus.ABNORMAL
               ),
             },
@@ -423,7 +443,7 @@ class ReleaseSessionsChart extends React.Component<Props> {
               data: getSessionStatusRateSeries(
                 releaseSessions?.groups,
                 releaseSessions?.intervals,
-                SessionField.USERS,
+                SessionFieldWithOperation.USERS,
                 SessionStatus.ERRORED
               ),
             },
@@ -434,8 +454,35 @@ class ReleaseSessionsChart extends React.Component<Props> {
               data: getSessionStatusRateSeries(
                 allSessions?.groups,
                 allSessions?.intervals,
-                SessionField.USERS,
+                SessionFieldWithOperation.USERS,
                 SessionStatus.ERRORED
+              ),
+            },
+          ],
+          markLines,
+        };
+      case ReleaseComparisonChartType.UNHANDLED_USERS:
+        return {
+          series: [
+            {
+              seriesName: t('This Release'),
+              connectNulls: true,
+              data: getSessionStatusRateSeries(
+                releaseSessions?.groups,
+                releaseSessions?.intervals,
+                SessionFieldWithOperation.USERS,
+                SessionStatus.UNHANDLED
+              ),
+            },
+          ],
+          previousSeries: [
+            {
+              seriesName: t('All Releases'),
+              data: getSessionStatusRateSeries(
+                allSessions?.groups,
+                allSessions?.intervals,
+                SessionFieldWithOperation.USERS,
+                SessionStatus.UNHANDLED
               ),
             },
           ],
@@ -450,7 +497,7 @@ class ReleaseSessionsChart extends React.Component<Props> {
               data: getSessionStatusRateSeries(
                 releaseSessions?.groups,
                 releaseSessions?.intervals,
-                SessionField.USERS,
+                SessionFieldWithOperation.USERS,
                 SessionStatus.CRASHED
               ),
             },
@@ -461,7 +508,7 @@ class ReleaseSessionsChart extends React.Component<Props> {
               data: getSessionStatusRateSeries(
                 allSessions?.groups,
                 allSessions?.intervals,
-                SessionField.USERS,
+                SessionFieldWithOperation.USERS,
                 SessionStatus.CRASHED
               ),
             },
@@ -470,38 +517,55 @@ class ReleaseSessionsChart extends React.Component<Props> {
         };
       case ReleaseComparisonChartType.SESSION_COUNT:
         return {
-          series: Object.values(
-            fillChartDataFromSessionsResponse({
-              response: releaseSessions,
-              field: SessionField.SESSIONS,
-              groupBy: 'session.status',
-              chartData: initSessionsBreakdownChartData(theme),
-            })
-          ),
-          markLines,
-        };
-      case ReleaseComparisonChartType.SESSION_DURATION:
-        return {
           series: [
             {
-              seriesName: t('This Release'),
-              connectNulls: true,
-              data: getSessionP50Series(
-                releaseSessions?.groups,
-                releaseSessions?.intervals,
-                SessionField.DURATION,
-                duration => roundDuration(duration / 1000)
+              ...countCharts[SessionStatus.HEALTHY],
+              data: getCountSeries(
+                SessionFieldWithOperation.SESSIONS,
+                releaseSessions.groups.find(
+                  g => g.by['session.status'] === SessionStatus.HEALTHY
+                ),
+                releaseSessions.intervals
               ),
             },
-          ],
-          previousSeries: [
             {
-              seriesName: t('All Releases'),
-              data: getSessionP50Series(
-                allSessions?.groups,
-                allSessions?.intervals,
-                SessionField.DURATION,
-                duration => roundDuration(duration / 1000)
+              ...countCharts[SessionStatus.ERRORED],
+              data: getCountSeries(
+                SessionFieldWithOperation.SESSIONS,
+                releaseSessions.groups.find(
+                  g => g.by['session.status'] === SessionStatus.ERRORED
+                ),
+                releaseSessions.intervals
+              ),
+            },
+            {
+              ...countCharts[SessionStatus.UNHANDLED],
+              data: getCountSeries(
+                SessionFieldWithOperation.SESSIONS,
+                releaseSessions.groups.find(
+                  g => g.by['session.status'] === SessionStatus.UNHANDLED
+                ),
+                releaseSessions.intervals
+              ),
+            },
+            {
+              ...countCharts[SessionStatus.ABNORMAL],
+              data: getCountSeries(
+                SessionFieldWithOperation.SESSIONS,
+                releaseSessions.groups.find(
+                  g => g.by['session.status'] === SessionStatus.ABNORMAL
+                ),
+                releaseSessions.intervals
+              ),
+            },
+            {
+              ...countCharts[SessionStatus.CRASHED],
+              data: getCountSeries(
+                SessionFieldWithOperation.SESSIONS,
+                releaseSessions.groups.find(
+                  g => g.by['session.status'] === SessionStatus.CRASHED
+                ),
+                releaseSessions.intervals
               ),
             },
           ],
@@ -509,14 +573,58 @@ class ReleaseSessionsChart extends React.Component<Props> {
         };
       case ReleaseComparisonChartType.USER_COUNT:
         return {
-          series: Object.values(
-            fillChartDataFromSessionsResponse({
-              response: releaseSessions,
-              field: SessionField.USERS,
-              groupBy: 'session.status',
-              chartData: initSessionsBreakdownChartData(theme),
-            })
-          ),
+          series: [
+            {
+              ...countCharts[SessionStatus.HEALTHY],
+              data: getCountSeries(
+                SessionFieldWithOperation.USERS,
+                releaseSessions.groups.find(
+                  g => g.by['session.status'] === SessionStatus.HEALTHY
+                ),
+                releaseSessions.intervals
+              ),
+            },
+            {
+              ...countCharts[SessionStatus.ERRORED],
+              data: getCountSeries(
+                SessionFieldWithOperation.USERS,
+                releaseSessions.groups.find(
+                  g => g.by['session.status'] === SessionStatus.ERRORED
+                ),
+                releaseSessions.intervals
+              ),
+            },
+            {
+              ...countCharts[SessionStatus.UNHANDLED],
+              data: getCountSeries(
+                SessionFieldWithOperation.USERS,
+                releaseSessions.groups.find(
+                  g => g.by['session.status'] === SessionStatus.UNHANDLED
+                ),
+                releaseSessions.intervals
+              ),
+            },
+            {
+              ...countCharts[SessionStatus.ABNORMAL],
+              data: getCountSeries(
+                SessionFieldWithOperation.USERS,
+                releaseSessions.groups.find(
+                  g => g.by['session.status'] === SessionStatus.ABNORMAL
+                ),
+                releaseSessions.intervals
+              ),
+            },
+            {
+              ...countCharts[SessionStatus.CRASHED],
+              data: getCountSeries(
+                SessionFieldWithOperation.USERS,
+                releaseSessions.groups.find(
+                  g => g.by['session.status'] === SessionStatus.CRASHED
+                ),
+                releaseSessions.intervals
+              ),
+            },
+          ],
           markLines,
         };
       default:
@@ -525,7 +633,7 @@ class ReleaseSessionsChart extends React.Component<Props> {
   }
 
   render() {
-    const {chartType, router, period, start, end, utc, value, diff, loading, reloading} =
+    const {chartType, period, start, end, utc, value, diff, loading, reloading} =
       this.props;
 
     const Chart = this.getChart();
@@ -534,6 +642,9 @@ class ReleaseSessionsChart extends React.Component<Props> {
     const legend = {
       right: 10,
       top: 0,
+      textStyle: {
+        padding: [2, 0, 0, 0],
+      },
       data: [...(series ?? []), ...(previousSeries ?? [])].map(s => s.seriesName),
     };
 
@@ -555,14 +666,7 @@ class ReleaseSessionsChart extends React.Component<Props> {
           {value} {diff}
         </HeaderValue>
 
-        <ChartZoom
-          router={router}
-          period={period}
-          utc={utc}
-          start={start}
-          end={end}
-          usePageDate
-        >
+        <ChartZoom period={period} utc={utc} start={start} end={end} usePageDate>
           {zoomRenderProps => (
             <Chart
               legend={legend}
@@ -575,6 +679,7 @@ class ReleaseSessionsChart extends React.Component<Props> {
                 top: '70px',
                 bottom: '0px',
               }}
+              minutesThresholdToDisplaySeconds={MINUTES_THRESHOLD_TO_DISPLAY_SECONDS}
               yAxis={this.getYAxis()}
               tooltip={{valueFormatter: this.formatTooltipValue}}
               colors={this.getColors()}
@@ -588,4 +693,4 @@ class ReleaseSessionsChart extends React.Component<Props> {
   }
 }
 
-export default withTheme(withRouter(ReleaseSessionsChart));
+export default withTheme(withSentryRouter(ReleaseSessionsChart));

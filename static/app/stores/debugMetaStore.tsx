@@ -1,28 +1,29 @@
-import Reflux from 'reflux';
-
-const DebugMetaActions = Reflux.createActions(['updateFilter']);
+import type {StoreDefinition} from 'reflux';
+import {createStore} from 'reflux';
 
 type State = {
   filter: string | null;
 };
 
-type DebugMetaStoreInterface = {
-  init: () => void;
-  reset: () => void;
-  updateFilter: (word: string) => void;
-  get: () => State;
-};
+interface DebugMetaStoreInterface extends StoreDefinition {
+  get(): State;
+  init(): void;
+  reset(): void;
+  updateFilter(word: string): void;
+}
 
 type Internals = {
   filter: string | null;
 };
 
-const storeConfig: Reflux.StoreDefinition & DebugMetaStoreInterface & Internals = {
+const storeConfig: StoreDefinition & DebugMetaStoreInterface & Internals = {
   filter: null,
 
   init() {
+    // XXX: Do not use `this.listenTo` in this store. We avoid usage of reflux
+    // listeners due to their leaky nature in tests.
+
     this.reset();
-    this.listenTo(DebugMetaActions.updateFilter, this.updateFilter);
   },
 
   reset() {
@@ -42,7 +43,6 @@ const storeConfig: Reflux.StoreDefinition & DebugMetaStoreInterface & Internals 
   },
 };
 
-const DebugMetaStore = Reflux.createStore(storeConfig);
+const DebugMetaStore = createStore(storeConfig);
 
-export {DebugMetaActions, DebugMetaStore};
 export default DebugMetaStore;

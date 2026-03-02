@@ -1,21 +1,21 @@
-import * as React from 'react';
+import {Fragment, isValidElement} from 'react';
 
-import {t} from 'app/locale';
-import {Meta} from 'app/types';
+import {t} from 'sentry/locale';
+import {isEmptyObject} from 'sentry/utils/object/isEmptyObject';
 
-import Redaction from './redaction';
+import {Redaction} from './redaction';
 
 type Props = {
   value: React.ReactNode;
-  meta?: Meta;
+  meta?: Record<any, any>;
 };
 
 // If you find yourself modifying this component to fix some tooltip bug,
 // consider that `meta` is not properly passed into this component in the
 // first place. It's much more likely that `withMeta` is buggy or improperly
 // used than that this component has a bug.
-const ValueElement = ({value, meta}: Props) => {
-  if (value && meta) {
+export function ValueElement({value, meta}: Props) {
+  if (!!value && !isEmptyObject(meta)) {
     return <Redaction>{value}</Redaction>;
   }
 
@@ -35,17 +35,15 @@ const ValueElement = ({value, meta}: Props) => {
     );
   }
 
-  if (React.isValidElement(value)) {
+  if (isValidElement(value)) {
     return value;
   }
 
   return (
-    <React.Fragment>
+    <Fragment>
       {typeof value === 'object' || typeof value === 'boolean'
         ? JSON.stringify(value)
         : value}
-    </React.Fragment>
+    </Fragment>
   );
-};
-
-export default ValueElement;
+}

@@ -1,90 +1,89 @@
-import {Component} from 'react';
-import styled from '@emotion/styled';
+import {Button, LinkButton} from '@sentry/scraps/button';
+import {Grid} from '@sentry/scraps/layout';
 
-import {Client} from 'app/api';
-import Button from 'app/components/button';
-import ButtonBar from 'app/components/buttonBar';
-import Confirm from 'app/components/confirm';
-import {IconDelete, IconDownload, IconShow} from 'app/icons';
-import {t} from 'app/locale';
-import space from 'app/styles/space';
-import withApi from 'app/utils/withApi';
+import {useRole} from 'sentry/components/acl/useRole';
+import Confirm from 'sentry/components/confirm';
+import {hasInlineAttachmentRenderer} from 'sentry/components/events/attachmentViewers/previewAttachmentTypes';
+import {IconDelete, IconDownload, IconShow} from 'sentry/icons';
+import {t} from 'sentry/locale';
+import type {IssueAttachment} from 'sentry/types/group';
+import useOrganization from 'sentry/utils/useOrganization';
 
 type Props = {
-  api: Client;
-  url: string | null;
-  attachmentId: string;
-  withPreviewButton?: boolean;
-  hasPreview?: boolean;
+  attachment: IssueAttachment;
+  onDelete: () => void;
+  projectSlug: string;
+  onPreviewClick?: () => void;
   previewIsOpen?: boolean;
-  onDelete: (attachmentId: string) => void;
-  onPreview?: (attachmentId: string) => void;
+  withPreviewButton?: boolean;
 };
 
-class EventAttachmentActions extends Component<Props> {
-  handlePreview() {
-    const {onPreview, attachmentId} = this.props;
-    if (onPreview) {
-      onPreview(attachmentId);
-    }
-  }
+function EventAttachmentActions({
+  attachment,
+  projectSlug,
+  withPreviewButton,
+  previewIsOpen,
+  onPreviewClick,
+  onDelete,
+}: Props) {
+  const organization = useOrganization();
+  const {hasRole: hasAttachmentRole} = useRole({role: 'attachmentsRole'});
+  const url = `/api/0/projects/${organization.slug}/${projectSlug}/events/${attachment.event_id}/attachments/${attachment.id}/`;
+  const hasPreview = hasInlineAttachmentRenderer(attachment);
 
-  render() {
-    const {url, withPreviewButton, hasPreview, previewIsOpen, onDelete, attachmentId} =
-      this.props;
-
-    return (
-      <ButtonBar gap={1}>
-        <Confirm
-          confirmText={t('Delete')}
-          message={t('Are you sure you wish to delete this file?')}
-          priority="danger"
-          onConfirm={() => onDelete(attachmentId)}
-          disabled={!url}
+  return (
+    <Grid flow="column" align="center" gap="md">
+      {withPreviewButton && (
+        <Button
+          size="xs"
+          disabled={!hasAttachmentRole || !hasPreview}
+          priority={previewIsOpen ? 'primary' : 'default'}
+          icon={<IconShow />}
+          onClick={onPreviewClick}
+          tooltipProps={{
+            title: hasAttachmentRole
+              ? hasPreview
+                ? undefined
+                : t('This attachment cannot be previewed')
+              : t('Insufficient permissions to preview attachments'),
+          }}
         >
-          <Button
-            size="xsmall"
-            icon={<IconDelete size="xs" />}
-            label={t('Delete')}
-            disabled={!url}
-            title={!url ? t('Insufficient permissions to delete attachments') : undefined}
-          />
-        </Confirm>
-
-        <DownloadButton
-          size="xsmall"
-          icon={<IconDownload size="xs" />}
-          href={url ? `${url}?download=1` : ''}
-          disabled={!url}
-          title={!url ? t('Insufficient permissions to download attachments') : undefined}
-          label={t('Download')}
+          {t('Preview')}
+        </Button>
+      )}
+      <LinkButton
+        size="xs"
+        icon={<IconDownload />}
+        href={hasAttachmentRole ? `${url}?download=1` : ''}
+        disabled={!hasAttachmentRole}
+        tooltipProps={{
+          title: hasAttachmentRole
+            ? t('Download')
+            : t('Insufficient permissions to download attachments'),
+        }}
+        aria-label={t('Download')}
+      />
+      <Confirm
+        confirmText={t('Delete')}
+        message={t('Are you sure you wish to delete this file?')}
+        priority="danger"
+        onConfirm={onDelete}
+        disabled={!hasAttachmentRole}
+      >
+        <Button
+          size="xs"
+          icon={<IconDelete />}
+          aria-label={t('Delete')}
+          disabled={!hasAttachmentRole}
+          tooltipProps={{
+            title: hasAttachmentRole
+              ? t('Delete')
+              : t('Insufficient permissions to delete attachments'),
+          }}
         />
-
-        {withPreviewButton && (
-          <DownloadButton
-            size="xsmall"
-            disabled={!url || !hasPreview}
-            priority={previewIsOpen ? 'primary' : 'default'}
-            icon={<IconShow size="xs" />}
-            onClick={() => this.handlePreview()}
-            title={
-              !url
-                ? t('Insufficient permissions to preview attachments')
-                : !hasPreview
-                ? t('This attachment cannot be previewed')
-                : undefined
-            }
-          >
-            {t('Preview')}
-          </DownloadButton>
-        )}
-      </ButtonBar>
-    );
-  }
+      </Confirm>
+    </Grid>
+  );
 }
 
-const DownloadButton = styled(Button)`
-  margin-right: ${space(0.5)};
-`;
-
-export default withApi(EventAttachmentActions);
+export default EventAttachmentActions;

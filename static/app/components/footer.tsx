@@ -1,60 +1,104 @@
 import {Fragment} from 'react';
 import styled from '@emotion/styled';
 
-import Hook from 'app/components/hook';
-import ExternalLink from 'app/components/links/externalLink';
-import {IconSentry} from 'app/icons';
-import {t} from 'app/locale';
-import ConfigStore from 'app/stores/configStore';
-import space from 'app/styles/space';
-import getDynamicText from 'app/utils/getDynamicText';
+import {Button} from '@sentry/scraps/button';
+import {Container} from '@sentry/scraps/layout';
+import {ExternalLink} from '@sentry/scraps/link';
+
+import {useFrontendVersion} from 'sentry/components/frontendVersionContext';
+import Hook from 'sentry/components/hook';
+import {IconSentry, IconSentryPrideLogo} from 'sentry/icons';
+import type {SVGIconProps} from 'sentry/icons/svgIcon';
+import {t} from 'sentry/locale';
+import ConfigStore from 'sentry/stores/configStore';
+import {useLegacyStore} from 'sentry/stores/useLegacyStore';
+import pulsingIndicatorStyles from 'sentry/styles/pulsingIndicator';
+import {space} from 'sentry/styles/space';
+import useOrganization from 'sentry/utils/useOrganization';
+
+type SentryLogoProps = SVGIconProps & {
+  /**
+   * Displays the sentry pride logo instead of the regular logo
+   */
+  pride?: boolean;
+};
+
+function SentryLogo({pride, fill, ...props}: SentryLogoProps) {
+  if (pride) {
+    return <IconSentryPrideLogo {...props} />;
+  }
+
+  return <IconSentry fill={fill} {...props} />;
+}
 
 type Props = {
   className?: string;
 };
 
 function BaseFooter({className}: Props) {
-  const config = ConfigStore.getConfig();
+  const {isSelfHosted, version, privacyUrl, termsUrl, demoMode} =
+    useLegacyStore(ConfigStore);
+
+  const {state: appState} = useFrontendVersion();
+  const organization = useOrganization({allowNull: true});
+
   return (
-    <footer className={className}>
+    <Container as="footer" background="primary" className={className}>
       <LeftLinks>
-        {config.isOnPremise && (
+        {isSelfHosted && (
           <Fragment>
             {'Sentry '}
-            {getDynamicText({
-              fixed: 'Acceptance Test',
-              value: config.version.current,
-            })}
-            <Build>
-              {getDynamicText({
-                fixed: 'test',
-                value: config.version.build.substring(0, 7),
-              })}
-            </Build>
+            {version.current}
+            <Build>{version.build.substring(0, 7)}</Build>
           </Fragment>
         )}
-        {config.privacyUrl && (
-          <FooterLink href={config.privacyUrl}>{t('Privacy Policy')}</FooterLink>
-        )}
-        {config.termsUrl && (
-          <FooterLink href={config.termsUrl}>{t('Terms of Use')}</FooterLink>
-        )}
+        {privacyUrl && <FooterLink href={privacyUrl}>{t('Privacy Policy')}</FooterLink>}
+        {termsUrl && <FooterLink href={termsUrl}>{t('Terms of Use')}</FooterLink>}
       </LeftLinks>
-      <LogoLink />
+      <SentryLogoLink href="https://sentry.io/welcome/" tabIndex={-1}>
+        <SentryLogo
+          size="lg"
+          pride={(organization?.features ?? []).includes('sentry-pride-logo-footer')}
+        />
+      </SentryLogoLink>
       <RightLinks>
-        <FooterLink href="/api/">{t('API')}</FooterLink>
+        {appState === 'stale' && (
+          <Button
+            priority="transparent"
+            size="xs"
+            onClick={() => window.location.reload()}
+            tooltipProps={{
+              title: t(
+                "An improved version of Sentry's Frontend Application is now available. Click to update now."
+              ),
+            }}
+            aria-label={t('Reload frontend')}
+          >
+            <WaitingIndicator />
+          </Button>
+        )}
+        {!isSelfHosted && (
+          <FooterLink href="https://status.sentry.io/">{t('Service Status')}</FooterLink>
+        )}
+        <FooterLink href="https://docs.sentry.io/api/">{t('API')}</FooterLink>
         <FooterLink href="/docs/">{t('Docs')}</FooterLink>
         <FooterLink href="https://github.com/getsentry/sentry">
           {t('Contribute')}
         </FooterLink>
-        {config.isOnPremise && !config.demoMode && (
+        {isSelfHosted && !demoMode && (
           <FooterLink href="/out/">{t('Migrate to SaaS')}</FooterLink>
         )}
       </RightLinks>
       <Hook name="footer" />
-    </footer>
+    </Container>
   );
 }
+
+const WaitingIndicator = styled('div')`
+  --pulsingIndicatorRing: ${p => p.theme.tokens.border.transparent.neutral.muted};
+  ${pulsingIndicatorStyles};
+  contain: layout;
+`;
 
 const LeftLinks = styled('div')`
   display: grid;
@@ -75,41 +119,42 @@ const RightLinks = styled('div')`
 `;
 
 const FooterLink = styled(ExternalLink)`
-  color: ${p => p.theme.subText};
-  &.focus-visible {
+  color: ${p => p.theme.tokens.content.secondary};
+  &:focus-visible {
     outline: none;
-    box-shadow: ${p => p.theme.blue300} 0 2px 0;
+    box-shadow: ${p => p.theme.tokens.focus.default} 0 2px 0;
   }
 `;
 
-const LogoLink = styled(props => (
-  <ExternalLink href="https://sentry.io/welcome/" tabIndex={-1} {...props}>
-    <IconSentry size="xl" />
-  </ExternalLink>
-))`
-  color: ${p => p.theme.subText};
-  display: block;
-  width: 32px;
-  height: 32px;
+const SentryLogoLink = styled(ExternalLink)`
+  display: flex;
+  align-items: center;
   margin: 0 auto;
+  color: ${p => p.theme.tokens.content.secondary};
 `;
 
 const Build = styled('span')`
-  font-size: ${p => p.theme.fontSizeRelativeSmall};
-  color: ${p => p.theme.subText};
-  font-weight: bold;
+  font-size: ${p => p.theme.font.size.sm};
+  color: ${p => p.theme.tokens.content.secondary};
+  font-weight: ${p => p.theme.font.weight.sans.medium};
   margin-left: ${space(1)};
 `;
 
 const Footer = styled(BaseFooter)`
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
-  color: ${p => p.theme.subText};
-  border-top: 1px solid ${p => p.theme.border};
-  padding: ${space(4)};
-  margin-top: 20px;
+  color: ${p => p.theme.tokens.content.secondary};
+  font-size: ${p => p.theme.font.size.md};
+  border-top: 1px solid ${p => p.theme.tokens.border.primary};
+  align-content: center;
+  padding: ${space(2)} ${space(4)};
+  margin-top: auto; /* pushes footer to the bottom of the page when loading */
 
-  @media (max-width: ${p => p.theme.breakpoints[0]}) {
+  @media (max-width: ${p => p.theme.breakpoints.md}) {
+    padding: ${space(2)};
+  }
+
+  @media (max-width: ${p => p.theme.breakpoints.sm}) {
     display: none;
   }
 `;

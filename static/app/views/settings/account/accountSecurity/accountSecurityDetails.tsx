@@ -5,34 +5,48 @@
  * Also displays 2fa method specific details.
  */
 import {Fragment} from 'react';
-import {RouteComponentProps} from 'react-router';
 import styled from '@emotion/styled';
 
-import {addErrorMessage, addSuccessMessage} from 'app/actionCreators/indicator';
-import Button from 'app/components/button';
-import CircleIndicator from 'app/components/circleIndicator';
-import DateTime from 'app/components/dateTime';
-import Tooltip from 'app/components/tooltip';
-import {t} from 'app/locale';
-import space from 'app/styles/space';
-import {Authenticator, AuthenticatorDevice} from 'app/types';
-import AsyncView from 'app/views/asyncView';
-import RecoveryCodes from 'app/views/settings/account/accountSecurity/components/recoveryCodes';
-import RemoveConfirm from 'app/views/settings/account/accountSecurity/components/removeConfirm';
-import U2fEnrolledDetails from 'app/views/settings/account/accountSecurity/components/u2fEnrolledDetails';
-import SettingsPageHeader from 'app/views/settings/components/settingsPageHeader';
-import TextBlock from 'app/views/settings/components/text/textBlock';
+import {Button, LinkButton} from '@sentry/scraps/button';
+import {Grid} from '@sentry/scraps/layout';
+
+import {addErrorMessage, addSuccessMessage} from 'sentry/actionCreators/indicator';
+import {DateTime} from 'sentry/components/dateTime';
+import LoadingError from 'sentry/components/loadingError';
+import LoadingIndicator from 'sentry/components/loadingIndicator';
+import SentryDocumentTitle from 'sentry/components/sentryDocumentTitle';
+import {t} from 'sentry/locale';
+import type {Authenticator, AuthenticatorDevice} from 'sentry/types/auth';
+import getApiUrl from 'sentry/utils/api/getApiUrl';
+import {useApiQuery, useMutation, useQueryClient} from 'sentry/utils/queryClient';
+import useApi from 'sentry/utils/useApi';
+import {useNavigate} from 'sentry/utils/useNavigate';
+import {useParams} from 'sentry/utils/useParams';
+import {useAccountSecurityContext} from 'sentry/views/settings/account/accountSecurity/accountSecurityWrapper';
+import RecoveryCodes from 'sentry/views/settings/account/accountSecurity/components/recoveryCodes';
+import RemoveConfirm from 'sentry/views/settings/account/accountSecurity/components/removeConfirm';
+import U2fEnrolledDetails from 'sentry/views/settings/account/accountSecurity/components/u2fEnrolledDetails';
+import SettingsPageHeader from 'sentry/views/settings/components/settingsPageHeader';
+import TextBlock from 'sentry/views/settings/components/text/textBlock';
+
+import {AuthenticatorHeader} from './components/authenticatorHeader';
 
 const ENDPOINT = '/users/me/authenticators/';
+const getAuthenticatorQueryKey = (authId: string) =>
+  [
+    getApiUrl('/users/$userId/authenticators/$authId/', {
+      path: {userId: 'me', authId},
+    }),
+  ] as const;
 
-type AuthenticatorDateProps = {
-  label: string;
+interface AuthenticatorDateProps {
   /**
    * Can be null or a Date object.
    * Component will have value "never" if it is null
    */
   date: string | null;
-};
+  label: string;
+}
 
 function AuthenticatorDate({label, date}: AuthenticatorDateProps) {
   return (
@@ -43,156 +57,179 @@ function AuthenticatorDate({label, date}: AuthenticatorDateProps) {
   );
 }
 
-type Props = {
-  deleteDisabled: boolean;
-  onRegenerateBackupCodes: () => void;
-} & RouteComponentProps<{authId: string}, {}>;
+export default function AccountSecurityDetails() {
+  const {deleteDisabled, onRegenerateBackupCodes} = useAccountSecurityContext();
+  const api = useApi();
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const {authId} = useParams<{authId: string}>();
 
-type State = {
-  authenticator: Authenticator | null;
-} & AsyncView['state'];
+  const {
+    data: authenticator,
+    isPending: isAuthenticatorPending,
+    isError,
+    refetch,
+  } = useApiQuery<Authenticator>(getAuthenticatorQueryKey(authId), {
+    staleTime: 0,
+  });
 
-class AccountSecurityDetails extends AsyncView<Props, State> {
-  getTitle() {
-    return t('Security');
-  }
-
-  getEndpoints(): ReturnType<AsyncView['getEndpoints']> {
-    const {params} = this.props;
-    const {authId} = params;
-
-    return [['authenticator', `${ENDPOINT}${authId}/`]];
-  }
-
-  handleRemove = async (device?: AuthenticatorDevice) => {
-    const {authenticator} = this.state;
-
-    if (!authenticator || !authenticator.authId) {
-      return;
-    }
-
-    // if the device is defined, it means that U2f is being removed
-    const deviceId = device ? `${device.key_handle}/` : '';
-    const deviceName = device ? device.name : t('Authenticator');
-
-    this.setState({loading: true});
-
-    try {
-      await this.api.requestPromise(`${ENDPOINT}${authenticator.authId}/${deviceId}`, {
+  const {mutate: remove, isPending: isRemoveLoading} = useMutation({
+    mutationFn: ({id, device}: {id: string; device?: AuthenticatorDevice}) => {
+      // if the device is defined, it means that U2f is being removed
+      // reason for adding a trailing slash is a result of the endpoint on line 109 needing it but it can't be set there as if deviceId is None, the route will end with '//'
+      const deviceId = device ? `${device.key_handle}/` : '';
+      return api.requestPromise(`${ENDPOINT}${id}/${deviceId}`, {
         method: 'DELETE',
       });
-      this.props.router.push('/settings/account/security');
+    },
+    onSuccess: (_, {device}) => {
+      const deviceName = device ? device.name : t('Authenticator');
       addSuccessMessage(t('%s has been removed', deviceName));
-    } catch {
-      // Error deleting authenticator
-      this.setState({loading: false});
+    },
+    onError: (_, {device}) => {
+      const deviceName = device ? device.name : t('Authenticator');
       addErrorMessage(t('Error removing %s', deviceName));
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({queryKey: getAuthenticatorQueryKey(authId)});
+    },
+  });
+
+  const {mutate: rename, isPending: isRenameLoading} = useMutation({
+    mutationFn: ({
+      id,
+      device,
+      name,
+    }: {
+      device: AuthenticatorDevice;
+      id: string;
+      name: string;
+    }) => {
+      return api.requestPromise(`${ENDPOINT}${id}/${device.key_handle}/`, {
+        method: 'PUT',
+        data: {
+          name,
+        },
+      });
+    },
+    onSuccess: () => {
+      navigate(`/settings/account/security/mfa/${authId}`);
+      addSuccessMessage(t('Device was renamed'));
+    },
+    onError: () => {
+      addErrorMessage(t('Error renaming the device'));
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({queryKey: getAuthenticatorQueryKey(authId)});
+    },
+  });
+
+  const handleRemove = (device?: AuthenticatorDevice) => {
+    if (!authenticator?.authId) {
+      return;
     }
+    remove({id: authenticator.authId, device});
   };
 
-  renderBody() {
-    const {authenticator} = this.state;
-
-    if (!authenticator) {
-      return null;
+  const handleRename = (device: AuthenticatorDevice, deviceName: string) => {
+    if (!authenticator?.authId) {
+      return;
     }
+    rename({id: authenticator.authId, device, name: deviceName});
+  };
 
-    const {deleteDisabled, onRegenerateBackupCodes} = this.props;
+  if (isAuthenticatorPending || isRemoveLoading || isRenameLoading) {
+    return <LoadingIndicator />;
+  }
 
-    return (
-      <Fragment>
-        <SettingsPageHeader
-          title={
-            <Fragment>
-              <span>{authenticator.name}</span>
-              <AuthenticatorStatus enabled={authenticator.isEnrolled} />
-            </Fragment>
-          }
-          action={
-            <AuthenticatorActions>
-              {authenticator.isEnrolled && authenticator.allowRotationInPlace && (
-                <Button to={`/settings/account/security/mfa/${authenticator.id}/enroll/`}>
-                  {t('Rotate Secret Key')}
-                </Button>
-              )}
-              {authenticator.isEnrolled && authenticator.removeButton && (
-                <Tooltip
-                  title={t(
-                    "Two-factor authentication is required for at least one organization you're a member of."
-                  )}
-                  disabled={!deleteDisabled}
+  if (isError) {
+    return <LoadingError onRetry={refetch} />;
+  }
+
+  return (
+    <SentryDocumentTitle title={t('Security')}>
+      <SettingsPageHeader
+        title={
+          <AuthenticatorHeader
+            name={authenticator.name}
+            isActive={authenticator.isEnrolled}
+          />
+        }
+        action={
+          <Grid flow="column" align="center" gap="md">
+            {authenticator.isEnrolled && authenticator.allowRotationInPlace && (
+              <LinkButton
+                to={`/settings/account/security/mfa/${authenticator.id}/enroll/`}
+              >
+                {t('Rotate Secret Key')}
+              </LinkButton>
+            )}
+            {authenticator.isEnrolled && authenticator.removeButton && (
+              <RemoveConfirm onConfirm={handleRemove} disabled={deleteDisabled}>
+                <Button
+                  tooltipProps={{
+                    title: deleteDisabled
+                      ? t(
+                          "Two-factor authentication is required for at least one organization you're a member of."
+                        )
+                      : undefined,
+                  }}
+                  priority="danger"
                 >
-                  <RemoveConfirm onConfirm={this.handleRemove} disabled={deleteDisabled}>
-                    <Button priority="danger">{authenticator.removeButton}</Button>
-                  </RemoveConfirm>
-                </Tooltip>
-              )}
-            </AuthenticatorActions>
-          }
-        />
+                  {authenticator.removeButton}
+                </Button>
+              </RemoveConfirm>
+            )}
+          </Grid>
+        }
+      />
 
-        <TextBlock>{authenticator.description}</TextBlock>
+      <TextBlock>{authenticator.description}</TextBlock>
 
-        <AuthenticatorDates>
-          <AuthenticatorDate label={t('Created at')} date={authenticator.createdAt} />
-          <AuthenticatorDate label={t('Last used')} date={authenticator.lastUsedAt} />
-        </AuthenticatorDates>
+      <AuthenticatorDates>
+        <AuthenticatorDate label={t('Created at')} date={authenticator.createdAt} />
+        <AuthenticatorDate label={t('Last used')} date={authenticator.lastUsedAt} />
+      </AuthenticatorDates>
 
-        <U2fEnrolledDetails
-          isEnrolled={authenticator.isEnrolled}
-          id={authenticator.id}
-          devices={authenticator.devices}
-          onRemoveU2fDevice={this.handleRemove}
-        />
+      <U2fEnrolledDetails
+        isEnrolled={authenticator.isEnrolled}
+        id={authenticator.id}
+        devices={authenticator.devices}
+        onRemoveU2fDevice={handleRemove}
+        onRenameU2fDevice={handleRename}
+      />
 
-        {authenticator.isEnrolled && authenticator.phone && (
-          <PhoneWrapper>
-            {t('Confirmation codes are sent to the following phone number')}:
-            <Phone>{authenticator.phone}</Phone>
-          </PhoneWrapper>
-        )}
+      {authenticator.isEnrolled && authenticator.phone && (
+        <PhoneWrapper>
+          {t('Confirmation codes are sent to the following phone number')}:
+          <Phone>{authenticator.phone}</Phone>
+        </PhoneWrapper>
+      )}
 
-        <RecoveryCodes
-          onRegenerateBackupCodes={onRegenerateBackupCodes}
-          isEnrolled={authenticator.isEnrolled}
-          codes={authenticator.codes}
-        />
-      </Fragment>
-    );
-  }
+      <RecoveryCodes
+        onRegenerateBackupCodes={onRegenerateBackupCodes}
+        isEnrolled={authenticator.isEnrolled}
+        codes={authenticator.codes}
+      />
+    </SentryDocumentTitle>
+  );
 }
-
-export default AccountSecurityDetails;
-
-const AuthenticatorStatus = styled(CircleIndicator)`
-  margin-left: ${space(1)};
-`;
-
-const AuthenticatorActions = styled('div')`
-  display: flex;
-  justify-content: center;
-  align-items: center;
-
-  > * {
-    margin-left: ${space(1)};
-  }
-`;
 
 const AuthenticatorDates = styled('div')`
   display: grid;
-  grid-gap: ${space(2)};
+  gap: ${p => p.theme.space.sm} ${p => p.theme.space.xl};
   grid-template-columns: max-content auto;
 `;
 
 const DateLabel = styled('span')`
-  font-weight: bold;
+  font-weight: ${p => p.theme.font.weight.sans.medium};
 `;
 
 const PhoneWrapper = styled('div')`
-  margin-top: ${space(4)};
+  margin-top: ${p => p.theme.space['3xl']};
 `;
 
 const Phone = styled('span')`
-  font-weight: bold;
-  margin-left: ${space(1)};
+  font-weight: ${p => p.theme.font.weight.sans.medium};
+  margin-left: ${p => p.theme.space.md};
 `;

@@ -1,60 +1,55 @@
-import {MouseEvent} from 'react';
-import {browserHistory} from 'react-router';
-import {Location} from 'history';
+import type {Theme} from '@emotion/react';
 import isNumber from 'lodash/isNumber';
-import isString from 'lodash/isString';
 import set from 'lodash/set';
-import moment from 'moment';
+import moment from 'moment-timezone';
 
-import {EntryType, EventTransaction} from 'app/types/event';
-import {assert} from 'app/types/utils';
-import {WEB_VITAL_DETAILS} from 'app/utils/performance/vitals/constants';
+import {lightenBarColor} from 'sentry/components/performance/waterfall/utils';
+import type {
+  AggregateEntrySpans,
+  AggregateEventTransaction,
+  EntrySpans,
+  EventTransaction,
+} from 'sentry/types/event';
+import {EntryType} from 'sentry/types/event';
+import {assert} from 'sentry/types/utils';
 
-import {
+import type SpanTreeModel from './spanTreeModel';
+import type {
+  AggregateSpanType,
   GapSpanType,
   OrphanSpanType,
-  OrphanTreeDepth,
   ParsedTraceType,
   ProcessedSpanType,
   RawSpanType,
-  SpanEntry,
   SpanType,
   TraceContextType,
-  TreeDepthType,
 } from './types';
 
-export const isValidSpanID = (maybeSpanID: any) =>
-  isString(maybeSpanID) && maybeSpanID.length > 0;
+const isValidSpanID = (maybeSpanID: any) =>
+  typeof maybeSpanID === 'string' && maybeSpanID.length > 0;
 
-export type SpanBoundsType = {startTimestamp: number; endTimestamp: number};
+export type SpanBoundsType = {endTimestamp: number; startTimestamp: number};
 export type SpanGeneratedBoundsType =
-  | {type: 'TRACE_TIMESTAMPS_EQUAL'; isSpanVisibleInView: boolean}
-  | {type: 'INVALID_VIEW_WINDOW'; isSpanVisibleInView: boolean}
+  | {isSpanVisibleInView: boolean; type: 'TRACE_TIMESTAMPS_EQUAL'}
+  | {isSpanVisibleInView: boolean; type: 'INVALID_VIEW_WINDOW'}
   | {
+      isSpanVisibleInView: boolean;
+      start: number;
       type: 'TIMESTAMPS_EQUAL';
-      start: number;
       width: number;
-      isSpanVisibleInView: boolean;
     }
   | {
+      end: number;
+      isSpanVisibleInView: boolean;
+      start: number;
       type: 'TIMESTAMPS_REVERSED';
-      start: number;
-      end: number;
-      isSpanVisibleInView: boolean;
     }
   | {
-      type: 'TIMESTAMPS_STABLE';
-      start: number;
       end: number;
       isSpanVisibleInView: boolean;
+      start: number;
+      type: 'TIMESTAMPS_STABLE';
     };
-
-export type SpanViewBoundsType = {
-  warning: undefined | string;
-  left: undefined | number;
-  width: undefined | number;
-  isSpanVisibleInView: boolean;
-};
 
 const normalizeTimestamps = (spanBounds: SpanBoundsType): SpanBoundsType => {
   const {startTimestamp, endTimestamp} = spanBounds;
@@ -66,25 +61,57 @@ const normalizeTimestamps = (spanBounds: SpanBoundsType): SpanBoundsType => {
   return spanBounds;
 };
 
-export enum TimestampStatus {
-  Stable,
-  Reversed,
-  Equal,
+enum TimestampStatus {
+  STABLE = 0,
+  REVERSED = 1,
+  EQUAL = 2,
 }
 
-export const parseSpanTimestamps = (spanBounds: SpanBoundsType): TimestampStatus => {
+export enum SpanSubTimingMark {
+  SPAN_START = 0,
+  SPAN_END = 1,
+  HTTP_REQUEST_START = 'http.request.request_start',
+  HTTP_RESPONSE_START = 'http.request.response_start',
+}
+
+export enum SpanSubTimingName {
+  WAIT_TIME = 'Wait Time',
+  REQUEST_TIME = 'Request Time',
+  RESPONSE_TIME = 'Response Time',
+}
+
+const HTTP_DATA_KEYS = [
+  'http.request.redirect_start',
+  'http.request.fetch_start',
+  'http.request.domain_lookup_start',
+  'http.request.domain_lookup_end',
+  'http.request.connect_start',
+  'http.request.secure_connection_start',
+  'http.request.connection_end',
+  'http.request.request_start',
+  'http.request.response_start',
+  'http.request.response_end',
+];
+const INTERNAL_DATA_KEYS = ['sentry_tags'];
+const HIDDEN_DATA_KEYS = [...HTTP_DATA_KEYS, ...INTERNAL_DATA_KEYS];
+
+export const isHiddenDataKey = (key: string) => {
+  return HIDDEN_DATA_KEYS.includes(key);
+};
+
+const parseSpanTimestamps = (spanBounds: SpanBoundsType): TimestampStatus => {
   const startTimestamp: number = spanBounds.startTimestamp;
   const endTimestamp: number = spanBounds.endTimestamp;
 
   if (startTimestamp < endTimestamp) {
-    return TimestampStatus.Stable;
+    return TimestampStatus.STABLE;
   }
 
   if (startTimestamp === endTimestamp) {
-    return TimestampStatus.Equal;
+    return TimestampStatus.EQUAL;
   }
 
-  return TimestampStatus.Reversed;
+  return TimestampStatus.REVERSED;
 };
 
 // given the start and end trace timestamps, and the view window, we want to generate a function
@@ -93,10 +120,13 @@ export const parseSpanTimestamps = (spanBounds: SpanBoundsType): TimestampStatus
 // The view window (viewStart and viewEnd) are percentage values (between 0% and 100%), they correspond to the window placement
 // between the start and end trace timestamps.
 export const boundsGenerator = (bounds: {
-  traceStartTimestamp: number; // unix timestamp
-  traceEndTimestamp: number; // unix timestamp
+  // unix timestamp
+  traceEndTimestamp: number;
+  traceStartTimestamp: number;
+  // in [0, 1]
+  viewEnd: number;
+  // unix timestamp
   viewStart: number; // in [0, 1]
-  viewEnd: number; // in [0, 1]
 }) => {
   const {viewStart, viewEnd} = bounds;
 
@@ -144,7 +174,7 @@ export const boundsGenerator = (bounds: {
     const isSpanVisibleInView = end > 0 && start < 1;
 
     switch (timestampStatus) {
-      case TimestampStatus.Equal: {
+      case TimestampStatus.EQUAL: {
         return {
           type: 'TIMESTAMPS_EQUAL',
           start,
@@ -156,7 +186,7 @@ export const boundsGenerator = (bounds: {
           isSpanVisibleInView: end >= 0 && start <= 1,
         };
       }
-      case TimestampStatus.Reversed: {
+      case TimestampStatus.REVERSED: {
         return {
           type: 'TIMESTAMPS_REVERSED',
           start,
@@ -164,7 +194,7 @@ export const boundsGenerator = (bounds: {
           isSpanVisibleInView,
         };
       }
-      case TimestampStatus.Stable: {
+      case TimestampStatus.STABLE: {
         return {
           type: 'TIMESTAMPS_STABLE',
           start,
@@ -180,8 +210,10 @@ export const boundsGenerator = (bounds: {
   };
 };
 
-export function generateRootSpan(trace: ParsedTraceType): RawSpanType {
-  const rootSpan: RawSpanType = {
+export function generateRootSpan(
+  trace: ParsedTraceType
+): RawSpanType | AggregateSpanType {
+  const rootSpan = {
     trace_id: trace.traceID,
     span_id: trace.rootSpanID,
     parent_span_id: trace.parentSpanID,
@@ -191,15 +223,20 @@ export function generateRootSpan(trace: ParsedTraceType): RawSpanType {
     description: trace.description,
     data: {},
     status: trace.rootSpanStatus,
+    hash: trace.hash,
+    exclusive_time: trace.exclusiveTime,
+    count: trace.count,
+    frequency: trace.frequency,
+    total: trace.total,
   };
 
   return rootSpan;
 }
 
 // start and end are assumed to be unix timestamps with fractional seconds
-export function getTraceDateTimeRange(input: {start: number; end: number}): {
-  start: string;
+export function getTraceDateTimeRange(input: {end: number; start: number}): {
   end: string;
+  start: string;
 } {
   const start = moment
     .unix(input.start)
@@ -219,7 +256,7 @@ export function getTraceDateTimeRange(input: {start: number; end: number}): {
   };
 }
 
-export function isGapSpan(span: ProcessedSpanType): span is GapSpanType {
+function isGapSpan(span: ProcessedSpanType): span is GapSpanType {
   if ('type' in span) {
     return span.type === 'gap';
   }
@@ -241,7 +278,7 @@ export function isOrphanSpan(span: ProcessedSpanType): span is OrphanSpanType {
   return false;
 }
 
-export function getSpanID(span: ProcessedSpanType, defaultSpanID: string = ''): string {
+export function getSpanID(span: ProcessedSpanType, defaultSpanID = ''): string {
   if (isGapSpan(span)) {
     return defaultSpanID;
   }
@@ -257,15 +294,7 @@ export function getSpanOperation(span: ProcessedSpanType): string | undefined {
   return span.op;
 }
 
-export function getSpanTraceID(span: ProcessedSpanType): string {
-  if (isGapSpan(span)) {
-    return 'gap-span';
-  }
-
-  return span.trace_id;
-}
-
-export function getSpanParentSpanID(span: ProcessedSpanType): string | undefined {
+function getSpanParentSpanID(span: ProcessedSpanType): string | undefined {
   if (isGapSpan(span)) {
     return 'gap-span';
   }
@@ -273,26 +302,130 @@ export function getSpanParentSpanID(span: ProcessedSpanType): string | undefined
   return span.parent_span_id;
 }
 
-export function getTraceContext(
-  event: Readonly<EventTransaction>
+interface SubTimingDefinition {
+  colorLighten: number;
+  endMark: SpanSubTimingMark;
+  name: string;
+  startMark: SpanSubTimingMark;
+}
+
+export interface SubTimingInfo extends SubTimingDefinition {
+  color: string;
+  duration: number;
+  endTimestamp: number;
+  startTimestamp: number;
+}
+
+const SPAN_SUB_TIMINGS: Record<string, SubTimingDefinition[]> = {
+  'http.client': [
+    {
+      startMark: SpanSubTimingMark.SPAN_START,
+      endMark: SpanSubTimingMark.HTTP_REQUEST_START,
+      name: SpanSubTimingName.WAIT_TIME,
+      colorLighten: 0.5,
+    },
+    {
+      startMark: SpanSubTimingMark.HTTP_REQUEST_START,
+      endMark: SpanSubTimingMark.HTTP_RESPONSE_START,
+      name: SpanSubTimingName.REQUEST_TIME,
+      colorLighten: 0.25,
+    },
+    {
+      startMark: SpanSubTimingMark.HTTP_RESPONSE_START,
+      endMark: SpanSubTimingMark.SPAN_END,
+      name: SpanSubTimingName.RESPONSE_TIME,
+      colorLighten: 0,
+    },
+  ],
+};
+
+export function subTimingMarkToTime(span: RawSpanType, mark: SpanSubTimingMark) {
+  if (mark === SpanSubTimingMark.SPAN_START) {
+    return span.start_timestamp;
+  }
+  if (mark === SpanSubTimingMark.SPAN_END) {
+    return span.timestamp;
+  }
+
+  return (span as any).data?.[mark] as number | undefined;
+}
+
+export function getSpanSubTimings(
+  span: ProcessedSpanType,
+  theme: Theme
+): SubTimingInfo[] | null {
+  if (span.type) {
+    return null; // narrow to RawSpanType
+  }
+  const op = getSpanOperation(span);
+  if (!op) {
+    return null;
+  }
+  const timingDefinitions = SPAN_SUB_TIMINGS[op];
+  if (!timingDefinitions) {
+    return null;
+  }
+
+  const timings: SubTimingInfo[] = [];
+  const spanStart = subTimingMarkToTime(span, SpanSubTimingMark.SPAN_START);
+  const spanEnd = subTimingMarkToTime(span, SpanSubTimingMark.SPAN_END);
+
+  const TEN_MS = 0.001;
+
+  for (const def of timingDefinitions) {
+    const start = subTimingMarkToTime(span, def.startMark);
+    const end = subTimingMarkToTime(span, def.endMark);
+    if (
+      !start ||
+      !end ||
+      !spanStart ||
+      !spanEnd ||
+      start < spanStart - TEN_MS ||
+      end > spanEnd + TEN_MS
+    ) {
+      return null;
+    }
+    timings.push({
+      ...def,
+      duration: end - start,
+      startTimestamp: start,
+      endTimestamp: end,
+      color: lightenBarColor(getSpanOperation(span), def.colorLighten, theme),
+    });
+  }
+
+  return timings;
+}
+
+function getTraceContext(
+  event: Readonly<EventTransaction | AggregateEventTransaction>
 ): TraceContextType | undefined {
   return event?.contexts?.trace;
 }
 
-export function parseTrace(event: Readonly<EventTransaction>): ParsedTraceType {
-  const spanEntry = event.entries.find((entry: SpanEntry | any): entry is SpanEntry => {
-    return entry.type === EntryType.SPANS;
-  });
+export function parseTrace(
+  event: Readonly<EventTransaction | AggregateEventTransaction>
+): ParsedTraceType {
+  const spanEntry = event.entries.find(
+    (entry: EntrySpans | AggregateEntrySpans | any): entry is EntrySpans => {
+      return entry.type === EntryType.SPANS;
+    }
+  );
 
-  const spans: Array<RawSpanType> = spanEntry?.data ?? [];
+  const spans: Array<RawSpanType | AggregateSpanType> = spanEntry?.data ?? [];
 
   const traceContext = getTraceContext(event);
-  const traceID = (traceContext && traceContext.trace_id) || '';
-  const rootSpanID = (traceContext && traceContext.span_id) || '';
-  const rootSpanOpName = (traceContext && traceContext.op) || 'transaction';
-  const description = traceContext && traceContext.description;
-  const parentSpanID = traceContext && traceContext.parent_span_id;
-  const rootSpanStatus = traceContext && traceContext.status;
+  const traceID = traceContext?.trace_id || '';
+  const rootSpanID = traceContext?.span_id || '';
+  const rootSpanOpName = traceContext?.op || 'transaction';
+  const description = traceContext?.description;
+  const parentSpanID = traceContext?.parent_span_id;
+  const rootSpanStatus = traceContext?.status;
+  const hash = traceContext?.hash;
+  const exclusiveTime = traceContext?.exclusive_time;
+  const count = traceContext?.count;
+  const frequency = traceContext?.frequency;
+  const total = traceContext?.total;
 
   if (!spanEntry || spans.length <= 0) {
     return {
@@ -306,6 +439,11 @@ export function parseTrace(event: Readonly<EventTransaction>): ParsedTraceType {
       parentSpanID,
       spans: [],
       description,
+      hash,
+      exclusiveTime,
+      count,
+      frequency,
+      total,
     };
   }
 
@@ -332,6 +470,11 @@ export function parseTrace(event: Readonly<EventTransaction>): ParsedTraceType {
     parentSpanID,
     spans,
     description,
+    hash,
+    exclusiveTime,
+    count,
+    frequency,
+    total,
   };
 
   const reduced: ParsedTraceType = spans.reduce((acc, inputSpan) => {
@@ -357,7 +500,7 @@ export function parseTrace(event: Readonly<EventTransaction>): ParsedTraceType {
 
     // get any span children whose parent_span_id is equal to span.parent_span_id,
     // otherwise start with an empty array
-    const spanChildren: Array<SpanType> = acc.childSpans[span.parent_span_id] ?? [];
+    const spanChildren: SpanType[] = acc.childSpans[span.parent_span_id] ?? [];
 
     spanChildren.push(span);
 
@@ -383,7 +526,7 @@ export function parseTrace(event: Readonly<EventTransaction>): ParsedTraceType {
       return acc;
     }
 
-    if (hasEndTimestamp && span.timestamp! > acc.traceEndTimestamp) {
+    if (hasEndTimestamp && span.timestamp > acc.traceEndTimestamp) {
       acc.traceEndTimestamp = span.timestamp;
       return acc;
     }
@@ -432,24 +575,9 @@ function sortSpans(firstSpan: SpanType, secondSpan: SpanType) {
   return 1;
 }
 
-export function isOrphanTreeDepth(
-  treeDepth: TreeDepthType
-): treeDepth is OrphanTreeDepth {
-  if (typeof treeDepth === 'number') {
-    return false;
-  }
-  return treeDepth?.type === 'orphan';
-}
-
-export function unwrapTreeDepth(treeDepth: TreeDepthType): number {
-  if (isOrphanTreeDepth(treeDepth)) {
-    return treeDepth.depth;
-  }
-
-  return treeDepth;
-}
-
-export function isEventFromBrowserJavaScriptSDK(event: EventTransaction): boolean {
+export function isEventFromBrowserJavaScriptSDK(
+  event: EventTransaction | AggregateEventTransaction
+): boolean {
   const sdkName = event.sdk?.name;
   if (!sdkName) {
     return false;
@@ -462,162 +590,81 @@ export function isEventFromBrowserJavaScriptSDK(event: EventTransaction): boolea
     'sentry.javascript.ember',
     'sentry.javascript.vue',
     'sentry.javascript.angular',
+    'sentry.javascript.angular-ivy',
     'sentry.javascript.nextjs',
+    'sentry.javascript.electron',
+    'sentry.javascript.remix',
+    'sentry.javascript.svelte',
+    'sentry.javascript.sveltekit',
+    'sentry.javascript.astro',
   ].includes(sdkName.toLowerCase());
 }
 
-// Durationless ops from: https://github.com/getsentry/sentry-javascript/blob/0defcdcc2dfe719343efc359d58c3f90743da2cd/packages/apm/src/integrations/tracing.ts#L629-L688
-// PerformanceMark: Duration is 0 as per https://developer.mozilla.org/en-US/docs/Web/API/PerformanceMark
-// PerformancePaintTiming: Duration is 0 as per https://developer.mozilla.org/en-US/docs/Web/API/PerformancePaintTiming
-export const durationlessBrowserOps = ['mark', 'paint'];
-
-type Measurements = {
-  [name: string]: number | undefined;
-};
-
-type VerticalMark = {
-  marks: Measurements;
-  failedThreshold: boolean;
-};
-
-function hasFailedThreshold(marks: Measurements): boolean {
-  const names = Object.keys(marks);
-  const records = Object.values(WEB_VITAL_DETAILS).filter(vital =>
-    names.includes(vital.slug)
-  );
-
-  return records.some(record => {
-    const value = marks[record.slug];
-    if (typeof value === 'number' && typeof record.poorThreshold === 'number') {
-      return value >= record.poorThreshold;
-    }
-    return false;
-  });
-}
-
-export function getMeasurements(event: EventTransaction): Map<number, VerticalMark> {
-  if (!event.measurements) {
-    return new Map();
+export function getSiblingGroupKey(span: SpanType, occurrence?: number): string {
+  if (occurrence !== undefined) {
+    return `${span.op}.${span.description}.${occurrence}`;
   }
 
-  const measurements = Object.keys(event.measurements)
-    .filter(name => name.startsWith('mark.'))
-    .map(name => {
-      const slug = name.slice('mark.'.length);
-      const associatedMeasurement = event.measurements![slug];
-      return {
-        name,
-        timestamp: event.measurements![name].value,
-        value: associatedMeasurement ? associatedMeasurement.value : undefined,
-      };
-    });
+  return `${span.op}.${span.description}`;
+}
 
-  const mergedMeasurements = new Map<number, VerticalMark>();
+/**
+ * Formats start and end unix timestamps by inserting a leading and trailing zero if needed, so they can have the same length
+ */
+export function getFormattedTimeRangeWithLeadingAndTrailingZero(
+  start: number,
+  end: number
+) {
+  const startStrings = String(start).split('.');
+  const endStrings = String(end).split('.');
 
-  measurements.forEach(measurement => {
-    const name = measurement.name.slice('mark.'.length);
-    const value = measurement.value;
+  if (startStrings.length !== 2 || endStrings.length !== 2) {
+    return {
+      start: String(start),
+      end: String(end),
+    };
+  }
 
-    if (mergedMeasurements.has(measurement.timestamp)) {
-      const verticalMark = mergedMeasurements.get(measurement.timestamp) as VerticalMark;
-
-      verticalMark.marks = {
-        ...verticalMark.marks,
-        [name]: value,
-      };
-
-      if (!verticalMark.failedThreshold) {
-        verticalMark.failedThreshold = hasFailedThreshold(verticalMark.marks);
+  const newTimestamps = startStrings.reduce<{
+    end: string[];
+    start: string[];
+  }>(
+    (acc, startString, index) => {
+      if (startString.length > endStrings[index]!.length) {
+        acc.start.push(startString);
+        acc.end.push(
+          index === 0
+            ? endStrings[index]!.padStart(startString.length, '0')
+            : endStrings[index]!.padEnd(startString.length, '0')
+        );
+        return acc;
       }
 
-      mergedMeasurements.set(measurement.timestamp, verticalMark);
-      return;
-    }
+      acc.start.push(
+        index === 0
+          ? startString.padStart(endStrings[index]!.length, '0')
+          : startString.padEnd(endStrings[index]!.length, '0')
+      );
+      acc.end.push(endStrings[index]!);
+      return acc;
+    },
+    {start: [], end: []}
+  );
 
-    const marks = {
-      [name]: value,
-    };
-
-    mergedMeasurements.set(measurement.timestamp, {
-      marks,
-      failedThreshold: hasFailedThreshold(marks),
-    });
-  });
-
-  return mergedMeasurements;
-}
-
-export function getMeasurementBounds(
-  timestamp: number,
-  generateBounds: (bounds: SpanBoundsType) => SpanGeneratedBoundsType
-): SpanViewBoundsType {
-  const bounds = generateBounds({
-    startTimestamp: timestamp,
-    endTimestamp: timestamp,
-  });
-
-  switch (bounds.type) {
-    case 'TRACE_TIMESTAMPS_EQUAL':
-    case 'INVALID_VIEW_WINDOW': {
-      return {
-        warning: undefined,
-        left: undefined,
-        width: undefined,
-        isSpanVisibleInView: bounds.isSpanVisibleInView,
-      };
-    }
-    case 'TIMESTAMPS_EQUAL': {
-      return {
-        warning: undefined,
-        left: bounds.start,
-        width: 0.00001,
-        isSpanVisibleInView: bounds.isSpanVisibleInView,
-      };
-    }
-    case 'TIMESTAMPS_REVERSED': {
-      return {
-        warning: undefined,
-        left: bounds.start,
-        width: bounds.end - bounds.start,
-        isSpanVisibleInView: bounds.isSpanVisibleInView,
-      };
-    }
-    case 'TIMESTAMPS_STABLE': {
-      return {
-        warning: void 0,
-        left: bounds.start,
-        width: bounds.end - bounds.start,
-        isSpanVisibleInView: bounds.isSpanVisibleInView,
-      };
-    }
-    default: {
-      const _exhaustiveCheck: never = bounds;
-      return _exhaustiveCheck;
-    }
-  }
-}
-
-export function scrollToSpan(
-  spanId: string,
-  scrollToHash: (hash: string) => void,
-  location: Location
-) {
-  return (e: MouseEvent<Element>) => {
-    // do not use the default anchor behaviour
-    // because it will be hidden behind the minimap
-    e.preventDefault();
-
-    const hash = `#span-${spanId}`;
-
-    scrollToHash(hash);
-
-    // TODO(txiao): This is causing a rerender of the whole page,
-    // which can be slow.
-    //
-    // make sure to update the location
-    browserHistory.push({
-      ...location,
-      hash,
-    });
+  return {
+    start: newTimestamps.start.join('.'),
+    end: newTimestamps.end.join('.'),
   };
+}
+
+export function groupShouldBeHidden(
+  group: SpanTreeModel[],
+  focusedSpanIDs: Set<string> | undefined
+) {
+  if (!focusedSpanIDs) {
+    return false;
+  }
+
+  // If none of the spans in this group are focused, the group should be hidden
+  return !group.some(spanModel => focusedSpanIDs.has(spanModel.span.span_id));
 }

@@ -1,9 +1,11 @@
 import logging
 import re
+import time
+from collections.abc import Mapping
+from typing import Any, overload
 
-from sentry.attachments import attachment_cache
-from sentry.stacktraces.processing import find_stacktraces_in_data
-from sentry.utils.cache import cache_key_for_event
+from sentry.attachments import CachedAttachment, get_attachments_for_event
+from sentry.stacktraces.processing import StacktraceInfo
 from sentry.utils.safe import get_path
 
 logger = logging.getLogger(__name__)
@@ -12,7 +14,10 @@ logger = logging.getLogger(__name__)
 WINDOWS_PATH_RE = re.compile(r"^([a-z]:\\|\\\\)", re.IGNORECASE)
 
 # Event platforms that could contain native stacktraces
-NATIVE_PLATFORMS = ("cocoa", "native")
+# "csharp" events are also considered "native" as they are processed by symbolicator.
+# This includes il2cpp events that are symbolicated using native debug files,
+# as well as .NET with Portable PDB files which are handled by symbolicator.
+NATIVE_PLATFORMS = ("objc", "cocoa", "swift", "native", "c", "csharp")
 
 # Debug image types that can be handled by the symbolicator
 NATIVE_IMAGE_TYPES = (
@@ -21,13 +26,16 @@ NATIVE_IMAGE_TYPES = (
     "elf",  # Linux
     "macho",  # macOS, iOS
     "pe",  # Windows
+    "pe_dotnet",  # Portable PDB
     "wasm",  # WASM
 )
 
 # Default disables storing crash reports.
 STORE_CRASH_REPORTS_DEFAULT = 0
-# Do not limit crash report attachments per group.
+# Do not limit crash report attachments per issue.
 STORE_CRASH_REPORTS_ALL = -1
+# The maximum number of crash report attachments per issue if not unlimited.
+STORE_CRASH_REPORTS_MAX = 100
 
 
 def is_native_platform(platform):
@@ -46,11 +54,14 @@ def native_images_from_data(data):
     return get_path(data, "debug_meta", "images", default=(), filter=is_native_image)
 
 
-def is_native_event(data):
+def is_native_event(data: Mapping[str, Any], stacktraces: list[StacktraceInfo]) -> bool:
+    """Returns whether `data` is a native event, based on its platform and
+    the supplied stacktraces."""
+
     if is_native_platform(data.get("platform")):
         return True
 
-    for stacktrace in find_stacktraces_in_data(data):
+    for stacktrace in stacktraces:
         if any(is_native_platform(x) for x in stacktrace.platforms):
             return True
 
@@ -64,33 +75,22 @@ def image_name(pkg):
     return pkg.rsplit(split, 1)[-1]
 
 
-def get_sdk_from_event(event):
-    sdk_info = get_path(event, "debug_meta", "sdk_info")
-    if sdk_info:
-        return sdk_info
-
+def get_os_from_event(event) -> str | None:
+    """
+    Gets the OS name from either the OS context, or the SDK Info, which represents
+    the runtime SDK and *NOT* the Sentry SDK.
+    """
     os = get_path(event, "contexts", "os")
     if os and os.get("type") == "os":
-        return get_sdk_from_os(os)
+        if (os_name := os.get("name")) is not None:
+            return os_name.lower()
 
+    sdk_info = get_path(event, "debug_meta", "sdk_info")
+    if sdk_info:
+        if (sdk_name := sdk_info.get("sdk_name")) is not None:
+            return sdk_name.lower()
 
-def get_sdk_from_os(data):
-    if data.get("name") is None or data.get("version") is None:
-        return
-
-    try:
-        version = str(data["version"]).split("-", 1)[0] + ".0" * 3
-        system_version = tuple(int(x) for x in version.split(".")[:3])
-    except ValueError:
-        return
-
-    return {
-        "sdk_name": data["name"],
-        "version_major": system_version[0],
-        "version_minor": system_version[1],
-        "version_patchlevel": system_version[2],
-        "build": data.get("build"),
-    }
+    return None
 
 
 def signal_from_data(data):
@@ -102,13 +102,20 @@ def signal_from_data(data):
     return None
 
 
-def get_event_attachment(data, attachment_type):
-    cache_key = cache_key_for_event(data)
-    attachments = attachment_cache.get(cache_key)
+def get_event_attachment(data: Any, attachment_type: str) -> CachedAttachment | None:
+    attachments = get_attachments_for_event(data)
     return next((a for a in attachments if a.type == attachment_type), None)
 
 
-def convert_crashreport_count(value, allow_none=False):
+@overload
+def convert_crashreport_count(value: bool | None) -> int: ...
+
+
+@overload
+def convert_crashreport_count(value: bool | None, *, allow_none: bool) -> int | None: ...
+
+
+def convert_crashreport_count(value: bool | None, allow_none: bool = False) -> int | None:
     """
     Shim to read both legacy and new `sentry:store_crash_reports` project and
     organization options.
@@ -151,3 +158,32 @@ def is_applecrashreport_event(data):
     """
     exceptions = get_path(data, "exception", "values", filter=True)
     return get_path(exceptions, 0, "mechanism", "type") == "applecrashreport"
+
+
+class Backoff:
+    """
+    Creates a new exponential backoff.
+    """
+
+    def __init__(self, initial, max):
+        """
+        :param initial: The initial backoff time in seconds.
+        :param max: The maximum backoff time in seconds.
+        """
+        self.initial = initial
+        self.max = max
+        self._current = 0
+
+    def reset(self):
+        """
+        Resets the backoff time zero.
+        """
+        self._current = 0
+
+    def sleep_failure(self):
+        """
+        Sleeps until the next retry attempt and increases the backoff time for the next failure.
+        """
+        if self._current > 0:
+            time.sleep(self._current)
+        self._current = min(max(self._current * 2, self.initial), self.max)

@@ -1,16 +1,20 @@
 import datetime
 
+from django.http import HttpResponse
 from django.views.generic import View
 
-from sentry.models import Authenticator
 from sentry.security.emails import generate_security_email
+from sentry.users.models.authenticator import Authenticator
+from sentry.utils.auth import AuthenticatedHttpRequest
+from sentry.web.frontend.base import internal_region_silo_view
 
 from .mail import MailPreview
 
 
+@internal_region_silo_view
 class DebugRecoveryCodesRegeneratedEmailView(View):
-    def get(self, request):
-        authenticator = Authenticator(id=0, type=3, user=request.user)  # u2f
+    def get(self, request: AuthenticatedHttpRequest) -> HttpResponse:
+        authenticator = Authenticator(id=0, type=3, user_id=request.user.id)  # u2f
 
         email = generate_security_email(
             account=request.user,

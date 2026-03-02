@@ -1,8 +1,8 @@
-import {LocationRange} from 'pegjs';
+import type {LocationRange} from 'peggy';
 
-import {t} from 'app/locale';
+import {t} from 'sentry/locale';
 
-import grammar from './grammar.pegjs';
+import {parse} from './grammar.pegjs';
 
 // This constant should stay in sync with the backend parser
 const MAX_OPERATORS = 10;
@@ -10,8 +10,8 @@ const MAX_OPERATOR_MESSAGE = t('Maximum operators exceeded');
 
 type OperationOpts = {
   operator: Operator;
-  lhs?: Expression;
   rhs: Expression;
+  lhs?: Expression;
 };
 
 type Operator = 'plus' | 'minus' | 'multiply' | 'divide';
@@ -33,17 +33,17 @@ class Term {
   term: Expression;
   location: LocationRange;
 
-  constructor({term, location}: {term: Expression; location: LocationRange}) {
+  constructor({term, location}: {location: LocationRange; term: Expression}) {
     this.term = term;
     this.location = location;
   }
 }
 
-export class TokenConverter {
+class TokenConverter {
   numOperations: number;
-  errors: Array<string>;
-  fields: Array<Term>;
-  functions: Array<Term>;
+  errors: string[];
+  fields: Term[];
+  functions: Term[];
 
   constructor() {
     this.numOperations = 0;
@@ -52,13 +52,12 @@ export class TokenConverter {
     this.functions = [];
   }
 
-  tokenTerm = (maybeFactor: Expression, remainingAdds: Array<Operation>): Expression => {
+  tokenTerm = (maybeFactor: Expression, remainingAdds: Operation[]): Expression => {
     if (remainingAdds.length > 0) {
-      remainingAdds[0].lhs = maybeFactor;
+      remainingAdds[0]!.lhs = maybeFactor;
       return flatten(remainingAdds);
-    } else {
-      return maybeFactor;
     }
+    return maybeFactor;
   };
 
   tokenOperation = (operator: Operator, rhs: Expression): Operation => {
@@ -75,8 +74,8 @@ export class TokenConverter {
     return new Operation({operator, rhs});
   };
 
-  tokenFactor = (primary: Expression, remaining: Array<Operation>): Operation => {
-    remaining[0].lhs = primary;
+  tokenFactor = (primary: Expression, remaining: Operation[]): Operation => {
+    remaining[0]!.lhs = primary;
     return flatten(remaining);
   };
 
@@ -94,7 +93,7 @@ export class TokenConverter {
 }
 
 // Assumes an array with at least one element
-function flatten(remaining: Array<Operation>): Operation {
+function flatten(remaining: Operation[]): Operation {
   let term = remaining.shift();
   while (remaining.length > 0) {
     const nextTerm = remaining.shift();
@@ -111,18 +110,18 @@ function flatten(remaining: Array<Operation>): Operation {
   return term;
 }
 
-type parseResult = {
-  result: Expression;
+type ParseResult = {
   error: string | undefined;
+  result: Expression;
   tc: TokenConverter;
 };
 
-export function parseArithmetic(query: string): parseResult {
+export function parseArithmetic(query: string): ParseResult {
   const tc = new TokenConverter();
   try {
-    const result = grammar.parse(query, {tc});
+    const result = parse(query, {tc});
     return {result, error: tc.errors[0], tc};
-  } catch (error) {
+  } catch (error: any) {
     return {result: null, error: error.message, tc};
   }
 }

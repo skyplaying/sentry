@@ -1,35 +1,65 @@
-import DocumentTitle from 'react-document-title';
 import {css} from '@emotion/react';
 import styled from '@emotion/styled';
 
 import sentryPattern from 'sentry-images/pattern/sentry-pattern.png';
 
-import Alert from 'app/components/alert';
-import {ApiForm} from 'app/components/forms';
-import {IconWarning} from 'app/icons';
-import {t} from 'app/locale';
-import ConfigStore from 'app/stores/configStore';
-import space from 'app/styles/space';
-import AsyncView from 'app/views/asyncView';
+import {Alert} from '@sentry/scraps/alert';
+import {Flex} from '@sentry/scraps/layout';
 
-import {getForm, getOptionDefault, getOptionField} from '../options';
+import Form from 'sentry/components/forms/form';
+import LoadingIndicator from 'sentry/components/loadingIndicator';
+import SentryDocumentTitle from 'sentry/components/sentryDocumentTitle';
+import {t} from 'sentry/locale';
+import ConfigStore from 'sentry/stores/configStore';
+import {space} from 'sentry/styles/space';
+import getApiUrl from 'sentry/utils/api/getApiUrl';
+import {useApiQuery} from 'sentry/utils/queryClient';
+import type {Field} from 'sentry/views/admin/options';
+import {getForm, getOptionDefault, getOptionField} from 'sentry/views/admin/options';
 
-type Props = AsyncView['props'] & {
+type InstallWizardProps = {
   onConfigured: () => void;
 };
 
-type State = AsyncView['state'];
+export type InstallWizardOptions = Record<
+  string,
+  {
+    field: Field;
+    value?: unknown;
+  }
+>;
 
-export default class InstallWizard extends AsyncView<Props, State> {
-  getEndpoints(): ReturnType<AsyncView['getEndpoints']> {
-    return [['data', '/internal/options/?query=is:required']];
+export default function InstallWizard({onConfigured}: InstallWizardProps) {
+  const {
+    data: options,
+    isPending,
+    isError,
+  } = useApiQuery<InstallWizardOptions>(
+    [getApiUrl('/internal/options/'), {query: {query: 'is:required'}}],
+    {
+      staleTime: 0,
+    }
+  );
+
+  if (isPending) {
+    return <LoadingIndicator />;
   }
 
-  renderFormFields() {
-    const options = this.state.data;
+  if (isError) {
+    return (
+      <Alert.Container>
+        <Alert variant="danger">
+          {t(
+            'We were unable to load the required configuration from the Sentry server. Please take a look at the service logs.'
+          )}
+        </Alert>
+      </Alert.Container>
+    );
+  }
 
+  const renderFormFields = () => {
     let missingOptions = new Set(
-      Object.keys(options).filter(option => !options[option].field.isSet)
+      Object.keys(options).filter(option => !options[option]!.field.isSet)
     );
     // This is to handle the initial installation case.
     // Even if all options are filled out, we want to prompt to confirm
@@ -41,10 +71,10 @@ export default class InstallWizard extends AsyncView<Props, State> {
     }
 
     // A mapping of option name to Field object
-    const fields = {};
+    const fields: Record<string, React.ReactNode> = {};
 
     for (const key of missingOptions) {
-      const option = options[key];
+      const option = options[key]!;
       if (option.field.disabled) {
         continue;
       }
@@ -52,13 +82,12 @@ export default class InstallWizard extends AsyncView<Props, State> {
     }
 
     return getForm(fields);
-  }
+  };
 
-  getInitialData() {
-    const options = this.state.data;
+  const getInitialData = () => {
     const data = {};
     Object.keys(options).forEach(optionName => {
-      const option = options[optionName];
+      const option = options[optionName]!;
       if (option.field.disabled) {
         return;
       }
@@ -76,69 +105,39 @@ export default class InstallWizard extends AsyncView<Props, State> {
         !option.field.isSet &&
         displayValue !== undefined
       ) {
+        // @ts-expect-error TS(7053): Element implicitly has an 'any' type because expre... Remove this comment to see the full error message
         data[optionName] = displayValue;
       }
     });
     return data;
-  }
+  };
 
-  getTitle() {
-    return t('Setup Sentry');
-  }
+  const version = ConfigStore.get('version');
+  return (
+    <SentryDocumentTitle noSuffix title={t('Setup Sentry')}>
+      <Flex justify="center">
+        <Pattern />
+        <SetupWizard>
+          <Heading>
+            <span>{t('Welcome to Sentry')}</span>
+            <Version>{version.current}</Version>
+          </Heading>
+          <Form
+            apiMethod="PUT"
+            apiEndpoint="/internal/options/?query=is:required"
+            submitLabel={t('Continue')}
+            initialData={getInitialData()}
+            onSubmitSuccess={onConfigured}
+          >
+            <p>{t('Complete setup by filling out the required configuration.')}</p>
 
-  render() {
-    const version = ConfigStore.get('version');
-    return (
-      <DocumentTitle title={this.getTitle()}>
-        <Wrapper>
-          <Pattern />
-          <SetupWizard>
-            <Heading>
-              <span>{t('Welcome to Sentry')}</span>
-              <Version>{version.current}</Version>
-            </Heading>
-            {this.state.loading
-              ? this.renderLoading()
-              : this.state.error
-              ? this.renderError()
-              : this.renderBody()}
-          </SetupWizard>
-        </Wrapper>
-      </DocumentTitle>
-    );
-  }
-
-  renderError() {
-    return (
-      <Alert type="error" icon={<IconWarning />}>
-        {t(
-          'We were unable to load the required configuration from the Sentry server. Please take a look at the service logs.'
-        )}
-      </Alert>
-    );
-  }
-
-  renderBody() {
-    return (
-      <ApiForm
-        apiMethod="PUT"
-        apiEndpoint={this.getEndpoints()[0][1]}
-        submitLabel={t('Continue')}
-        initialData={this.getInitialData()}
-        onSubmitSuccess={this.props.onConfigured}
-      >
-        <p>{t('Complete setup by filling out the required configuration.')}</p>
-
-        {this.renderFormFields()}
-      </ApiForm>
-    );
-  }
+            {renderFormFields()}
+          </Form>
+        </SetupWizard>
+      </Flex>
+    </SentryDocumentTitle>
+  );
 }
-
-const Wrapper = styled('div')`
-  display: flex;
-  justify-content: center;
-`;
 
 const fixedStyle = css`
   position: fixed;
@@ -149,13 +148,15 @@ const fixedStyle = css`
 `;
 
 const Pattern = styled('div')`
+  z-index: -1;
+
   &::before {
     ${fixedStyle}
     content: '';
     background-image: linear-gradient(
       to right,
-      ${p => p.theme.purple200} 0%,
-      ${p => p.theme.purple300} 100%
+      ${p => p.theme.tokens.background.transparent.accent.muted} 0%,
+      ${p => p.theme.tokens.background.accent.vibrant} 100%
     );
     background-repeat: repeat-y;
   }
@@ -171,23 +172,23 @@ const Pattern = styled('div')`
 
 const Heading = styled('h1')`
   display: grid;
-  grid-gap: ${space(1)};
+  gap: ${space(1)};
   justify-content: space-between;
   grid-auto-flow: column;
   line-height: 36px;
 `;
 
 const Version = styled('small')`
-  font-size: ${p => p.theme.fontSizeExtraLarge};
+  font-size: ${p => p.theme.font.size.xl};
   line-height: inherit;
 `;
 
 const SetupWizard = styled('div')`
-  background: ${p => p.theme.background};
-  border-radius: ${p => p.theme.borderRadius};
+  background: ${p => p.theme.tokens.background.primary};
+  border-radius: ${p => p.theme.radius.md};
   box-shadow: ${p => p.theme.dropShadowHeavy};
-  margin-top: 40px;
   padding: 40px 40px 20px;
-  width: 600px;
+  max-width: 1000px;
+  margin: ${space(3)};
   z-index: ${p => p.theme.zIndex.initial};
 `;

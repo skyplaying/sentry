@@ -1,6 +1,6 @@
-import BasePlugin from 'app/plugins/basePlugin';
-import DefaultIssuePlugin from 'app/plugins/defaultIssuePlugin';
-import Registry from 'app/plugins/registry';
+import BasePlugin from 'sentry/plugins/basePlugin';
+import {DefaultIssuePlugin} from 'sentry/plugins/defaultIssuePlugin';
+import Registry from 'sentry/plugins/registry';
 
 import SessionStackContextType from './sessionstack/contexts/sessionstack';
 import Jira from './jira';
@@ -18,14 +18,12 @@ contexts.sessionstack = SessionStackContextType;
 // Jira
 registry.add('jira', Jira);
 
-export {BasePlugin, DefaultIssuePlugin, registry};
-
 const add: typeof registry.add = registry.add.bind(registry);
 const get: typeof registry.get = registry.get.bind(registry);
 const isLoaded: typeof registry.isLoaded = registry.isLoaded.bind(registry);
 const load: typeof registry.load = registry.load.bind(registry);
 
-export default {
+const plugins = {
   BasePlugin,
   DefaultIssuePlugin,
 
@@ -38,3 +36,5 @@ export default {
   isLoaded,
   load,
 };
+
+export default plugins;

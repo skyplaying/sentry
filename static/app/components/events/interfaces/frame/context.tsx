@@ -1,159 +1,273 @@
+import {Fragment, useEffect, useMemo} from 'react';
 import styled from '@emotion/styled';
+import keyBy from 'lodash/keyBy';
 
-import ClippedBox from 'app/components/clippedBox';
-import ErrorBoundary from 'app/components/errorBoundary';
-import {Assembly} from 'app/components/events/interfaces/assembly';
-import ContextLine from 'app/components/events/interfaces/contextLine';
-import FrameRegisters from 'app/components/events/interfaces/frameRegisters';
-import FrameVariables from 'app/components/events/interfaces/frameVariables';
-import {OpenInContextLine} from 'app/components/events/interfaces/openInContextLine';
-import StacktraceLink from 'app/components/events/interfaces/stacktraceLink';
-import {parseAssembly} from 'app/components/events/interfaces/utils';
-import {IconFlag} from 'app/icons';
-import {t} from 'app/locale';
-import space from 'app/styles/space';
-import {Frame, Organization, SentryAppComponent} from 'app/types';
-import {Event} from 'app/types/event';
-import {defined} from 'app/utils';
-import withOrganization from 'app/utils/withOrganization';
+import ClippedBox from 'sentry/components/clippedBox';
+import {useLineCoverageContext} from 'sentry/components/events/interfaces/crashContent/exception/lineCoverageContext';
+import {parseAssembly} from 'sentry/components/events/interfaces/utils';
+import {IconFlag} from 'sentry/icons';
+import {t} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {Event, Frame} from 'sentry/types/event';
+import type {
+  LineCoverage,
+  SentryAppComponent,
+  SentryAppSchemaStacktraceLink,
+} from 'sentry/types/integrations';
+import {CodecovStatusCode, Coverage} from 'sentry/types/integrations';
+import type {PlatformKey} from 'sentry/types/project';
+import type {StacktraceType} from 'sentry/types/stacktrace';
+import {defined} from 'sentry/utils';
+import {getFileExtension} from 'sentry/utils/fileExtension';
+import useRouteAnalyticsParams from 'sentry/utils/routeAnalytics/useRouteAnalyticsParams';
+import useOrganization from 'sentry/utils/useOrganization';
+import useProjects from 'sentry/utils/useProjects';
+
+import {Assembly} from './assembly';
+import ContextLineNumber from './contextLineNumber';
+import {FrameRegisters} from './frameRegisters';
+import {FrameVariables} from './frameVariables';
+import {usePrismTokensSourceContext} from './usePrismTokensSourceContext';
+import {useStacktraceCoverage} from './useStacktraceCoverage';
 
 type Props = {
-  frame: Frame;
+  components: Array<SentryAppComponent<SentryAppSchemaStacktraceLink>>;
   event: Event;
-  organization?: Organization;
-  registers: {[key: string]: string};
-  components: Array<SentryAppComponent>;
-  isExpanded?: boolean;
+  frame: Frame;
+  registers: StacktraceType['registers'];
+  className?: string;
+  emptySourceNotation?: boolean;
+  frameMeta?: Record<any, any>;
+  hasAssembly?: boolean;
+  hasContextRegisters?: boolean;
   hasContextSource?: boolean;
   hasContextVars?: boolean;
-  hasContextRegisters?: boolean;
-  emptySourceNotation?: boolean;
-  hasAssembly?: boolean;
-  expandable?: boolean;
+  isExpanded?: boolean;
+  isFirst?: boolean;
+  platform?: PlatformKey;
+  registersMeta?: Record<any, any>;
 };
 
-const Context = ({
+export function getLineCoverage(
+  lines: Frame['context'],
+  lineCov: LineCoverage[]
+): [Array<Coverage | undefined>, boolean] {
+  const keyedCoverage = keyBy(lineCov, 0);
+  const lineCoverage = lines.map<Coverage | undefined>(
+    ([lineNo]) => keyedCoverage[lineNo]?.[1]
+  );
+  const hasCoverage = lineCoverage.some(
+    coverage => coverage !== Coverage.NOT_APPLICABLE && coverage !== undefined
+  );
+
+  return [lineCoverage, hasCoverage];
+}
+
+function Context({
   hasContextVars = false,
   hasContextSource = false,
   hasContextRegisters = false,
   isExpanded = false,
   hasAssembly = false,
-  expandable = false,
   emptySourceNotation = false,
   registers,
-  components,
   frame,
   event,
-  organization,
-}: Props) => {
+  className,
+  frameMeta,
+  registersMeta,
+  platform,
+}: Props) {
+  const organization = useOrganization();
+  const {
+    hasCoverageData: issueHasCoverageData,
+    setHasCoverageData: setIssueHasCoverageData,
+  } = useLineCoverageContext();
+
+  const {projects} = useProjects();
+  const project = useMemo(
+    () => projects.find(p => p.id === event.projectID),
+    [projects, event]
+  );
+
+  const {data: coverage, isPending: isLoadingCoverage} = useStacktraceCoverage(
+    {
+      event,
+      frame,
+      orgSlug: organization?.slug || '',
+      projectSlug: project?.slug,
+    },
+    {
+      enabled:
+        defined(organization) &&
+        defined(project) &&
+        !!organization.codecovAccess &&
+        isExpanded,
+    }
+  );
+
+  /**
+   * frame.lineNo is the highlighted frame in the middle of the context
+   */
+  const activeLineNumber = frame.lineNo;
+  const contextLines = isExpanded
+    ? frame?.context
+    : frame?.context?.filter(l => l[0] === activeLineNumber);
+
+  const hasCoverageData =
+    !isLoadingCoverage && coverage?.status === CodecovStatusCode.COVERAGE_EXISTS;
+
+  useEffect(() => {
+    if (hasCoverageData && !issueHasCoverageData) {
+      setIssueHasCoverageData(true);
+    }
+  }, [hasCoverageData, issueHasCoverageData, setIssueHasCoverageData]);
+
+  const [lineCoverage = [], hasCoverage] =
+    hasCoverageData && coverage?.lineCoverage && !!activeLineNumber! && contextLines
+      ? getLineCoverage(contextLines, coverage.lineCoverage)
+      : [];
+
+  useRouteAnalyticsParams(
+    hasCoverageData
+      ? {
+          has_line_coverage: hasCoverage,
+        }
+      : {}
+  );
+
+  const fileExtension = getFileExtension(frame.filename || '') ?? '';
+  const lines = usePrismTokensSourceContext({
+    contextLines,
+    lineNo: frame.lineNo,
+    fileExtension,
+  });
+
   if (!hasContextSource && !hasContextVars && !hasContextRegisters && !hasAssembly) {
     return emptySourceNotation ? (
-      <div className="empty-context">
+      <EmptyContext>
         <StyledIconFlag size="xs" />
-        <p>{t('No additional details are available for this frame.')}</p>
-      </div>
+        {t('No additional details are available for this frame.')}
+      </EmptyContext>
     ) : null;
   }
 
-  const getContextLines = () => {
-    if (isExpanded) {
-      return frame.context;
-    }
-    return frame.context.filter(l => l[0] === frame.lineNo);
-  };
+  const startLineNo = hasContextSource ? frame.context[0]![0] : 0;
 
-  const contextLines = getContextLines();
-
-  const startLineNo = hasContextSource ? frame.context[0][0] : undefined;
+  const prismClassName = fileExtension ? `language-${fileExtension}` : '';
 
   return (
-    <ol start={startLineNo} className={`context ${isExpanded ? 'expanded' : ''}`}>
-      {defined(frame.errors) && (
-        <li className={expandable ? 'expandable error' : 'error'} key="errors">
-          {frame.errors.join(', ')}
-        </li>
-      )}
+    <Wrapper
+      start={startLineNo}
+      startLineNo={startLineNo}
+      className={`${className} context ${isExpanded ? 'expanded' : ''}`}
+      data-test-id="frame-context"
+    >
+      {frame.context && lines.length > 0 ? (
+        <CodeWrapper className={prismClassName}>
+          <pre className={prismClassName}>
+            <code className={prismClassName}>
+              {lines.map((line, i) => {
+                const contextLine = contextLines[i]!;
+                const isActive = activeLineNumber === contextLine[0];
 
-      {frame.context &&
-        contextLines.map((line, index) => {
-          const isActive = frame.lineNo === line[0];
-          const hasComponents = isActive && components.length > 0;
-          return (
-            <StyledContextLine key={index} line={line} isActive={isActive}>
-              {hasComponents && (
-                <ErrorBoundary mini>
-                  <OpenInContextLine
-                    key={index}
-                    lineNo={line[0]}
-                    filename={frame.filename || ''}
-                    components={components}
-                  />
-                </ErrorBoundary>
-              )}
-              {organization?.features.includes('integrations-stacktrace-link') &&
-                isActive &&
-                isExpanded &&
-                frame.inApp &&
-                frame.filename && (
-                  <ErrorBoundary customComponent={null}>
-                    <StacktraceLink
-                      key={index}
-                      lineNo={line[0]}
-                      frame={frame}
-                      event={event}
-                    />
-                  </ErrorBoundary>
-                )}
-            </StyledContextLine>
-          );
-        })}
+                return (
+                  <Fragment key={i}>
+                    <ContextLineWrapper isActive={isActive} data-test-id="context-line">
+                      <ContextLineNumber
+                        lineNumber={contextLine[0]}
+                        isActive={isActive}
+                        coverage={lineCoverage[i]}
+                      />
+                      <ContextLineCode>
+                        {line.map((token, key) => (
+                          <span key={key} className={token.className}>
+                            {token.children}
+                          </span>
+                        ))}
+                      </ContextLineCode>
+                    </ContextLineWrapper>
+                  </Fragment>
+                );
+              })}
+            </code>
+          </pre>
+        </CodeWrapper>
+      ) : null}
 
-      {(hasContextRegisters || hasContextVars) && (
+      {hasContextVars && (
         <StyledClippedBox clipHeight={100}>
-          {hasContextRegisters && (
-            <FrameRegisters
-              registers={registers}
-              deviceArch={event.contexts?.device?.arch}
-            />
-          )}
-          {hasContextVars && <FrameVariables data={frame.vars || {}} />}
+          <FrameVariables platform={platform} data={frame.vars} meta={frameMeta?.vars} />
         </StyledClippedBox>
       )}
 
-      {hasAssembly && (
-        <Assembly {...parseAssembly(frame.package)} filePath={frame.absPath} />
+      {hasContextRegisters && (
+        <FrameRegisters
+          registers={registers!}
+          meta={registersMeta}
+          deviceArch={event.contexts?.device?.arch}
+        />
       )}
-    </ol>
-  );
-};
 
-export default withOrganization(Context);
+      {hasAssembly && <Assembly {...parseAssembly(frame.package)} />}
+    </Wrapper>
+  );
+}
+
+export default Context;
 
 const StyledClippedBox = styled(ClippedBox)`
-  margin-left: 0;
-  margin-right: 0;
-
-  &:first-of-type {
-    margin-top: 0;
-  }
-
-  :first-child {
-    margin-top: -${space(3)};
-  }
-
-  > *:first-child {
-    padding-top: 0;
-    border-top: none;
-  }
+  padding: 0;
 `;
 
 const StyledIconFlag = styled(IconFlag)`
   margin-right: ${space(1)};
 `;
 
-const StyledContextLine = styled(ContextLine)`
-  background: inherit;
+const Wrapper = styled('ol')<{startLineNo: number}>`
+  counter-reset: frame ${p => p.startLineNo - 1};
+
+  && {
+    border-radius: 0 !important;
+  }
+`;
+
+const CodeWrapper = styled('div')`
+  position: relative;
   padding: 0;
-  text-indent: 20px;
-  z-index: 1000;
+
+  && pre,
+  && code {
+    font-size: ${p => p.theme.font.size.sm};
+    white-space: pre-wrap;
+    margin: 0;
+    overflow: hidden;
+    background: ${p => p.theme.tokens.background.primary};
+    padding: 0;
+    border-radius: 0;
+  }
+`;
+
+const EmptyContext = styled('div')`
+  display: flex;
+  align-items: center;
+  gap: ${space(1)};
+  padding: 20px;
+  color: ${p => p.theme.tokens.content.secondary};
+  font-size: ${p => p.theme.font.size.md};
+`;
+
+const ContextLineWrapper = styled('div')<{isActive: boolean}>`
+  display: grid;
+  grid-template-columns: 58px 1fr;
+  gap: ${space(1)};
+  background: ${p =>
+    p.isActive ? 'var(--prism-highlight-background)' : p.theme.tokens.background.primary};
+  padding-right: ${space(2)};
+`;
+
+const ContextLineCode = styled('div')`
+  line-height: 24px;
+  white-space: pre-wrap;
+  vertical-align: middle;
 `;

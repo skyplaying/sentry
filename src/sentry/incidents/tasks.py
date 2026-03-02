@@ -1,131 +1,64 @@
+from __future__ import annotations
+
 import logging
-from urllib.parse import urlencode
+from typing import Any
 
-from django.db import transaction
-from django.urls import reverse
-from django.utils import timezone
+from django.db import router, transaction
 
-from sentry.auth.access import from_user
-from sentry.incidents.models import (
-    INCIDENT_STATUS,
-    AlertRuleStatus,
-    AlertRuleTriggerAction,
+from sentry.incidents.models.alert_rule import AlertRuleStatus, AlertRuleTriggerAction
+from sentry.incidents.models.incident import (
     Incident,
     IncidentActivity,
-    IncidentActivityType,
-    IncidentProject,
-    IncidentSnapshot,
     IncidentStatus,
     IncidentStatusMethod,
-    PendingIncidentSnapshot,
 )
-from sentry.models import Project
-from sentry.snuba.query_subscription_consumer import register_subscriber
+from sentry.incidents.utils.constants import INCIDENTS_SNUBA_SUBSCRIPTION_TYPE
+from sentry.incidents.utils.types import QuerySubscriptionUpdate
+from sentry.models.project import Project
+from sentry.silo.base import SiloMode
+from sentry.snuba.models import QuerySubscription
+from sentry.snuba.query_subscriptions.consumer import register_subscriber
 from sentry.tasks.base import instrumented_task
+from sentry.taskworker.namespaces import alerts_tasks
+from sentry.taskworker.retry import Retry
 from sentry.utils import metrics
-from sentry.utils.email import MessageBuilder
-from sentry.utils.http import absolute_uri
 
 logger = logging.getLogger(__name__)
 
-INCIDENTS_SNUBA_SUBSCRIPTION_TYPE = "incidents"
-INCIDENT_SNAPSHOT_BATCH_SIZE = 50
-
-
-@instrumented_task(name="sentry.incidents.tasks.send_subscriber_notifications", queue="incidents")
-def send_subscriber_notifications(activity_id):
-    from sentry.incidents.logic import get_incident_subscribers, unsubscribe_from_incident
-
-    try:
-        activity = IncidentActivity.objects.select_related(
-            "incident", "user", "incident__organization"
-        ).get(id=activity_id)
-    except IncidentActivity.DoesNotExist:
-        return
-
-    # Only send notifications for specific activity types.
-    if activity.type not in (
-        IncidentActivityType.COMMENT.value,
-        IncidentActivityType.STATUS_CHANGE.value,
-    ):
-        return
-
-    # Check that the user still has access to at least one of the projects
-    # related to the incident. If not then unsubscribe them.
-    projects = list(activity.incident.projects.all())
-    for subscriber in get_incident_subscribers(activity.incident).select_related("user"):
-        user = subscriber.user
-        access = from_user(user, activity.incident.organization)
-        if not any(project for project in projects if access.has_project_access(project)):
-            unsubscribe_from_incident(activity.incident, user)
-        elif user != activity.user:
-            msg = generate_incident_activity_email(activity, user)
-            msg.send_async([user.email])
-
-
-def generate_incident_activity_email(activity, user):
-    incident = activity.incident
-    return MessageBuilder(
-        subject=f"Activity on Alert {incident.title} (#{incident.identifier})",
-        template="sentry/emails/incidents/activity.txt",
-        html_template="sentry/emails/incidents/activity.html",
-        type="incident.activity",
-        context=build_activity_context(activity, user),
-    )
-
-
-def build_activity_context(activity, user):
-    if activity.type == IncidentActivityType.COMMENT.value:
-        action = "left a comment"
-    else:
-        action = "changed status from {} to {}".format(
-            INCIDENT_STATUS[IncidentStatus(int(activity.previous_value))],
-            INCIDENT_STATUS[IncidentStatus(int(activity.value))],
-        )
-    incident = activity.incident
-
-    action = f"{action} on alert {incident.title} (#{incident.identifier})"
-
-    return {
-        "user_name": activity.user.name if activity.user else "Sentry",
-        "action": action,
-        "link": absolute_uri(
-            reverse(
-                "sentry-metric-alert",
-                kwargs={
-                    "organization_slug": incident.organization.slug,
-                    "incident_id": incident.identifier,
-                },
-            )
-        )
-        + "?"
-        + urlencode({"referrer": "incident_activity_email"}),
-        "comment": activity.comment,
-    }
-
 
 @register_subscriber(INCIDENTS_SNUBA_SUBSCRIPTION_TYPE)
-def handle_snuba_query_update(subscription_update, subscription):
+def handle_snuba_query_update(
+    subscription_update: QuerySubscriptionUpdate, subscription: QuerySubscription
+) -> None:
     """
     Handles a subscription update for a `QuerySubscription`.
-    :param subscription_update: dict formatted according to schemas in
-    sentry.snuba.json_schemas.SUBSCRIPTION_PAYLOAD_VERSIONS
-    :param subscription: The `QuerySubscription` that this update is for
     """
     from sentry.incidents.subscription_processor import SubscriptionProcessor
 
     # noinspection SpellCheckingInspection
     with metrics.timer("incidents.subscription_procesor.process_update"):
-        SubscriptionProcessor(subscription).process_update(subscription_update)
+        SubscriptionProcessor.process(subscription, subscription_update)
 
 
 @instrumented_task(
     name="sentry.incidents.tasks.handle_trigger_action",
-    queue="incidents",
-    default_retry_delay=60,
-    max_retries=5,
+    namespace=alerts_tasks,
+    retry=Retry(times=5, delay=60),
+    processing_deadline_duration=60,
+    silo_mode=SiloMode.REGION,
 )
-def handle_trigger_action(action_id, incident_id, project_id, method, metric_value=None, **kwargs):
+def handle_trigger_action(
+    action_id: int,
+    incident_id: int,
+    project_id: int,
+    method: str,
+    new_status: int,
+    metric_value: float | int | None = None,
+    **kwargs: Any,
+) -> None:
+    from sentry.incidents.grouptype import MetricIssue
+    from sentry.notifications.notification_action.utils import should_fire_workflow_actions
+
     try:
         action = AlertRuleTriggerAction.objects.select_related(
             "alert_rule_trigger", "alert_rule_trigger__alert_rule"
@@ -146,23 +79,38 @@ def handle_trigger_action(action_id, incident_id, project_id, method, metric_val
         metrics.incr("incidents.alert_rules.action.skipping_missing_project")
         return
 
-    metrics.incr(
-        "incidents.alert_rules.action.{}.{}".format(
-            AlertRuleTriggerAction.Type(action.type).name.lower(), method
-        )
+    incident_activity = (
+        IncidentActivity.objects.filter(incident=incident, value=new_status).order_by("-id").first()
     )
-    getattr(action, method)(action, incident, project, metric_value=metric_value)
+    notification_uuid = str(incident_activity.notification_uuid) if incident_activity else None
+    if notification_uuid is None:
+        metrics.incr("incidents.alert_rules.action.incident_activity_missing")
+
+    # We should only fire using the legacy registry if we are not using the workflow engine
+    if not should_fire_workflow_actions(incident.organization, MetricIssue.type_id):
+        metrics.incr(
+            f"incidents.alert_rules.action.{AlertRuleTriggerAction.Type(action.type).name.lower()}.{method}"
+        )
+
+        getattr(action, method)(
+            action,
+            incident,
+            project,
+            metric_value=metric_value,
+            new_status=IncidentStatus(new_status),
+            notification_uuid=notification_uuid,
+        )
 
 
 @instrumented_task(
     name="sentry.incidents.tasks.auto_resolve_snapshot_incidents",
-    queue="incidents",
-    default_retry_delay=60,
-    max_retries=2,
+    namespace=alerts_tasks,
+    retry=Retry(times=2, delay=60),
+    silo_mode=SiloMode.REGION,
 )
-def auto_resolve_snapshot_incidents(alert_rule_id, **kwargs):
+def auto_resolve_snapshot_incidents(alert_rule_id: int, **kwargs: Any) -> None:
     from sentry.incidents.logic import update_incident_status
-    from sentry.incidents.models import AlertRule
+    from sentry.incidents.models.alert_rule import AlertRule
 
     try:
         alert_rule = AlertRule.objects_with_snapshots.get(id=alert_rule_id)
@@ -173,72 +121,25 @@ def auto_resolve_snapshot_incidents(alert_rule_id, **kwargs):
         return
 
     batch_size = 50
-    incidents = Incident.objects.filter(alert_rule=alert_rule).exclude(
-        status=IncidentStatus.CLOSED.value
-    )[: batch_size + 1]
-    has_more = incidents.count() > batch_size
+    incidents = list(
+        Incident.objects.filter(alert_rule=alert_rule).exclude(status=IncidentStatus.CLOSED.value)[
+            : batch_size + 1
+        ]
+    )
+    has_more = len(incidents) > batch_size
     if incidents:
-        incidents = incidents[:batch_size]
-        for incident in incidents:
-            update_incident_status(
-                incident,
-                IncidentStatus.CLOSED,
-                comment="This alert has been auto-resolved because the rule that triggered it has been modified or deleted.",
-                status_method=IncidentStatusMethod.RULE_UPDATED,
-            )
+        with transaction.atomic(router.db_for_write(Incident)):
+            for incident in incidents[:batch_size]:
+                update_incident_status(
+                    incident,
+                    IncidentStatus.CLOSED,
+                    status_method=IncidentStatusMethod.RULE_UPDATED,
+                )
 
-    if has_more:
-        auto_resolve_snapshot_incidents.apply_async(
-            kwargs={"alert_rule_id": alert_rule_id}, countdown=1
-        )
-
-
-@instrumented_task(
-    name="sentry.incidents.tasks.process_pending_incident_snapshots", queue="incident_snapshots"
-)
-def process_pending_incident_snapshots(next_id=None):
-    """
-    Processes PendingIncidentSnapshots and creates a snapshot for any snapshot that
-    has passed it's target_run_date.
-    """
-    from sentry.incidents.logic import create_incident_snapshot
-
-    pending_snapshots = PendingIncidentSnapshot.objects.filter(target_run_date__lte=timezone.now())
-    if next_id is None:
-        # When next_id is None we know we just started running the task. Take the count
-        # of total pending snapshots so that we can alert if we notice the queue
-        # constantly growing.
-        metrics.incr(
-            "incidents.pending_snapshots",
-            amount=pending_snapshots.count(),
-            sample_rate=1.0,
-        )
-
-    if next_id is not None:
-        pending_snapshots = pending_snapshots.filter(id__lte=next_id)
-    pending_snapshots = pending_snapshots.order_by("-id").select_related("incident")[
-        : INCIDENT_SNAPSHOT_BATCH_SIZE + 1
-    ]
-
-    if not pending_snapshots:
-        return
-
-    for processed, pending_snapshot in enumerate(pending_snapshots):
-        incident = pending_snapshot.incident
-        if processed >= INCIDENT_SNAPSHOT_BATCH_SIZE:
-            process_pending_incident_snapshots.apply_async(
-                countdown=1, kwargs={"next_id": pending_snapshot.id}
-            )
-            break
-        else:
-            try:
-                with transaction.atomic():
-                    if (
-                        incident.status == IncidentStatus.CLOSED.value
-                        and not IncidentSnapshot.objects.filter(incident=incident).exists()
-                    ):
-                        if IncidentProject.objects.filter(incident=incident).exists():
-                            create_incident_snapshot(incident, windowed_stats=True)
-                    pending_snapshot.delete()
-            except Exception:
-                logger.exception("An error occurred while taking an incident snapshot")
+            if has_more:
+                transaction.on_commit(
+                    lambda: auto_resolve_snapshot_incidents.apply_async(
+                        kwargs={"alert_rule_id": alert_rule_id}
+                    ),
+                    using=router.db_for_write(Incident),
+                )

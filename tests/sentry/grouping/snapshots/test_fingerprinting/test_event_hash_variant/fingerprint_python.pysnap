@@ -1,7 +1,5 @@
 ---
-created: '2020-12-08T17:25:03.875766Z'
-creator: sentry
-source: tests/sentry/grouping/test_fingerprinting.py
+source: tests/sentry/grouping/test_fingerprinting.py::test_event_hash_variant
 ---
 config:
   rules:
@@ -13,6 +11,7 @@ config:
       - ReadTimeout
     - - path
       - '**/requests/adapters.py'
+    text: type:"ReadTimeout" path:"**/requests/adapters.py" -> "timeout-in-requests"
   version: 1
 fingerprint:
 - timeout-in-requests
@@ -22,17 +21,24 @@ variants:
   app:
     component:
       contributes: false
-      contributes_to_similarity: true
-      hint: custom fingerprint takes precedence
+      hint: ignored because custom server fingerprint takes precedence
+    contributes: false
+    hint: ignored because custom server fingerprint takes precedence
+    key: app_exception_stacktrace
     type: component
-  custom-fingerprint:
+  custom_server_fingerprint:
+    contributes: true
+    hint: null
+    key: custom_server_fingerprint
     matched_rule: type:"ReadTimeout" path:"**/requests/adapters.py" -> "timeout-in-requests"
-    type: custom-fingerprint
+    type: custom_fingerprint
     values:
     - timeout-in-requests
   system:
     component:
       contributes: false
-      contributes_to_similarity: true
-      hint: custom fingerprint takes precedence
+      hint: ignored because custom server fingerprint takes precedence
+    contributes: false
+    hint: ignored because custom server fingerprint takes precedence
+    key: system_exception_stacktrace
     type: component

@@ -1,29 +1,31 @@
-import * as React from 'react';
+import {useTheme} from '@emotion/react';
 import styled from '@emotion/styled';
 
-import LoadingIndicator from 'app/components/loadingIndicator';
-import theme from 'app/utils/theme';
+import LoadingIndicator from 'sentry/components/loadingIndicator';
 
-const defaultProps = {
-  isLoading: false,
-  isReloading: false,
-  maskBackgroundColor: theme.white,
-};
-
-type DefaultProps = Readonly<typeof defaultProps>;
-
-type Props = {
-  className?: string;
+export type LoadingContainerProps = {
   children?: React.ReactNode;
-} & DefaultProps;
+  className?: string;
+  isLoading?: boolean;
+  isReloading?: boolean;
+  maskBackgroundColor?: string;
+  showChildrenWhileLoading?: boolean;
+};
 
 type MaskProps = {
   isReloading: boolean;
   maskBackgroundColor: string;
 };
 
-export default function LoadingContainer(props: Props) {
-  const {className, children, isReloading, isLoading, maskBackgroundColor} = props;
+export default function LoadingContainer({
+  isLoading = false,
+  isReloading = false,
+  maskBackgroundColor,
+  showChildrenWhileLoading = true,
+  className,
+  children,
+}: LoadingContainerProps) {
+  const theme = useTheme();
   const isLoadingOrReloading = isLoading || isReloading;
 
   return (
@@ -32,17 +34,15 @@ export default function LoadingContainer(props: Props) {
         <div>
           <LoadingMask
             isReloading={isReloading}
-            maskBackgroundColor={maskBackgroundColor}
+            maskBackgroundColor={maskBackgroundColor ?? theme.colors.white}
           />
           <Indicator />
         </div>
       )}
-      {children}
+      {showChildrenWhileLoading || !isLoadingOrReloading ? children : null}
     </Container>
   );
 }
-
-LoadingContainer.defaultProps = defaultProps;
 
 const Container = styled('div')`
   position: relative;

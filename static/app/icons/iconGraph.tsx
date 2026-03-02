@@ -1,28 +1,25 @@
-import * as React from 'react';
-
+import {IconGraphArea} from './iconGraphArea';
 import {IconGraphBar} from './iconGraphBar';
 import {IconGraphCircle} from './iconGraphCircle';
 import {IconGraphLine} from './iconGraphLine';
-import SvgIcon from './svgIcon';
+import {IconGraphScatter} from './iconGraphScatter';
+import type {SVGIconProps} from './svgIcon';
 
-type Props = React.ComponentProps<typeof SvgIcon> & {
-  type?: 'line' | 'circle' | 'bar';
-};
+interface Props extends SVGIconProps {
+  type?: 'line' | 'circle' | 'bar' | 'area' | 'scatter';
+}
 
-const IconGraph = React.forwardRef(function IconGraph(
-  {type = 'line', ...props}: Props,
-  ref: React.Ref<SVGSVGElement>
-) {
+export function IconGraph({type = 'line', ...props}: Props) {
   switch (type) {
     case 'circle':
-      return <IconGraphCircle {...props} ref={ref} />;
+      return <IconGraphCircle {...props} />;
     case 'bar':
-      return <IconGraphBar {...props} ref={ref} />;
+      return <IconGraphBar {...props} />;
+    case 'area':
+      return <IconGraphArea {...props} />;
+    case 'scatter':
+      return <IconGraphScatter {...props} />;
     default:
-      return <IconGraphLine {...props} ref={ref} />;
+      return <IconGraphLine {...props} />;
   }
-});
-
-IconGraph.displayName = 'IconGraph';
-
-export {IconGraph};
+}

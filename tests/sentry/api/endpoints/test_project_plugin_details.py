@@ -1,144 +1,141 @@
-from django.urls import reverse
+from unittest import mock
 
-from sentry.models import AuditLogEntry, ProjectOption
+from sentry.models.auditlogentry import AuditLogEntry
+from sentry.models.options.project_option import ProjectOption
 from sentry.plugins.base import plugins
 from sentry.plugins.bases.notify import NotificationPlugin
-from sentry.testutils import APITestCase
-from sentry.utils.compat import mock
+from sentry.silo.base import SiloMode
+from sentry.testutils.cases import APITestCase
+from sentry.testutils.helpers.features import with_feature
+from sentry.testutils.outbox import outbox_runner
+from sentry.testutils.silo import assume_test_silo_mode
 
 
-class ProjectPluginDetailsTest(APITestCase):
-    def test_simple(self):
-        project = self.create_project()
+class ProjectPluginDetailsTestBase(APITestCase):
+    endpoint = "sentry-api-0-project-plugin-details"
 
+    def setUp(self) -> None:
+        super().setUp()
         self.login_as(user=self.user)
 
-        url = reverse(
-            "sentry-api-0-project-plugin-details",
-            kwargs={
-                "organization_slug": project.organization.slug,
-                "project_slug": project.slug,
-                "plugin_id": "webhooks",
-            },
+        with assume_test_silo_mode(SiloMode.CONTROL):
+            assert not AuditLogEntry.objects.filter(target_object=self.project.id).exists()
+
+
+class ProjectPluginDetailsTest(ProjectPluginDetailsTestBase):
+    def test_simple(self) -> None:
+        response = self.get_success_response(
+            self.project.organization.slug, self.project.slug, "webhooks"
         )
-        response = self.client.get(url)
-        assert response.status_code == 200, (response.status_code, response.content)
         assert response.data["id"] == "webhooks"
         assert response.data["config"] == [
             {
-                "readonly": False,
                 "choices": None,
-                "placeholder": "https://sentry.io/callback/url",
-                "name": "urls",
-                "help": "Enter callback URLs to POST new events to (one per line).",
                 "defaultValue": None,
+                "help": "Enter callback URLs to POST new events to (one per line).",
+                "isDeprecated": False,
+                "isHidden": True,
+                "label": "Callback URLs",
+                "name": "urls",
+                "placeholder": "https://sentry.io/callback/url",
+                "readonly": False,
                 "required": False,
                 "type": "textarea",
                 "value": None,
-                "label": "Callback URLs",
             }
         ]
 
-
-class UpdateProjectPluginTest(APITestCase):
-    def test_simple(self):
-        project = self.create_project()
-
-        self.login_as(user=self.user)
-
-        url = reverse(
-            "sentry-api-0-project-plugin-details",
-            kwargs={
-                "organization_slug": project.organization.slug,
-                "project_slug": project.slug,
-                "plugin_id": "webhooks",
-            },
+    def test_auth_url_absolute(self) -> None:
+        response = self.get_success_response(
+            self.project.organization.slug, self.project.slug, "asana"
         )
-        audit = AuditLogEntry.objects.filter(target_object=project.id)
+        assert response.data["id"] == "asana"
+        assert "http://testserver" in response.data["auth_url"]
+        assert "social/associate/asana" in response.data["auth_url"]
 
-        assert not audit
 
-        response = self.client.put(url, data={"urls": "http://example.com/foo"})
-        audit = AuditLogEntry.objects.get(target_object=project.id)
+class UpdateProjectPluginTest(ProjectPluginDetailsTestBase):
+    method = "put"
 
+    def test_simple(self) -> None:
+        with outbox_runner():
+            self.get_success_response(
+                self.project.organization.slug,
+                self.project.slug,
+                "webhooks",
+                **{"urls": "http://example.com/foo"},
+            )
+
+        with assume_test_silo_mode(SiloMode.CONTROL):
+            audit = AuditLogEntry.objects.get(target_object=self.project.id)
         assert audit.event == 111
-        assert response.status_code == 200, (response.status_code, response.content)
         assert (
-            ProjectOption.objects.get(key="webhooks:urls", project=project).value
+            ProjectOption.objects.get(key="webhooks:urls", project=self.project).value
             == "http://example.com/foo"
         )
 
 
-class EnableProjectPluginTest(APITestCase):
+class EnableProjectPluginTest(ProjectPluginDetailsTestBase):
+    method = "post"
+
     @mock.patch.object(NotificationPlugin, "test_configuration", side_effect="test_configuration")
-    def test_simple(self, test_configuration):
-        project = self.create_project()
+    def test_simple(self, test_configuration: mock.MagicMock) -> None:
+        plugins.get("webhooks").disable(self.project)
 
-        self.login_as(user=self.user)
+        with outbox_runner():
+            self.get_success_response(self.project.organization.slug, self.project.slug, "webhooks")
 
-        plugins.get("webhooks").disable(project)
-
-        url = reverse(
-            "sentry-api-0-project-plugin-details",
-            kwargs={
-                "organization_slug": project.organization.slug,
-                "project_slug": project.slug,
-                "plugin_id": "webhooks",
-            },
-        )
-        audit = AuditLogEntry.objects.filter(target_object=project.id)
-
-        assert not audit
-
-        response = self.client.post(url)
-        audit = AuditLogEntry.objects.get(target_object=project.id)
-
+        with assume_test_silo_mode(SiloMode.CONTROL):
+            audit = AuditLogEntry.objects.get(target_object=self.project.id)
         assert audit.event == 110
-        assert response.status_code == 201, (response.status_code, response.content)
-        assert ProjectOption.objects.get(key="webhooks:enabled", project=project).value is True
-        audit.delete()
+        assert ProjectOption.objects.get(key="webhooks:enabled", project=self.project).value is True
+        with assume_test_silo_mode(SiloMode.CONTROL):
+            audit.delete()
 
         # Testing the Plugin
-        response = self.client.post(url, {"test": True})
-        test_configuration.assert_called_once_with(project)
-        assert response.status_code == 200, (response.status_code, response.content)
+        self.get_success_response(
+            self.project.organization.slug, self.project.slug, "webhooks", **{"test": True}
+        )
+        test_configuration.assert_called_once_with(self.project)
 
         # Reset the plugin
-        response = self.client.post(url, {"reset": True})
-        audit = AuditLogEntry.objects.get(target_object=project.id)
-        test_configuration.assert_called_once_with(project)
+        with outbox_runner():
+            response = self.get_success_response(
+                self.project.organization.slug, self.project.slug, "webhooks", **{"reset": True}
+            )
+        with assume_test_silo_mode(SiloMode.CONTROL):
+            audit = AuditLogEntry.objects.get(target_object=self.project.id)
+        test_configuration.assert_called_once_with(self.project)
         assert audit.event == 111
-        assert response.status_code == 200, (response.status_code, response.content)
 
         configs = response.data.get("config")
 
         for config in configs:
             assert config.get("value") is None
 
+    @with_feature("organizations:data-forwarding")
+    def test_allow_plugin_with_feature_enabled(self) -> None:
+        self.get_success_response(self.organization.slug, self.project.slug, "amazon-sqs")
 
-class DisableProjectPluginTest(APITestCase):
-    def test_simple(self):
-        project = self.create_project()
-
-        self.login_as(user=self.user)
-
-        plugins.get("webhooks").enable(project)
-
-        url = reverse(
-            "sentry-api-0-project-plugin-details",
-            kwargs={
-                "organization_slug": project.organization.slug,
-                "project_slug": project.slug,
-                "plugin_id": "webhooks",
-            },
+    @with_feature({"organizations:data-forwarding": False})
+    def test_disallow_plugin_with_feature_disabled(self) -> None:
+        self.get_error_response(
+            self.organization.slug, self.project.slug, "amazon-sqs", status_code=403
         )
-        audit = AuditLogEntry.objects.filter(target_object=project.id)
 
-        assert not audit
 
-        response = self.client.delete(url)
-        audit = AuditLogEntry.objects.get(target_object=project.id)
+class DisableProjectPluginTest(ProjectPluginDetailsTestBase):
+    method = "delete"
 
+    def test_simple(self) -> None:
+        plugins.get("webhooks").enable(self.project)
+
+        with outbox_runner():
+            self.get_success_response(self.project.organization.slug, self.project.slug, "webhooks")
+
+        with assume_test_silo_mode(SiloMode.CONTROL):
+            audit = AuditLogEntry.objects.get(target_object=self.project.id)
         assert audit.event == 112
-        assert response.status_code == 204, (response.status_code, response.content)
-        assert ProjectOption.objects.get(key="webhooks:enabled", project=project).value is False
+        assert (
+            ProjectOption.objects.get(key="webhooks:enabled", project=self.project).value is False
+        )

@@ -1,30 +1,31 @@
-import {Component, createContext, ReactNode} from 'react';
+import {Component, createContext} from 'react';
 import isEqual from 'lodash/isEqual';
 
+import type {TeamKeyTransactions} from 'sentry/actionCreators/performance';
 import {
   fetchTeamKeyTransactions,
-  TeamKeyTransactions,
   toggleKeyTransaction,
-} from 'app/actionCreators/performance';
-import {Client} from 'app/api';
-import {t} from 'app/locale';
-import {Organization, Project, Team} from 'app/types';
-import withApi from 'app/utils/withApi';
+} from 'sentry/actionCreators/performance';
+import type {Client} from 'sentry/api';
+import {t} from 'sentry/locale';
+import type {Organization, Team} from 'sentry/types/organization';
+import type {Project} from 'sentry/types/project';
+import withApi from 'sentry/utils/withApi';
 
 export type TeamSelection = {
   action: 'key' | 'unkey';
   project: Project;
-  transactionName: string;
   teamIds: string[];
+  transactionName: string;
 };
 
 export type TeamKeyTransactionManagerChildrenProps = {
-  teams: Team[];
-  isLoading: boolean;
-  error: string | null;
   counts: Map<string, number> | null;
+  error: string | null;
   getKeyedTeams: (project: string, transactionName: string) => Set<string> | null;
   handleToggleKeyTransaction: (selection: TeamSelection) => void;
+  isLoading: boolean;
+  teams: Team[];
 };
 
 const TeamKeyTransactionsManagerContext =
@@ -39,10 +40,10 @@ const TeamKeyTransactionsManagerContext =
 
 type Props = {
   api: Client;
-  children: ReactNode;
+  children: React.ReactNode;
   organization: Organization;
-  teams: Team[];
   selectedTeams: string[];
+  teams: Team[];
   selectedProjects?: string[];
 };
 
@@ -97,7 +98,7 @@ class UnwrappedProvider extends Component<Props> {
         selectedTeams,
         selectedProjects
       );
-    } catch (err) {
+    } catch (err: any) {
       error = err.responseJSON?.detail ?? t('Error fetching team key transactions');
     }
 
@@ -112,7 +113,7 @@ class UnwrappedProvider extends Component<Props> {
   getCounts() {
     const {teamKeyTransactions} = this.state;
 
-    const counts: Map<string, number> = new Map();
+    const counts = new Map<string, number>();
 
     teamKeyTransactions.forEach(({team, count}) => {
       counts.set(team, count);
@@ -124,7 +125,7 @@ class UnwrappedProvider extends Component<Props> {
   getKeyedTeams = (projectId: string, transactionName: string) => {
     const {teamKeyTransactions} = this.state;
 
-    const keyedTeams: Set<string> = new Set();
+    const keyedTeams = new Set<string>();
 
     teamKeyTransactions.forEach(({team, keyed}) => {
       const isKeyedByTeam = keyed.find(
@@ -162,19 +163,18 @@ class UnwrappedProvider extends Component<Props> {
               keyTransaction.transaction !== transactionName
           ),
         };
-      } else {
-        return {
-          team,
-          count: count + 1,
-          keyed: [
-            ...keyed,
-            {
-              project_id: project.id,
-              transaction: transactionName,
-            },
-          ],
-        };
       }
+      return {
+        team,
+        count: count + 1,
+        keyed: [
+          ...keyed,
+          {
+            project_id: project.id,
+            transaction: transactionName,
+          },
+        ],
+      };
     });
 
     try {
@@ -187,7 +187,7 @@ class UnwrappedProvider extends Component<Props> {
         teamIds
       );
       this.setState({teamKeyTransactions: newTeamKeyTransactions});
-    } catch (err) {
+    } catch (err: any) {
       this.setState({
         error: err.responseJSON?.detail ?? null,
       });
@@ -208,9 +208,9 @@ class UnwrappedProvider extends Component<Props> {
     };
 
     return (
-      <TeamKeyTransactionsManagerContext.Provider value={childrenProps}>
+      <TeamKeyTransactionsManagerContext value={childrenProps}>
         {this.props.children}
-      </TeamKeyTransactionsManagerContext.Provider>
+      </TeamKeyTransactionsManagerContext>
     );
   }
 }

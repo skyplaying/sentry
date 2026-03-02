@@ -1,19 +1,20 @@
 import styled from '@emotion/styled';
 
-import {formatBytesBase2} from 'app/utils';
-import getDynamicText from 'app/utils/getDynamicText';
+import {formatBytesBase2} from 'sentry/utils/bytes/formatBytesBase2';
+import {formatBytesBase10} from 'sentry/utils/bytes/formatBytesBase10';
 
 type Props = {
-  className?: string;
   bytes: number;
+  base?: 2 | 10;
+  className?: string;
 };
 
 function FileSize(props: Props) {
-  const {className, bytes} = props;
+  const {className, bytes, base} = props;
 
   return (
     <Span className={className}>
-      {getDynamicText({value: formatBytesBase2(bytes), fixed: 'xx KB'})}
+      {base === 10 ? formatBytesBase10(bytes) : formatBytesBase2(bytes)}
     </Span>
   );
 }

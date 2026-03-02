@@ -1,29 +1,28 @@
-import * as React from 'react';
-
-import {EventQuery} from 'app/actionCreators/events';
-import {LocationQuery} from 'app/utils/discover/eventView';
-import GenericDiscoverQuery, {
+import type {EventQuery} from 'sentry/actionCreators/events';
+import type {LocationQuery} from 'sentry/utils/discover/eventView';
+import type {ColumnValueType} from 'sentry/utils/discover/fields';
+import type {
   DiscoverQueryProps,
   GenericChildrenProps,
-} from 'app/utils/discover/genericDiscoverQuery';
-import withApi from 'app/utils/withApi';
+} from 'sentry/utils/discover/genericDiscoverQuery';
+import {GenericDiscoverQuery} from 'sentry/utils/discover/genericDiscoverQuery';
 
 /**
  * An individual row in a Segment explorer result
  */
 export type TableDataRow = {
-  tags_key: string;
-  tags_value: string;
-  sumdelta: number;
-  count: number;
-  frequency: number;
   aggregate: number;
   comparison: number;
+  count: number;
+  frequency: number;
+  sumdelta: number;
+  tags_key: string;
+  tags_value: string;
 };
 
 export type TableData = {
   data: TableDataRow[];
-  meta: {};
+  meta: Record<string, ColumnValueType>;
 };
 
 /**
@@ -36,21 +35,21 @@ type ChildrenProps = Omit<GenericChildrenProps<TableData>, 'tableData'> & {
 
 type QueryProps = DiscoverQueryProps & {
   aggregateColumn: string;
-  allTagKeys?: boolean;
-  tagKey?: string;
-  sort?: string | string[];
   children: (props: ChildrenProps) => React.ReactNode;
+  allTagKeys?: boolean;
+  sort?: string | string[];
+  tagKey?: string;
 };
 
 type FacetQuery = LocationQuery &
   EventQuery & {
-    sort?: string | string[];
     aggregateColumn?: string;
     allTagKeys?: boolean;
+    sort?: string | string[];
     tagKey?: string;
   };
 
-export function getRequestFunction(_props: QueryProps) {
+function getRequestFunction(_props: QueryProps) {
   const {aggregateColumn} = _props;
   function getTagExplorerRequestPayload(props: DiscoverQueryProps) {
     const {eventView} = props;
@@ -88,4 +87,4 @@ function SegmentExplorerQuery(props: QueryProps) {
   );
 }
 
-export default withApi(SegmentExplorerQuery);
+export default SegmentExplorerQuery;

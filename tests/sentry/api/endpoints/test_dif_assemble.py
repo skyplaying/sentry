@@ -1,10 +1,16 @@
 from hashlib import sha1
+from unittest.mock import MagicMock, patch
 
 from django.core.files.base import ContentFile
 from django.urls import reverse
 
-from sentry.models import ApiToken, File, FileBlob, FileBlobIndex, FileBlobOwner
+from sentry.models.apitoken import ApiToken
 from sentry.models.debugfile import ProjectDebugFile
+from sentry.models.files.file import File
+from sentry.models.files.fileblob import FileBlob
+from sentry.models.files.fileblobindex import FileBlobIndex
+from sentry.models.files.fileblobowner import FileBlobOwner
+from sentry.silo.base import SiloMode
 from sentry.tasks.assemble import (
     AssembleTask,
     ChunkFileState,
@@ -13,14 +19,15 @@ from sentry.tasks.assemble import (
     get_assemble_status,
     set_assemble_status,
 )
-from sentry.testutils import APITestCase
-from sentry.utils.compat.mock import patch
+from sentry.testutils.cases import APITestCase
+from sentry.testutils.silo import assume_test_silo_mode
 
 
 class DifAssembleEndpoint(APITestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         self.organization = self.create_organization(owner=self.user)
-        self.token = ApiToken.objects.create(user=self.user, scope_list=["project:write"])
+        with assume_test_silo_mode(SiloMode.CONTROL):
+            self.token = ApiToken.objects.create(user=self.user, scope_list=["project:write"])
         self.team = self.create_team(organization=self.organization)
         self.project = self.create_project(
             teams=[self.team], organization=self.organization, name="foo"
@@ -29,7 +36,7 @@ class DifAssembleEndpoint(APITestCase):
             "sentry-api-0-assemble-dif-files", args=[self.organization.slug, self.project.slug]
         )
 
-    def test_assemble_json_schema(self):
+    def test_assemble_json_schema(self) -> None:
         response = self.client.post(
             self.url, data={"lol": "test"}, HTTP_AUTHORIZATION=f"Bearer {self.token.token}"
         )
@@ -56,7 +63,7 @@ class DifAssembleEndpoint(APITestCase):
         assert response.status_code == 200, response.content
         assert response.data[checksum]["state"] == ChunkFileState.NOT_FOUND
 
-    def test_assemble_check(self):
+    def test_assemble_check(self) -> None:
         content = b"foo bar"
         fileobj = ContentFile(content)
         file1 = File.objects.create(name="baz.dSYM", type="default", size=7)
@@ -132,7 +139,7 @@ class DifAssembleEndpoint(APITestCase):
         assert set(response.data[not_found_checksum]["missingChunks"]) == {not_found_checksum}
 
     @patch("sentry.tasks.assemble.assemble_dif")
-    def test_assemble(self, mock_assemble_dif):
+    def test_assemble(self, mock_assemble_dif: MagicMock) -> None:
         content1 = b"foo"
         fileobj1 = ContentFile(content1)
         checksum1 = sha1(content1).hexdigest()
@@ -188,9 +195,13 @@ class DifAssembleEndpoint(APITestCase):
             }
         )
 
-        file = assemble_file(
+        assemble_result = assemble_file(
             AssembleTask.DIF, self.project, "test", total_checksum, chunks, "project.dif"
-        )[0]
+        )
+
+        assert assemble_result is not None
+
+        file = assemble_result.bundle
         status, _ = get_assemble_status(AssembleTask.DIF, self.project.id, total_checksum)
         assert status != ChunkFileState.ERROR
         assert file.checksum == total_checksum
@@ -198,9 +209,9 @@ class DifAssembleEndpoint(APITestCase):
         file_blob_index = FileBlobIndex.objects.all()
         assert len(file_blob_index) == 3
 
-    def test_dif_response(self):
+    def test_dif_response(self) -> None:
         sym_file = self.load_fixture("crash.sym")
-        blob1 = FileBlob.from_file(ContentFile(sym_file))
+        blob1 = FileBlob.from_file_with_organization(ContentFile(sym_file), self.organization)
         total_checksum = sha1(sym_file).hexdigest()
         chunks = [blob1.checksum]
 
@@ -221,9 +232,9 @@ class DifAssembleEndpoint(APITestCase):
             response.data[total_checksum]["dif"]["uuid"] == "67e9247c-814e-392b-a027-dbde6748fcbf"
         )
 
-    def test_dif_error_response(self):
+    def test_dif_error_response(self) -> None:
         sym_file = b"fail"
-        blob1 = FileBlob.from_file(ContentFile(sym_file))
+        blob1 = FileBlob.from_file_with_organization(ContentFile(sym_file), self.organization)
         total_checksum = sha1(sym_file).hexdigest()
         chunks = [blob1.checksum]
 

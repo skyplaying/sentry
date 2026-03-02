@@ -1,18 +1,16 @@
-from datetime import datetime
+from datetime import datetime, timezone
+from functools import cached_property
 
-import pytz
 from django.urls import reverse
-from exam import fixture
 
-from sentry.models import RelayUsage
-from sentry.testutils import APITestCase
-from sentry.testutils.helpers import with_feature
+from sentry.models.relay import RelayUsage
+from sentry.testutils.cases import APITestCase
 
 
 class OrganizationRelayHistoryTest(APITestCase):
     endpoint = "sentry-api-0-organization-relay-usage"
 
-    @fixture
+    @cached_property
     def user(self):
         return self.create_user("test@test.com")
 
@@ -30,37 +28,36 @@ class OrganizationRelayHistoryTest(APITestCase):
                 "relay_id": "r1",
                 "public_key": pks[0],
                 "version": "1.1.1",
-                "first_seen": datetime(2001, 1, 1, tzinfo=pytz.UTC),
-                "last_seen": datetime(2001, 1, 2, tzinfo=pytz.UTC),
+                "first_seen": datetime(2001, 1, 1, tzinfo=timezone.utc),
+                "last_seen": datetime(2001, 1, 2, tzinfo=timezone.utc),
             },
             {
                 "relay_id": "r1",
                 "public_key": pks[0],
                 "version": "1.1.2",
-                "first_seen": datetime(2001, 2, 1, tzinfo=pytz.UTC),
-                "last_seen": datetime(2001, 2, 2, tzinfo=pytz.UTC),
+                "first_seen": datetime(2001, 2, 1, tzinfo=timezone.utc),
+                "last_seen": datetime(2001, 2, 2, tzinfo=timezone.utc),
             },
             {
                 "relay_id": "r2",
                 "public_key": pks[1],
                 "version": "1.1.1",
-                "first_seen": datetime(2002, 1, 1, tzinfo=pytz.UTC),
-                "last_seen": datetime(2002, 1, 1, tzinfo=pytz.UTC),
+                "first_seen": datetime(2002, 1, 1, tzinfo=timezone.utc),
+                "last_seen": datetime(2002, 1, 1, tzinfo=timezone.utc),
             },
             {
                 "relay_id": "r3",
                 "public_key": pks[2],
                 "version": "1.1.1",
-                "first_seen": datetime(2003, 1, 1, tzinfo=pytz.UTC),
-                "last_seen": datetime(2003, 1, 1, tzinfo=pytz.UTC),
+                "first_seen": datetime(2003, 1, 1, tzinfo=timezone.utc),
+                "last_seen": datetime(2003, 1, 1, tzinfo=timezone.utc),
             },
         ]
 
-    def setUp(self):
+    def setUp(self) -> None:
         for relay_data in self._history_fixture():
             RelayUsage.objects.create(**relay_data)
 
-    @with_feature("organizations:relay")
     def _set_org_public_keys(self, public_keys):
         self.login_as(user=self.user)
 
@@ -74,25 +71,22 @@ class OrganizationRelayHistoryTest(APITestCase):
         resp = self.client.put(url, data=data)
         assert resp.status_code == 200
 
-    @with_feature("organizations:relay")
-    def test_no_valid_public_keys(self):
+    def test_no_valid_public_keys(self) -> None:
         """
         An organization with no valid public keys should return an
         empty history list
         """
 
         self.login_as(user=self.user)
-        response = self.get_valid_response(self.organization.slug)
+        response = self.get_success_response(self.organization.slug)
         assert response.data == []
 
-    @with_feature({"organizations:relay": False})
-    def test_endpoint_checks_feature_present(self):
+    def test_endpoint_checks_feature_present(self) -> None:
         self.login_as(user=self.user)
         resp = self.get_response(self.organization.slug)
-        assert resp.status_code == 404
+        assert resp.status_code == 200
 
-    @with_feature("organizations:relay")
-    def test_only_records_for_known_public_keys_are_returned(self):
+    def test_only_records_for_known_public_keys_are_returned(self) -> None:
         """
         Only the relay history for relays belonging to the origanization are
         returned.
@@ -103,7 +97,7 @@ class OrganizationRelayHistoryTest(APITestCase):
         self.login_as(user=self.user)
         pks = self._public_keys()
         self._set_org_public_keys([pks[0], pks[1]])
-        response = self.get_valid_response(self.organization.slug)
+        response = self.get_success_response(self.organization.slug)
 
         data = response.data
 

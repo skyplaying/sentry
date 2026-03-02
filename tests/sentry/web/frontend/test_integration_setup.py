@@ -1,12 +1,15 @@
 from sentry.integrations.example import ExampleIntegrationProvider, ExampleSetupView
-from sentry.models import Integration, OrganizationIntegration
-from sentry.testutils import IntegrationTestCase
+from sentry.integrations.models.integration import Integration
+from sentry.integrations.models.organization_integration import OrganizationIntegration
+from sentry.testutils.cases import IntegrationTestCase
+from sentry.testutils.silo import control_silo_test
 
 
+@control_silo_test
 class ExampleIntegrationTest(IntegrationTestCase):
     provider = ExampleIntegrationProvider
 
-    def test_basic_flow(self):
+    def test_basic_flow(self) -> None:
         resp = self.client.get(self.init_path)
         assert resp.status_code == 200
         assert ExampleSetupView.TEMPLATE in resp.content.decode("utf-8")
@@ -20,5 +23,5 @@ class ExampleIntegrationTest(IntegrationTestCase):
         assert integration.name == "test"
         assert integration.metadata == {}
         assert OrganizationIntegration.objects.filter(
-            integration=integration, organization=self.organization
+            integration=integration, organization_id=self.organization.id
         ).exists()

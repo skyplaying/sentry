@@ -1,19 +1,23 @@
-import * as React from 'react';
+import {Component} from 'react';
 import styled from '@emotion/styled';
 
-import {addErrorMessage, addSuccessMessage} from 'app/actionCreators/indicator';
-import {Client} from 'app/api';
-import Button from 'app/components/button';
-import {Panel, PanelBody, PanelHeader, PanelItem} from 'app/components/panels';
-import {t, tct} from 'app/locale';
-import space from 'app/styles/space';
-import {AccessRequest} from 'app/types';
-import withApi from 'app/utils/withApi';
+import {Button} from '@sentry/scraps/button';
+
+import {addErrorMessage, addSuccessMessage} from 'sentry/actionCreators/indicator';
+import type {Client} from 'sentry/api';
+import Panel from 'sentry/components/panels/panel';
+import PanelBody from 'sentry/components/panels/panelBody';
+import PanelHeader from 'sentry/components/panels/panelHeader';
+import PanelItem from 'sentry/components/panels/panelItem';
+import {t, tct} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {AccessRequest} from 'sentry/types/organization';
+import withApi from 'sentry/utils/withApi';
 
 type Props = {
   api: Client;
-  orgId: string;
   onRemoveAccessRequest: (id: string, isApproved: boolean) => void;
+  orgSlug: string;
   requestList: AccessRequest[];
 };
 
@@ -22,26 +26,26 @@ type State = {
 };
 
 type HandleOpts = {
+  errorMessage: string;
   id: string;
   isApproved: boolean;
   successMessage: string;
-  errorMessage: string;
 };
 
-class OrganizationAccessRequests extends React.Component<Props, State> {
+class OrganizationAccessRequests extends Component<Props, State> {
   state: State = {
     accessRequestBusy: {},
   };
 
   async handleAction({id, isApproved, successMessage, errorMessage}: HandleOpts) {
-    const {api, orgId, onRemoveAccessRequest} = this.props;
+    const {api, orgSlug, onRemoveAccessRequest} = this.props;
 
     this.setState(state => ({
       accessRequestBusy: {...state.accessRequestBusy, [id]: true},
     }));
 
     try {
-      await api.requestPromise(`/organizations/${orgId}/access-requests/${id}/`, {
+      await api.requestPromise(`/organizations/${orgSlug}/access-requests/${id}/`, {
         method: 'PUT',
         data: {isApproved},
       });
@@ -80,7 +84,7 @@ class OrganizationAccessRequests extends React.Component<Props, State> {
     const {requestList} = this.props;
     const {accessRequestBusy} = this.state;
 
-    if (!requestList || !requestList.length) {
+    if (!requestList?.length) {
       return null;
     }
 
@@ -112,7 +116,7 @@ class OrganizationAccessRequests extends React.Component<Props, State> {
                 <div>
                   <StyledButton
                     priority="primary"
-                    size="small"
+                    size="sm"
                     onClick={e => this.handleApprove(id, e)}
                     busy={accessRequestBusy[id]}
                   >
@@ -121,7 +125,7 @@ class OrganizationAccessRequests extends React.Component<Props, State> {
                   <Button
                     busy={accessRequestBusy[id]}
                     onClick={e => this.handleDeny(id, e)}
-                    size="small"
+                    size="sm"
                   >
                     {t('Deny')}
                   </Button>
@@ -138,7 +142,7 @@ class OrganizationAccessRequests extends React.Component<Props, State> {
 const StyledPanelItem = styled(PanelItem)`
   display: grid;
   grid-template-columns: auto max-content;
-  grid-gap: ${space(2)};
+  gap: ${space(2)};
   align-items: center;
 `;
 

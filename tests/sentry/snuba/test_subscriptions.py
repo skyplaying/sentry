@@ -1,6 +1,11 @@
 from datetime import timedelta
+from unittest import mock
 
-from sentry.snuba.models import QueryDatasets, QuerySubscription, SnubaQueryEventType
+import pytest
+
+from sentry.exceptions import InvalidSearchQuery
+from sentry.snuba.dataset import Dataset
+from sentry.snuba.models import QuerySubscription, SnubaQuery, SnubaQueryEventType
 from sentry.snuba.subscriptions import (
     bulk_delete_snuba_subscriptions,
     create_snuba_query,
@@ -9,17 +14,26 @@ from sentry.snuba.subscriptions import (
     update_snuba_query,
     update_snuba_subscription,
 )
-from sentry.testutils import TestCase
+from sentry.snuba.tasks import SubscriptionError
+from sentry.testutils.cases import TestCase
+from sentry.testutils.skips import requires_kafka, requires_snuba
+
+pytestmark = [pytest.mark.sentry_metrics, requires_snuba, requires_kafka]
 
 
+@pytest.mark.snuba_ci
 class CreateSnubaQueryTest(TestCase):
-    def test(self):
-        dataset = QueryDatasets.EVENTS
+    def test(self) -> None:
+        query_type = SnubaQuery.Type.ERROR
+        dataset = Dataset.Events
         query = "level:error"
         aggregate = "count()"
         time_window = timedelta(minutes=10)
         resolution = timedelta(minutes=1)
-        snuba_query = create_snuba_query(dataset, query, aggregate, time_window, resolution, None)
+        snuba_query = create_snuba_query(
+            query_type, dataset, query, aggregate, time_window, resolution, None
+        )
+        assert snuba_query.type == query_type.value
         assert snuba_query.dataset == dataset.value
         assert snuba_query.query == query
         assert snuba_query.aggregate == aggregate
@@ -28,15 +42,17 @@ class CreateSnubaQueryTest(TestCase):
         assert snuba_query.environment is None
         assert set(snuba_query.event_types) == {SnubaQueryEventType.EventType.ERROR}
 
-    def test_environment(self):
-        dataset = QueryDatasets.EVENTS
+    def test_environment(self) -> None:
+        query_type = SnubaQuery.Type.ERROR
+        dataset = Dataset.Events
         query = "level:error"
         aggregate = "count()"
         time_window = timedelta(minutes=10)
         resolution = timedelta(minutes=1)
         snuba_query = create_snuba_query(
-            dataset, query, aggregate, time_window, resolution, self.environment
+            query_type, dataset, query, aggregate, time_window, resolution, self.environment
         )
+        assert snuba_query.type == query_type.value
         assert snuba_query.dataset == dataset.value
         assert snuba_query.query == query
         assert snuba_query.aggregate == aggregate
@@ -45,13 +61,15 @@ class CreateSnubaQueryTest(TestCase):
         assert snuba_query.environment == self.environment
         assert set(snuba_query.event_types) == {SnubaQueryEventType.EventType.ERROR}
 
-    def test_event_types(self):
-        dataset = QueryDatasets.EVENTS
+    def test_event_types(self) -> None:
+        query_type = SnubaQuery.Type.ERROR
+        dataset = Dataset.Events
         query = "level:error"
         aggregate = "count()"
         time_window = timedelta(minutes=10)
         resolution = timedelta(minutes=1)
         snuba_query = create_snuba_query(
+            query_type,
             dataset,
             query,
             aggregate,
@@ -60,6 +78,7 @@ class CreateSnubaQueryTest(TestCase):
             None,
             [SnubaQueryEventType.EventType.DEFAULT],
         )
+        assert snuba_query.type == query_type.value
         assert snuba_query.dataset == dataset.value
         assert snuba_query.query == query
         assert snuba_query.aggregate == aggregate
@@ -68,63 +87,117 @@ class CreateSnubaQueryTest(TestCase):
         assert snuba_query.environment is None
         assert set(snuba_query.event_types) == {SnubaQueryEventType.EventType.DEFAULT}
 
+    def test_event_types_metrics(self) -> None:
+        query_type = SnubaQuery.Type.CRASH_RATE
+        dataset = Dataset.Metrics
+        query = ""
+        aggregate = "percentage(sessions_crashed, sessions) AS _crash_rate_alert_aggregate"
+        time_window = timedelta(minutes=10)
+        resolution = timedelta(minutes=1)
+
+        snuba_query = create_snuba_query(
+            query_type,
+            dataset,
+            query,
+            aggregate,
+            time_window,
+            resolution,
+            None,
+        )
+        assert snuba_query.type == query_type.value
+        assert snuba_query.dataset == dataset.value
+        assert snuba_query.query == query
+        assert snuba_query.aggregate == aggregate
+        assert snuba_query.time_window == int(time_window.total_seconds())
+        assert snuba_query.resolution == int(resolution.total_seconds())
+        assert snuba_query.environment is None
+        assert snuba_query.event_types == []
+
 
 class CreateSnubaSubscriptionTest(TestCase):
-    def test(self):
-        type = "something"
-        dataset = QueryDatasets.EVENTS
+    def test(self) -> None:
+        query_type = SnubaQuery.Type.ERROR
+        subscription_type = "something"
+        dataset = Dataset.Events
         query = "level:error"
         time_window = timedelta(minutes=10)
         resolution = timedelta(minutes=1)
         snuba_query = create_snuba_query(
-            dataset, query, "count()", time_window, resolution, self.environment
+            query_type, dataset, query, "count()", time_window, resolution, self.environment
         )
-        subscription = create_snuba_subscription(self.project, type, snuba_query)
+        subscription = create_snuba_subscription(self.project, subscription_type, snuba_query)
+        subscription_with_query_extra = create_snuba_subscription(
+            self.project, subscription_type, snuba_query, query_extra="foo:bar"
+        )
 
         assert subscription.status == QuerySubscription.Status.CREATING.value
         assert subscription.project == self.project
-        assert subscription.type == type
+        assert subscription.type == subscription_type
         assert subscription.subscription_id is None
+        assert subscription_with_query_extra.query_extra == "foo:bar"
 
-    def test_with_task(self):
+    def test_with_task(self) -> None:
         with self.tasks():
-            type = "something"
-            dataset = QueryDatasets.EVENTS
+            subscription_type = "something"
+            query_type = SnubaQuery.Type.ERROR
+            dataset = Dataset.Events
             query = "level:error"
             time_window = timedelta(minutes=10)
             resolution = timedelta(minutes=1)
             snuba_query = create_snuba_query(
-                dataset, query, "count()", time_window, resolution, self.environment
+                query_type, dataset, query, "count()", time_window, resolution, self.environment
             )
-            subscription = create_snuba_subscription(self.project, type, snuba_query)
+            subscription = create_snuba_subscription(self.project, subscription_type, snuba_query)
             subscription = QuerySubscription.objects.get(id=subscription.id)
             assert subscription.status == QuerySubscription.Status.ACTIVE.value
             assert subscription.project == self.project
-            assert subscription.type == type
+            assert subscription.type == subscription_type
             assert subscription.subscription_id is not None
 
-    def test_translated_query(self):
-        type = "something"
-        dataset = QueryDatasets.EVENTS
+    def test_translated_query(self) -> None:
+        subscription_type = "something"
+        query_type = SnubaQuery.Type.ERROR
+        dataset = Dataset.Events
         query = "event.type:error"
         time_window = timedelta(minutes=10)
         resolution = timedelta(minutes=1)
         with self.tasks():
             snuba_query = create_snuba_query(
-                dataset, query, "count()", time_window, resolution, self.environment
+                query_type, dataset, query, "count()", time_window, resolution, self.environment
             )
-            subscription = create_snuba_subscription(self.project, type, snuba_query)
+            subscription = create_snuba_subscription(self.project, subscription_type, snuba_query)
         subscription = QuerySubscription.objects.get(id=subscription.id)
         assert subscription.status == QuerySubscription.Status.ACTIVE.value
         assert subscription.project == self.project
-        assert subscription.type == type
+        assert subscription.type == subscription_type
         assert subscription.subscription_id is not None
+
+    @mock.patch("sentry.snuba.tasks.get_entity_subscription_from_snuba_query")
+    def test_handler_querybuilder_errors(self, mock_entity: mock.MagicMock) -> None:
+        mock_entity.dataset = None
+        entity_subscription = mock.Mock()
+        mock_entity.return_value = entity_subscription
+        entity_subscription.build_query_builder.side_effect = InvalidSearchQuery("some error")
+
+        subscription_type = "something"
+        query_type = SnubaQuery.Type.ERROR
+        dataset = Dataset.Events
+        query = "event.type:error"
+        time_window = timedelta(minutes=10)
+        resolution = timedelta(minutes=1)
+        with self.tasks():
+            snuba_query = create_snuba_query(
+                query_type, dataset, query, "count()", time_window, resolution, self.environment
+            )
+            with pytest.raises(SubscriptionError):
+                create_snuba_subscription(self.project, subscription_type, snuba_query)
 
 
 class UpdateSnubaQueryTest(TestCase):
-    def test(self):
+    def test(self) -> None:
         snuba_query = create_snuba_query(
-            QueryDatasets.EVENTS,
+            SnubaQuery.Type.ERROR,
+            Dataset.Events,
             "hello",
             "count_unique(tags[sentry:user])",
             timedelta(minutes=100),
@@ -132,7 +205,8 @@ class UpdateSnubaQueryTest(TestCase):
             self.environment,
             [SnubaQueryEventType.EventType.ERROR],
         )
-        dataset = QueryDatasets.TRANSACTIONS
+        query_type = SnubaQuery.Type.PERFORMANCE
+        dataset = Dataset.Transactions
         query = "level:error"
         aggregate = "count()"
         time_window = timedelta(minutes=10)
@@ -140,6 +214,7 @@ class UpdateSnubaQueryTest(TestCase):
         event_types = [SnubaQueryEventType.EventType.ERROR, SnubaQueryEventType.EventType.DEFAULT]
         update_snuba_query(
             snuba_query,
+            query_type,
             dataset,
             query,
             aggregate,
@@ -148,6 +223,7 @@ class UpdateSnubaQueryTest(TestCase):
             None,
             event_types,
         )
+        assert snuba_query.type == query_type.value
         assert snuba_query.dataset == dataset.value
         assert snuba_query.query == query
         assert snuba_query.aggregate == aggregate
@@ -159,6 +235,7 @@ class UpdateSnubaQueryTest(TestCase):
         event_types = [SnubaQueryEventType.EventType.DEFAULT]
         update_snuba_query(
             snuba_query,
+            query_type,
             dataset,
             query,
             aggregate,
@@ -169,9 +246,10 @@ class UpdateSnubaQueryTest(TestCase):
         )
         assert set(snuba_query.event_types) == set(event_types)
 
-    def test_environment(self):
+    def test_environment(self) -> None:
         snuba_query = create_snuba_query(
-            QueryDatasets.EVENTS,
+            SnubaQuery.Type.ERROR,
+            Dataset.Events,
             "hello",
             "count_unique(tags[sentry:user])",
             timedelta(minutes=100),
@@ -180,15 +258,25 @@ class UpdateSnubaQueryTest(TestCase):
         )
 
         new_env = self.create_environment()
-        dataset = QueryDatasets.TRANSACTIONS
+        query_type = SnubaQuery.Type.PERFORMANCE
+        dataset = Dataset.Transactions
         query = "level:error"
         aggregate = "count()"
         time_window = timedelta(minutes=10)
         resolution = timedelta(minutes=1)
         event_types = snuba_query.event_types
         update_snuba_query(
-            snuba_query, dataset, query, aggregate, time_window, resolution, new_env, None
+            snuba_query,
+            query_type,
+            dataset,
+            query,
+            aggregate,
+            time_window,
+            resolution,
+            new_env,
+            None,
         )
+        assert snuba_query.type == query_type.value
         assert snuba_query.dataset == dataset.value
         assert snuba_query.query == query
         assert snuba_query.aggregate == aggregate
@@ -197,9 +285,10 @@ class UpdateSnubaQueryTest(TestCase):
         assert snuba_query.environment == new_env
         assert set(snuba_query.event_types) == set(event_types)
 
-    def test_subscriptions(self):
+    def test_subscriptions(self) -> None:
         snuba_query = create_snuba_query(
-            QueryDatasets.EVENTS,
+            SnubaQuery.Type.ERROR,
+            Dataset.Events,
             "hello",
             "count_unique(tags[sentry:user])",
             timedelta(minutes=100),
@@ -209,13 +298,22 @@ class UpdateSnubaQueryTest(TestCase):
         sub = create_snuba_subscription(self.project, "hi", snuba_query)
 
         new_env = self.create_environment()
-        dataset = QueryDatasets.TRANSACTIONS
+        query_type = SnubaQuery.Type.PERFORMANCE
+        dataset = Dataset.Transactions
         query = "level:error"
         aggregate = "count()"
         time_window = timedelta(minutes=10)
         resolution = timedelta(minutes=1)
         update_snuba_query(
-            snuba_query, dataset, query, aggregate, time_window, resolution, new_env, None
+            snuba_query,
+            query_type,
+            dataset,
+            query,
+            aggregate,
+            time_window,
+            resolution,
+            new_env,
+            None,
         )
         sub.refresh_from_db()
         assert sub.snuba_query == snuba_query
@@ -223,20 +321,24 @@ class UpdateSnubaQueryTest(TestCase):
 
 
 class UpdateSnubaSubscriptionTest(TestCase):
-    def test(self):
-        old_dataset = QueryDatasets.EVENTS
+    def test(self) -> None:
+        old_dataset = Dataset.Events
+        old_query = "level:error"
+        old_aggregate = "count()"
         with self.tasks():
             snuba_query = create_snuba_query(
+                SnubaQuery.Type.ERROR,
                 old_dataset,
-                "level:error",
-                "count()",
+                old_query,
+                old_aggregate,
                 timedelta(minutes=10),
                 timedelta(minutes=1),
                 None,
             )
             subscription = create_snuba_subscription(self.project, "something", snuba_query)
+        old_type = SnubaQuery.Type(snuba_query.type)
 
-        dataset = QueryDatasets.TRANSACTIONS
+        dataset = Dataset.Transactions
         query = "level:warning"
         aggregate = "count_unique(tags[sentry:user])"
         time_window = timedelta(minutes=20)
@@ -244,6 +346,7 @@ class UpdateSnubaSubscriptionTest(TestCase):
         subscription = QuerySubscription.objects.get(id=subscription.id)
         subscription_id = subscription.subscription_id
         snuba_query.update(
+            type=SnubaQuery.Type.PERFORMANCE.value,
             dataset=dataset.value,
             query=query,
             time_window=int(time_window.total_seconds()),
@@ -252,7 +355,7 @@ class UpdateSnubaSubscriptionTest(TestCase):
             aggregate=aggregate,
         )
         assert subscription_id is not None
-        update_snuba_subscription(subscription, old_dataset)
+        update_snuba_subscription(subscription, old_type, old_dataset, old_aggregate, old_query)
         assert subscription.status == QuerySubscription.Status.UPDATING.value
         assert subscription.subscription_id == subscription_id
         assert subscription.snuba_query.dataset == dataset.value
@@ -261,20 +364,24 @@ class UpdateSnubaSubscriptionTest(TestCase):
         assert subscription.snuba_query.time_window == int(time_window.total_seconds())
         assert subscription.snuba_query.resolution == int(resolution.total_seconds())
 
-    def test_with_task(self):
+    def test_with_task(self) -> None:
         with self.tasks():
-            old_dataset = QueryDatasets.EVENTS
+            old_dataset = Dataset.Events
+            old_query = "level:error"
+            old_aggregate = "count()"
             snuba_query = create_snuba_query(
+                SnubaQuery.Type.ERROR,
                 old_dataset,
-                "level:error",
-                "count()",
+                old_query,
+                old_aggregate,
                 timedelta(minutes=10),
                 timedelta(minutes=1),
                 None,
             )
             subscription = create_snuba_subscription(self.project, "something", snuba_query)
+            old_type = SnubaQuery.Type(snuba_query.type)
 
-            dataset = QueryDatasets.TRANSACTIONS
+            dataset = Dataset.Transactions
             query = "level:warning"
             aggregate = "count_unique(tags[sentry:user])"
             time_window = timedelta(minutes=20)
@@ -283,6 +390,7 @@ class UpdateSnubaSubscriptionTest(TestCase):
             subscription_id = subscription.subscription_id
             assert subscription_id is not None
             snuba_query.update(
+                type=SnubaQuery.Type.PERFORMANCE.value,
                 dataset=dataset.value,
                 query=query,
                 time_window=int(time_window.total_seconds()),
@@ -290,7 +398,47 @@ class UpdateSnubaSubscriptionTest(TestCase):
                 environment=self.environment,
                 aggregate=aggregate,
             )
-            update_snuba_subscription(subscription, old_dataset)
+            update_snuba_subscription(subscription, old_type, old_dataset, old_aggregate, old_query)
+            subscription = QuerySubscription.objects.get(id=subscription.id)
+            assert subscription.status == QuerySubscription.Status.ACTIVE.value
+            assert subscription.subscription_id is not None
+            assert subscription.subscription_id != subscription_id
+
+    def test_perf_metric_to_transaction(self) -> None:
+        with self.tasks():
+            old_dataset = Dataset.PerformanceMetrics
+            old_query = ""
+            old_aggregate = "count()"
+            snuba_query = create_snuba_query(
+                SnubaQuery.Type.PERFORMANCE,
+                old_dataset,
+                old_query,
+                old_aggregate,
+                timedelta(minutes=10),
+                timedelta(minutes=1),
+                None,
+            )
+            subscription = create_snuba_subscription(self.project, "something", snuba_query)
+            old_type = SnubaQuery.Type(snuba_query.type)
+
+            dataset = Dataset.Transactions
+            query = "level:warning"
+            aggregate = "count()"
+            time_window = timedelta(minutes=20)
+            resolution = timedelta(minutes=2)
+            subscription = QuerySubscription.objects.get(id=subscription.id)
+            subscription_id = subscription.subscription_id
+            assert subscription_id is not None
+            snuba_query.update(
+                type=SnubaQuery.Type.PERFORMANCE.value,
+                dataset=dataset.value,
+                query=query,
+                time_window=int(time_window.total_seconds()),
+                resolution=int(resolution.total_seconds()),
+                environment=self.environment,
+                aggregate=aggregate,
+            )
+            update_snuba_subscription(subscription, old_type, old_dataset, old_aggregate, old_query)
             subscription = QuerySubscription.objects.get(id=subscription.id)
             assert subscription.status == QuerySubscription.Status.ACTIVE.value
             assert subscription.subscription_id is not None
@@ -298,10 +446,11 @@ class UpdateSnubaSubscriptionTest(TestCase):
 
 
 class BulkDeleteSnubaSubscriptionTest(TestCase):
-    def test(self):
+    def test(self) -> None:
         with self.tasks():
             snuba_query = create_snuba_query(
-                QueryDatasets.EVENTS,
+                SnubaQuery.Type.ERROR,
+                Dataset.Events,
                 "level:error",
                 "count()",
                 timedelta(minutes=10),
@@ -310,7 +459,8 @@ class BulkDeleteSnubaSubscriptionTest(TestCase):
             )
             subscription = create_snuba_subscription(self.project, "something", snuba_query)
             snuba_query = create_snuba_query(
-                QueryDatasets.EVENTS,
+                SnubaQuery.Type.ERROR,
+                Dataset.Events,
                 "level:error",
                 "count()",
                 timedelta(minutes=10),
@@ -333,10 +483,11 @@ class BulkDeleteSnubaSubscriptionTest(TestCase):
 
 
 class DeleteSnubaSubscriptionTest(TestCase):
-    def test(self):
+    def test(self) -> None:
         with self.tasks():
             snuba_query = create_snuba_query(
-                QueryDatasets.EVENTS,
+                SnubaQuery.Type.ERROR,
+                Dataset.Events,
                 "level:error",
                 "count()",
                 timedelta(minutes=10),
@@ -352,10 +503,11 @@ class DeleteSnubaSubscriptionTest(TestCase):
         assert subscription.status == QuerySubscription.Status.DELETING.value
         assert subscription.subscription_id == subscription_id
 
-    def test_with_task(self):
+    def test_with_task(self) -> None:
         with self.tasks():
             snuba_query = create_snuba_query(
-                QueryDatasets.EVENTS,
+                SnubaQuery.Type.ERROR,
+                Dataset.Events,
                 "level:error",
                 "count()",
                 timedelta(minutes=10),

@@ -1,30 +1,29 @@
 from django.contrib.auth.models import User
 from django.contrib.auth.signals import user_logged_in, user_logged_out
 
+from fixtures.sudo_testutils import BaseTestCase
 from sudo.signals import grant, revoke
 from sudo.utils import grant_sudo_privileges, has_sudo_privileges
 
-from .base import BaseTestCase
-
 
 class SignalsTestCase(BaseTestCase):
-    def test_grant(self):
+    def test_grant(self) -> None:
         self.login()
         grant(User, self.request)
         self.assertTrue(has_sudo_privileges(self.request))
 
-    def test_revoke(self):
+    def test_revoke(self) -> None:
         self.login()
         grant(User, self.request)
         revoke(User, self.request)
         self.assertFalse(has_sudo_privileges(self.request))
 
-    def test_user_logged_in(self):
+    def test_user_logged_in(self) -> None:
         self.login()
         user_logged_in.send_robust(sender=User, request=self.request)
         self.assertTrue(has_sudo_privileges(self.request))
 
-    def test_user_logged_out(self):
+    def test_user_logged_out(self) -> None:
         self.login()
         grant_sudo_privileges(self.request)
         self.assertTrue(has_sudo_privileges(self.request))

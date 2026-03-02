@@ -1,24 +1,27 @@
-import DocumentTitle from 'react-document-title';
 import styled from '@emotion/styled';
 
-import space from 'app/styles/space';
-import CreateProject from 'app/views/projectInstall/createProject';
+import SentryDocumentTitle from 'sentry/components/sentryDocumentTitle';
+import {space} from 'sentry/styles/space';
 
-const NewProject = () => (
-  <Container>
-    <div className="container">
-      <Content>
-        <DocumentTitle title="Sentry" />
-        <CreateProject />
-      </Content>
-    </div>
-  </Container>
-);
+import {CreateProject} from './createProject';
+
+function NewProject() {
+  return (
+    <SentryDocumentTitle>
+      <Container>
+        <div className="container">
+          <Content>
+            <CreateProject />
+          </Content>
+        </div>
+      </Container>
+    </SentryDocumentTitle>
+  );
+}
 
 const Container = styled('div')`
   flex: 1;
-  background: ${p => p.theme.background};
-  margin-bottom: -${space(3)}; /* cleans up a bg gap at bottom */
+  background: ${p => p.theme.tokens.background.primary};
 `;
 
 const Content = styled('div')`

@@ -1,64 +1,65 @@
 from datetime import datetime
-from typing import Optional
 
-from sentry.incidents.models import AlertRuleTriggerAction, Incident
+from sentry.incidents.typings.metric_detector import AlertContext, MetricIssueContext
+from sentry.integrations.messaging.types import LEVEL_TO_COLOR
 from sentry.integrations.metric_alerts import incident_attachment_info
-from sentry.integrations.slack.message_builder import INCIDENT_COLOR_MAPPING, SlackBody
-from sentry.integrations.slack.message_builder.base.base import SlackMessageBuilder
-from sentry.utils.dates import to_timestamp
+from sentry.integrations.slack.message_builder.base.block import BlockSlackMessageBuilder
+from sentry.integrations.slack.message_builder.types import INCIDENT_COLOR_MAPPING, SlackBody
+from sentry.integrations.slack.utils.escape import escape_slack_text
+from sentry.models.organization import Organization
 
 
-def get_footer(timestamp: datetime) -> str:
-    return "<!date^{:.0f}^Sentry Incident - Started {} at {} | Sentry Incident>".format(
-        to_timestamp(timestamp), "{date_pretty}", "{time}"
+def get_started_at(timestamp: datetime | None) -> str:
+    if timestamp is None:
+        return ""
+    return "<!date^{:.0f}^Started: {} at {} | Sentry Incident>".format(
+        timestamp.timestamp(), "{date_pretty}", "{time}"
     )
 
 
-class SlackIncidentsMessageBuilder(SlackMessageBuilder):
+class SlackIncidentsMessageBuilder(BlockSlackMessageBuilder):
     def __init__(
         self,
-        incident: Incident,
-        action: Optional[AlertRuleTriggerAction] = None,
-        metric_value: Optional[int] = None,
-        method: Optional[str] = None,
+        alert_context: AlertContext,
+        metric_issue_context: MetricIssueContext,
+        organization: Organization,
+        date_started: datetime,
+        chart_url: str | None = None,
+        notification_uuid: str | None = None,
     ) -> None:
         """
-        Builds an incident attachment for slack unfurling.
+        Builds an incident attachment when a metric alert fires or is resolved.
 
         :param incident: The `Incident` for which to build the attachment.
-        :param [action]:
         :param [metric_value]: The value of the metric that triggered this alert to
             fire. If not provided we'll attempt to calculate this ourselves.
         :param [method]: Either "fire" or "resolve".
         """
         super().__init__()
-        self.action = action
-        self.incident = incident
-        self.metric_value = metric_value
-        self.method = method
+        self.alert_context = alert_context
+        self.metric_issue_context = metric_issue_context
+        self.organization = organization
+        self.date_started = date_started
+        self.chart_url = chart_url
+        self.notification_uuid = notification_uuid
 
     def build(self) -> SlackBody:
         data = incident_attachment_info(
-            self.incident, self.metric_value, action=self.action, method=self.method
+            alert_context=self.alert_context,
+            metric_issue_context=self.metric_issue_context,
+            organization=self.organization,
+            notification_uuid=self.notification_uuid,
+            referrer="metric_alert_slack",
         )
 
-        return self._build(
-            actions=[],
-            color=INCIDENT_COLOR_MAPPING.get(data["status"]),
-            fallback=data["title"],
-            fields=[],
-            footer=get_footer(data["ts"]),
-            text=data["text"],
-            title=data["title"],
-            title_link=data["title_link"],
-        )
+        incident_text = f"{data['text']}\n{get_started_at(self.date_started)}"
+        blocks = [
+            self.get_markdown_block(text=incident_text),
+        ]
 
+        if self.chart_url:
+            blocks.append(self.get_image_block(self.chart_url, alt="Metric Alert Chart"))
 
-def build_incident_attachment(
-    action: Optional[AlertRuleTriggerAction],
-    incident: Incident,
-    metric_value: Optional[int] = None,
-    method: Optional[str] = None,
-) -> SlackBody:
-    """@deprecated"""
-    return SlackIncidentsMessageBuilder(incident, action, metric_value, method).build()
+        color = LEVEL_TO_COLOR.get(INCIDENT_COLOR_MAPPING.get(data["status"], ""))
+        fallback_text = f"<{data['title_link']}|*{escape_slack_text(data['title'])}*>"
+        return self._build_blocks(*blocks, fallback_text=fallback_text, color=color)

@@ -1,14 +1,18 @@
-import * as React from 'react';
+import {Fragment, useMemo, useState} from 'react';
 import styled from '@emotion/styled';
 
-import {Client} from 'app/api';
-import LoadingError from 'app/components/loadingError';
-import LoadingIndicator from 'app/components/loadingIndicator';
-import NavTabs from 'app/components/navTabs';
-import {t} from 'app/locale';
-import space from 'app/styles/space';
-import {AuthConfig} from 'app/types';
-import withApi from 'app/utils/withApi';
+import {Alert} from '@sentry/scraps/alert';
+import {LinkButton} from '@sentry/scraps/button';
+import {TabList, Tabs} from '@sentry/scraps/tabs';
+
+import LoadingError from 'sentry/components/loadingError';
+import LoadingIndicator from 'sentry/components/loadingIndicator';
+import {t, tct} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {AuthConfig} from 'sentry/types/auth';
+import getApiUrl from 'sentry/utils/api/getApiUrl';
+import {useApiQuery} from 'sentry/utils/queryClient';
+import {useParams} from 'sentry/utils/useParams';
 
 import LoginForm from './loginForm';
 import RegisterForm from './registerForm';
@@ -24,106 +28,110 @@ type ActiveTab = keyof typeof FORM_COMPONENTS;
 
 type TabConfig = [key: ActiveTab, label: string, disabled?: boolean];
 
-type Props = {
-  api: Client;
+type AuthConfigResponse = Omit<
+  AuthConfig,
+  'vstsLoginLink' | 'githubLoginLink' | 'googleLoginLink'
+> & {
+  github_login_link?: string;
+  google_login_link?: string;
+  vsts_login_link?: string;
 };
 
-type State = {
-  loading: boolean;
-  error: null | boolean;
-  activeTab: ActiveTab;
-  authConfig: null | AuthConfig;
-};
+function Login() {
+  const {orgId} = useParams<{orgId?: string}>();
+  const [activeTab, setActiveTab] = useState<ActiveTab>('login');
 
-class Login extends React.Component<Props, State> {
-  state: State = {
-    loading: true,
-    error: null,
-    activeTab: 'login',
-    authConfig: null,
-  };
+  const {
+    data: response,
+    isPending,
+    isError,
+    refetch,
+  } = useApiQuery<AuthConfigResponse>([getApiUrl('/auth/config/')], {
+    staleTime: 0,
+  });
 
-  componentDidMount() {
-    this.fetchData();
-  }
-
-  handleSetTab = (activeTab: ActiveTab, event: React.MouseEvent) => {
-    this.setState({activeTab});
-    event.preventDefault();
-  };
-
-  fetchData = async () => {
-    const {api} = this.props;
-    try {
-      const response = await api.requestPromise('/auth/config/');
-
-      const {vsts_login_link, github_login_link, google_login_link, ...config} = response;
-      const authConfig = {
-        ...config,
-        vstsLoginLink: vsts_login_link,
-        githubLoginLink: github_login_link,
-        googleLoginLink: google_login_link,
-      };
-
-      this.setState({authConfig});
-    } catch (e) {
-      this.setState({error: true});
+  const authConfig = useMemo((): AuthConfig | null => {
+    if (!response) {
+      return null;
     }
+    const {vsts_login_link, github_login_link, google_login_link, ...config} = response;
+    return {
+      ...config,
+      vstsLoginLink: vsts_login_link ?? '',
+      githubLoginLink: github_login_link ?? '',
+      googleLoginLink: google_login_link ?? '',
+    };
+  }, [response]);
 
-    this.setState({loading: false});
-  };
+  const hasAuthProviders =
+    !!authConfig?.githubLoginLink ||
+    !!authConfig?.vstsLoginLink ||
+    !!authConfig?.googleLoginLink;
 
-  get hasAuthProviders() {
-    if (this.state.authConfig === null) {
-      return false;
-    }
+  const FormComponent = FORM_COMPONENTS[activeTab];
 
-    const {githubLoginLink, googleLoginLink, vstsLoginLink} = this.state.authConfig;
-    return !!(githubLoginLink || vstsLoginLink || googleLoginLink);
-  }
+  const tabs: TabConfig[] = [
+    ['login', t('Login')],
+    ['sso', t('Single Sign-On')],
+    ['register', t('Register'), !authConfig?.canRegister],
+  ];
 
-  render() {
-    const {api} = this.props;
-    const {loading, error, activeTab, authConfig} = this.state;
+  return (
+    <Fragment>
+      <Header>
+        <Heading>{t('Sign in to continue')}</Heading>
+        <TabsContainer>
+          <Tabs
+            value={activeTab}
+            onChange={tab => {
+              setActiveTab(tab);
+            }}
+          >
+            <TabList>
+              {tabs
+                .map(([key, label, disabled]) => {
+                  if (disabled) {
+                    return null;
+                  }
+                  return <TabList.Item key={key}>{label}</TabList.Item>;
+                })
+                .filter(n => !!n)}
+            </TabList>
+          </Tabs>
+        </TabsContainer>
+      </Header>
+      {isPending && <LoadingIndicator />}
 
-    const FormComponent = FORM_COMPONENTS[activeTab];
-
-    const tabs: TabConfig[] = [
-      ['login', t('Login')],
-      ['sso', t('Single Sign-On')],
-      ['register', t('Register'), !authConfig?.canRegister],
-    ];
-
-    const renderTab = ([key, label, disabled]: TabConfig) =>
-      !disabled && (
-        <li key={key} className={activeTab === key ? 'active' : ''}>
-          <a href="#" onClick={e => this.handleSetTab(key, e)}>
-            {label}
-          </a>
-        </li>
-      );
-
-    return (
-      <React.Fragment>
-        <Header>
-          <Heading>{t('Sign in to continue')}</Heading>
-          <AuthNavTabs>{tabs.map(renderTab)}</AuthNavTabs>
-        </Header>
-        {loading && <LoadingIndicator />}
-        {error && (
-          <StyledLoadingError
-            message={t('Unable to load authentication configuration')}
-            onRetry={this.fetchData}
-          />
-        )}
-        {!loading && authConfig !== null && !error && (
-          <FormWrapper hasAuthProviders={this.hasAuthProviders}>
-            <FormComponent {...{api, authConfig}} />
-          </FormWrapper>
-        )}
-      </React.Fragment>
-    );
-  }
+      {isError && (
+        <StyledLoadingError
+          message={t('Unable to load authentication configuration')}
+          onRetry={refetch}
+        />
+      )}
+      {!isPending && authConfig !== null && !isError && (
+        <FormWrapper hasAuthProviders={hasAuthProviders}>
+          {orgId !== undefined && (
+            <Alert.Container>
+              <Alert
+                variant="warning"
+                trailingItems={
+                  <LinkButton to="/" size="xs">
+                    Reload
+                  </LinkButton>
+                }
+              >
+                {tct(
+                  "Experimental SPA mode does not currently support SSO style login. To develop against the [org] you'll need to copy your production session cookie.",
+                  {org: orgId}
+                )}
+              </Alert>
+            </Alert.Container>
+          )}
+          <FormComponent {...{authConfig}} />
+        </FormWrapper>
+      )}
+    </Fragment>
+  );
 }
 
 const StyledLoadingError = styled(LoadingError)`
@@ -131,7 +139,7 @@ const StyledLoadingError = styled(LoadingError)`
 `;
 
 const Header = styled('div')`
-  border-bottom: 1px solid ${p => p.theme.border};
+  border-bottom: 1px solid ${p => p.theme.tokens.border.primary};
   padding: 20px 40px 0;
 `;
 
@@ -140,8 +148,8 @@ const Heading = styled('h3')`
   margin: 0 0 20px 0;
 `;
 
-const AuthNavTabs = styled(NavTabs)`
-  margin: 0;
+const TabsContainer = styled(Tabs)`
+  margin-bottom: ${space(2)};
 `;
 
 const FormWrapper = styled('div')<{hasAuthProviders: boolean}>`
@@ -149,17 +157,4 @@ const FormWrapper = styled('div')<{hasAuthProviders: boolean}>`
   width: ${p => (p.hasAuthProviders ? '600px' : '490px')};
 `;
 
-const formFooterClass = `
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  grid-gap: ${space(1)};
-  align-items: center;
-  justify-items: end;
-  border-top: none;
-  margin-bottom: 0;
-  padding: 0;
-`;
-
-export {formFooterClass};
-
-export default withApi(Login);
+export default Login;

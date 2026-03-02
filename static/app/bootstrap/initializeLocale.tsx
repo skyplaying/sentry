@@ -1,9 +1,9 @@
 import * as Sentry from '@sentry/react';
-import * as moment from 'moment';
+import * as moment from 'moment-timezone';
 import * as qs from 'query-string';
 
-import {DEFAULT_LOCALE_DATA, setLocale} from 'app/locale';
-import {Config} from 'app/types';
+import {DEFAULT_LOCALE_DATA, setLocale} from 'sentry/locale';
+import type {Config} from 'sentry/types/system';
 
 // zh-cn => zh_CN
 function convertToDjangoLocaleFormat(language: string) {
@@ -23,7 +23,7 @@ async function getTranslations(language: string) {
     return await import(`sentry-locale/${language}/LC_MESSAGES/django.po`);
   } catch (e) {
     Sentry.withScope(scope => {
-      scope.setLevel(Sentry.Severity.Warning);
+      scope.setLevel('warning');
       scope.setFingerprint(['sentry-locale-not-found']);
       scope.setExtra('locale', language);
       Sentry.captureException(e);

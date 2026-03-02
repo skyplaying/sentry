@@ -1,16 +1,17 @@
 import re
 
-from django.conf.urls import url
+from django.urls import re_path
+from rest_framework.request import Request
 from rest_framework.response import Response
 
-from sentry.integrations import FeatureDescription, IntegrationFeatures
+from sentry.integrations.base import FeatureDescription, IntegrationFeatures
 from sentry.plugins.bases.issue2 import IssueGroupActionEndpoint, IssuePlugin2
 from sentry.utils.http import absolute_uri
 from sentry_plugins.base import CorePluginMixin
 
 from .client import TrelloApiClient
 
-SETUP_URL = "https://github.com/getsentry/sentry/blob/master/src/sentry_plugins/trello/Trello_Instructions.md"  # NOQA
+SETUP_URL = "https://github.com/getsentry/sentry/blob/master/src/sentry_plugins/trello/Trello_Instructions.md"
 
 LABLEX_REGEX = re.compile(r"\w+/https://trello\.com/")
 
@@ -36,7 +37,7 @@ class TrelloPlugin(CorePluginMixin, IssuePlugin2):
         FeatureDescription(
             """
             Create and link Sentry issue groups directly to an Trello card in any of your
-            projects, providing a quick way to jump from a Sentry bug to tracked ticket!
+            projects, providing a quick way to jump from a Sentry bug to tracked ticket.
             """,
             IntegrationFeatures.ISSUE_BASIC,
         ),
@@ -48,17 +49,17 @@ class TrelloPlugin(CorePluginMixin, IssuePlugin2):
         ),
     ]
 
-    def get_config(self, project, **kwargs):
+    def get_config(self, project, user=None, initial=None, add_additional_fields: bool = False):
         """
         Return the configuration of the plugin.
         Pull the value out of our the arguments to this function or from the DB
         """
 
         def get_value(field):
-            initial_values = kwargs.get("initial", {})
+            initial_values = initial or {}
             return initial_values.get(field) or self.get_option(field, project)
 
-        token_config = {
+        token_config: dict[str, object] = {
             "name": "token",
             "type": "secret",
             "label": "Trello API Token",
@@ -86,7 +87,7 @@ class TrelloPlugin(CorePluginMixin, IssuePlugin2):
 
         config = [key_config, token_config]
         org_value = get_value("organization")
-        include_org = kwargs.get("add_additial_fields", org_value)
+        include_org = add_additional_fields or org_value
         if api_key and token_val and include_org:
             trello_client = TrelloApiClient(api_key, token_val)
             try:
@@ -121,24 +122,26 @@ class TrelloPlugin(CorePluginMixin, IssuePlugin2):
         Return the URLs and the matching views
         """
         return super().get_group_urls() + [
-            url(
+            re_path(
                 r"^options",
                 IssueGroupActionEndpoint.as_view(view_method_name="view_options", plugin=self),
+                name=f"sentry-api-0-plugins-{self.slug}-options",
             ),
-            url(
+            re_path(
                 r"^autocomplete",
                 IssueGroupActionEndpoint.as_view(view_method_name="view_autocomplete", plugin=self),
+                name=f"sentry-api-0-plugins-{self.slug}-autocomplete",
             ),
         ]
 
-    def is_configured(self, request, project, **kwargs):
+    def is_configured(self, project) -> bool:
         return all(self.get_option(key, project) for key in ("token", "key"))
 
     # used for boards and lists but not cards (shortLink used as ID for cards)
     def map_to_options(self, items):
         return [(item["id"], item["name"]) for item in items]
 
-    def get_new_issue_fields(self, request, group, event, **kwargs):
+    def get_new_issue_fields(self, request: Request, group, event, **kwargs):
         """
         Return the fields needed for creating a new issue
         """
@@ -168,7 +171,7 @@ class TrelloPlugin(CorePluginMixin, IssuePlugin2):
             },
         ]
 
-    def get_link_existing_issue_fields(self, request, group, event, **kwargs):
+    def get_link_existing_issue_fields(self, request: Request, group, event, **kwargs):
         """
         Return the fields needed for linking to an existing issue
         """
@@ -187,7 +190,7 @@ class TrelloPlugin(CorePluginMixin, IssuePlugin2):
                     group.get_absolute_url(params={"referrer": "trello_plugin"})
                 ),
                 "type": "textarea",
-                "help": ("Leave blank if you don't want to " "add a comment to the Trello card."),
+                "help": ("Leave blank if you don't want to add a comment to the Trello card."),
                 "required": False,
             },
         ]
@@ -203,7 +206,7 @@ class TrelloPlugin(CorePluginMixin, IssuePlugin2):
             return " ".join(e["message"] for e in errors)
         return "unknown error"
 
-    def create_issue(self, request, group, form_data, **kwargs):
+    def create_issue(self, request: Request, group, form_data):
         client = self.get_client(group.project)
 
         try:
@@ -215,7 +218,7 @@ class TrelloPlugin(CorePluginMixin, IssuePlugin2):
 
         return response["shortLink"]
 
-    def link_issue(self, request, group, form_data, **kwargs):
+    def link_issue(self, request: Request, group, form_data, **kwargs):
         client = self.get_client(group.project)
 
         try:
@@ -232,29 +235,26 @@ class TrelloPlugin(CorePluginMixin, IssuePlugin2):
 
         return {"title": card["name"], "id": card["shortLink"]}
 
-    def get_issue_label(self, group, issue, **kwargs):
+    def get_issue_label(self, group, issue_id: str) -> str:
         """
         Return label of the linked issue we show in the UI from the issue string
         """
         # the old version of the plugin stores the url in the issue
-        if LABLEX_REGEX.search(issue):
-            short_issue = issue.split("/", 1)[0]
+        if LABLEX_REGEX.search(issue_id):
+            short_issue = issue_id.split("/", 1)[0]
             return "Trello-%s" % short_issue
-        return "Trello-%s" % issue
+        return "Trello-%s" % issue_id
 
-    def get_issue_url(self, group, issue, **kwargs):
+    def get_issue_url(self, group, issue_id: str) -> str:
         """
         Return label of the url of card in Trello based off the issue object or issue ID
         """
-        # TODO(Steve): figure out why we sometimes get a string and sometimes a dict
-        if isinstance(issue, dict):
-            issue = issue["id"]
         # the old version of the plugin stores the url in the issue
-        if LABLEX_REGEX.search(issue):
-            return issue.split("/", 1)[1]
-        return "https://trello.com/c/%s" % issue
+        if LABLEX_REGEX.search(issue_id):
+            return issue_id.split("/", 1)[1]
+        return "https://trello.com/c/%s" % issue_id
 
-    def view_options(self, request, group, **kwargs):
+    def view_options(self, request: Request, group, **kwargs):
         """
         Return the lists on a given Trello board
         """
@@ -279,7 +279,7 @@ class TrelloPlugin(CorePluginMixin, IssuePlugin2):
 
         return Response({field: results})
 
-    def view_autocomplete(self, request, group, **kwargs):
+    def view_autocomplete(self, request: Request, group, **kwargs):
         """
         Return the cards matching a given query and the organization of the configuration
         """

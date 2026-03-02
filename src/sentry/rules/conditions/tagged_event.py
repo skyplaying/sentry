@@ -1,38 +1,18 @@
-from collections import OrderedDict
+from __future__ import annotations
+
+from collections.abc import Sequence
+from typing import Any
 
 from django import forms
 
 from sentry import tagstore
+from sentry.rules import MATCH_CHOICES, EventState, MatchType, match_values
 from sentry.rules.conditions.base import EventCondition
-
-
-class MatchType:
-    EQUAL = "eq"
-    NOT_EQUAL = "ne"
-    STARTS_WITH = "sw"
-    NOT_STARTS_WITH = "nsw"
-    ENDS_WITH = "ew"
-    NOT_ENDS_WITH = "new"
-    CONTAINS = "co"
-    NOT_CONTAINS = "nc"
-    IS_SET = "is"
-    NOT_SET = "ns"
-
-
-MATCH_CHOICES = OrderedDict(
-    [
-        (MatchType.EQUAL, "equals"),
-        (MatchType.NOT_EQUAL, "does not equal"),
-        (MatchType.STARTS_WITH, "starts with"),
-        (MatchType.NOT_STARTS_WITH, "does not start with"),
-        (MatchType.ENDS_WITH, "ends with"),
-        (MatchType.NOT_ENDS_WITH, "does not end with"),
-        (MatchType.CONTAINS, "contains"),
-        (MatchType.NOT_CONTAINS, "does not contain"),
-        (MatchType.IS_SET, "is set"),
-        (MatchType.NOT_SET, "is not set"),
-    ]
-)
+from sentry.rules.history.preview_strategy import get_dataset_columns
+from sentry.services.eventstore.models import GroupEvent
+from sentry.snuba.dataset import Dataset
+from sentry.snuba.events import Columns
+from sentry.types.condition_activity import ConditionActivity
 
 
 class TaggedEventForm(forms.Form):
@@ -40,18 +20,22 @@ class TaggedEventForm(forms.Form):
     match = forms.ChoiceField(choices=list(MATCH_CHOICES.items()), widget=forms.Select())
     value = forms.CharField(widget=forms.TextInput(), required=False)
 
-    def clean(self):
-        super().clean()
+    def clean(self) -> dict[str, Any] | None:
+        cleaned_data = super().clean()
+        if cleaned_data is None:
+            return None
 
-        match = self.cleaned_data.get("match")
-        value = self.cleaned_data.get("value")
+        match = cleaned_data.get("match")
+        value = cleaned_data.get("value")
 
         if match not in (MatchType.IS_SET, MatchType.NOT_SET) and not value:
             raise forms.ValidationError("This field is required.")
 
+        return None
+
 
 class TaggedEventCondition(EventCondition):
-    form_cls = TaggedEventForm
+    id = "sentry.rules.conditions.tagged_event.TaggedEventCondition"
     label = "The event's tags match {key} {match} {value}"
 
     form_fields = {
@@ -60,94 +44,74 @@ class TaggedEventCondition(EventCondition):
         "value": {"type": "string", "placeholder": "value"},
     }
 
-    def passes(self, event, state, **kwargs):
-        key = self.get_option("key")
-        match = self.get_option("match")
-        value = self.get_option("value")
+    def _passes(self, raw_tags: Sequence[tuple[str, Any]]) -> bool:
+        option_key = self.get_option("key")
+        option_match = self.get_option("match")
+        option_value = self.get_option("value")
 
-        if not (key and match):
+        if not (option_key and option_match):
             return False
 
-        key = key.lower()
+        option_key = option_key.lower()
 
-        tags = (
+        tag_keys = (
             k
             for gen in (
-                (k.lower() for k, v in event.tags),
-                (tagstore.get_standardized_key(k) for k, v in event.tags),
+                (k.lower() for k, v in raw_tags),
+                (tagstore.backend.get_standardized_key(k) for k, v in raw_tags),
             )
             for k in gen
         )
 
-        if match == MatchType.IS_SET:
-            return key in tags
+        # NOTE: IS_SET condition differs btw tagged_event and event_attribute so not handled by match_values
+        if option_match == MatchType.IS_SET:
+            return option_key in tag_keys
 
-        elif match == MatchType.NOT_SET:
-            return key not in tags
+        elif option_match == MatchType.NOT_SET:
+            return option_key not in tag_keys
 
-        if not value:
+        if not option_value:
             return False
 
-        value = value.lower()
+        option_value = option_value.lower()
 
-        values = (
+        # This represents the fetched tag values given the provided key
+        # so eg. if the key is 'environment' and the tag_value is 'production'
+        tag_values = (
             v.lower()
-            for k, v in event.tags
-            if k.lower() == key or tagstore.get_standardized_key(k) == key
+            for k, v in raw_tags
+            if k.lower() == option_key or tagstore.backend.get_standardized_key(k) == option_key
         )
 
-        if match == MatchType.EQUAL:
-            for t_value in values:
-                if t_value == value:
-                    return True
+        return match_values(
+            group_values=tag_values, match_value=option_value, match_type=option_match
+        )
+
+    def passes(self, event: GroupEvent, state: EventState, **kwargs: Any) -> bool:
+        return self._passes(event.tags)
+
+    def passes_activity(
+        self, condition_activity: ConditionActivity, event_map: dict[str, Any]
+    ) -> bool:
+        try:
+            tags = event_map[condition_activity.data["event_id"]]["tags"]
+            return self._passes(tags.items())
+        except (TypeError, KeyError):
             return False
 
-        elif match == MatchType.NOT_EQUAL:
-            for t_value in values:
-                if t_value == value:
-                    return False
-            return True
-
-        elif match == MatchType.STARTS_WITH:
-            for t_value in values:
-                if t_value.startswith(value):
-                    return True
-            return False
-
-        elif match == MatchType.NOT_STARTS_WITH:
-            for t_value in values:
-                if t_value.startswith(value):
-                    return False
-            return True
-
-        elif match == MatchType.ENDS_WITH:
-            for t_value in values:
-                if t_value.endswith(value):
-                    return True
-            return False
-
-        elif match == MatchType.NOT_ENDS_WITH:
-            for t_value in values:
-                if t_value.endswith(value):
-                    return False
-            return True
-
-        elif match == MatchType.CONTAINS:
-            for t_value in values:
-                if value in t_value:
-                    return True
-            return False
-
-        elif match == MatchType.NOT_CONTAINS:
-            for t_value in values:
-                if value in t_value:
-                    return False
-            return True
-
-    def render_label(self):
+    def render_label(self) -> str:
         data = {
             "key": self.data["key"],
             "value": self.data["value"],
             "match": MATCH_CHOICES[self.data["match"]],
         }
         return self.label.format(**data)
+
+    def get_event_columns(self) -> dict[Dataset, Sequence[str]]:
+        columns: dict[Dataset, Sequence[str]] = get_dataset_columns(
+            [Columns.TAGS_KEY, Columns.TAGS_VALUE]
+        )
+        return columns
+
+    def get_form_instance(self) -> TaggedEventForm:
+        return TaggedEventForm(self.data)

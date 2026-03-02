@@ -1,535 +1,341 @@
-import * as React from 'react';
 import {
-  AutoSizer,
-  CellMeasurer,
-  CellMeasurerCache,
-  List,
-  ListRowProps,
-} from 'react-virtualized';
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useState,
+} from 'react';
+import {useTheme} from '@emotion/react';
 import styled from '@emotion/styled';
-import isEqual from 'lodash/isEqual';
-import isNil from 'lodash/isNil';
+import {useVirtualizer} from '@tanstack/react-virtual';
 
-import GuideAnchor from 'app/components/assistant/guideAnchor';
-import Button from 'app/components/button';
-import Checkbox from 'app/components/checkbox';
-import EventDataSection from 'app/components/events/eventDataSection';
-import ImageForBar from 'app/components/events/interfaces/imageForBar';
-import {getImageRange, parseAddress} from 'app/components/events/interfaces/utils';
-import {Panel, PanelBody} from 'app/components/panels';
-import SearchBar from 'app/components/searchBar';
-import {IconWarning} from 'app/icons';
-import {t, tct} from 'app/locale';
-import DebugMetaStore, {DebugMetaActions} from 'app/stores/debugMetaStore';
-import space from 'app/styles/space';
-import {Frame, Organization, Project} from 'app/types';
-import {Event} from 'app/types/event';
-import EmptyMessage from 'app/views/settings/components/emptyMessage';
+import {Button} from '@sentry/scraps/button';
+import type {SelectOption, SelectSection} from '@sentry/scraps/compactSelect';
+import {Container, Flex, Grid} from '@sentry/scraps/layout';
+import {Text} from '@sentry/scraps/text';
 
-import {shouldSkipSection} from '../debugMeta-v2/utils';
+import {openModal, openReprocessEventModal} from 'sentry/actionCreators/modal';
+import {
+  DebugImageDetails,
+  modalCss,
+} from 'sentry/components/events/interfaces/debugMeta/debugImageDetails';
+import SearchBarAction from 'sentry/components/events/interfaces/searchBarAction';
+import {getImageRange, parseAddress} from 'sentry/components/events/interfaces/utils';
+import {t} from 'sentry/locale';
+import DebugMetaStore from 'sentry/stores/debugMetaStore';
+import type {Image, ImageWithCombinedStatus} from 'sentry/types/debugImage';
+import {ImageStatus} from 'sentry/types/debugImage';
+import type {EntryDebugMeta, Event} from 'sentry/types/event';
+import type {Group} from 'sentry/types/group';
+import type {Project} from 'sentry/types/project';
+import {defined} from 'sentry/utils';
+import useOrganization from 'sentry/utils/useOrganization';
+import {SectionKey} from 'sentry/views/issueDetails/streamline/context';
+import {InterimSection} from 'sentry/views/issueDetails/streamline/interimSection';
 
+import Status from './debugImage/status';
 import DebugImage from './debugImage';
-import {getFileName} from './utils';
+import {combineStatus, getFileName, normalizeId} from './utils';
 
-const MIN_FILTER_LEN = 3;
-const PANEL_MAX_HEIGHT = 400;
+const ROW_HEIGHT = 45;
+const MAX_HEIGHT = 400;
 
-type Image = React.ComponentProps<typeof DebugImage>['image'];
-
-type DefaultProps = {
-  data: {
-    images: Array<Image>;
-  };
-};
-
-type Props = DefaultProps & {
-  event: Event;
-  organization: Organization;
-  projectId: Project['id'];
-};
-
-type State = {
-  filter: string;
-  debugImages: Array<Image>;
-  filteredImages: Array<Image>;
-  showUnused: boolean;
-  showDetails: boolean;
-  foundFrame?: Frame;
-  panelBodyHeight?: number;
-};
-
-function normalizeId(id: string | undefined): string {
-  return id ? id.trim().toLowerCase().replace(/[- ]/g, '') : '';
-}
-
-const cache = new CellMeasurerCache({
-  fixedWidth: true,
-  defaultHeight: 81,
-});
-
-class DebugMeta extends React.PureComponent<Props, State> {
-  static defaultProps: DefaultProps = {
-    data: {images: []},
-  };
-
-  state: State = {
-    filter: '',
-    debugImages: [],
-    filteredImages: [],
-    showUnused: false,
-    showDetails: false,
-  };
-
-  componentDidMount() {
-    this.unsubscribeFromStore = DebugMetaStore.listen(this.onStoreChange, undefined);
-    cache.clearAll();
-    this.filterImages();
+function shouldSkipSection(
+  filteredImages: Image[],
+  images: EntryDebugMeta['data']['images']
+) {
+  if (filteredImages.length) {
+    return false;
   }
-
-  componentDidUpdate(_prevProps: Props, prevState: State) {
-    if (
-      prevState.showUnused !== this.state.showUnused ||
-      prevState.filter !== this.state.filter
-    ) {
-      this.filterImages();
-    }
-
-    if (
-      !isEqual(prevState.foundFrame, this.state.foundFrame) ||
-      this.state.showDetails !== prevState.showDetails ||
-      prevState.showUnused !== this.state.showUnused ||
-      (prevState.filter && !this.state.filter)
-    ) {
-      this.updateGrid();
-    }
-
-    if (prevState.filteredImages.length === 0 && this.state.filteredImages.length > 0) {
-      this.getPanelBodyHeight();
-    }
-  }
-
-  componentWillUnmount() {
-    if (this.unsubscribeFromStore) {
-      this.unsubscribeFromStore();
-    }
-  }
-
-  unsubscribeFromStore: any;
-
-  panelBodyRef = React.createRef<HTMLDivElement>();
-  listRef: List | null = null;
-
-  updateGrid() {
-    cache.clearAll();
-    this.listRef?.forceUpdateGrid();
-  }
-
-  getPanelBodyHeight() {
-    const panelBodyHeight = this.panelBodyRef?.current?.offsetHeight;
-
-    if (!panelBodyHeight) {
-      return;
-    }
-
-    this.setState({panelBodyHeight});
-  }
-
-  onStoreChange = (store: {filter: string}) => {
-    this.setState({
-      filter: store.filter,
-    });
-  };
-
-  filterImage(image: Image) {
-    const {showUnused, filter} = this.state;
-
-    const searchTerm = filter.trim().toLowerCase();
-
-    if (searchTerm.length < MIN_FILTER_LEN) {
-      if (showUnused) {
-        return true;
-      }
-
-      // A debug status of `null` indicates that this information is not yet
-      // available in an old event. Default to showing the image.
-      if (image.debug_status !== 'unused') {
-        return true;
-      }
-
-      // An unwind status of `null` indicates that symbolicator did not unwind.
-      // Ignore the status in this case.
-      if (!isNil(image.unwind_status) && image.unwind_status !== 'unused') {
-        return true;
-      }
-
-      return false;
-    }
-
-    // When searching for an address, check for the address range of the image
-    // instead of an exact match.  Note that images cannot be found by index
-    // if they are at 0x0.  For those relative addressing has to be used.
-    if (searchTerm.indexOf('0x') === 0) {
-      const needle = parseAddress(searchTerm);
-      if (needle > 0 && image.image_addr !== '0x0') {
-        const [startAddress, endAddress] = getImageRange(image);
-        return needle >= startAddress && needle < endAddress;
-      }
-    }
-
-    // the searchTerm ending at "!" is the end of the ID search.
-    const relMatch = searchTerm.match(/^\s*(.*?)!/); // debug_id!address
-    const idSearchTerm = normalizeId(relMatch?.[1] || searchTerm);
-
-    return (
-      // Prefix match for identifiers
-      normalizeId(image.code_id).indexOf(idSearchTerm) === 0 ||
-      normalizeId(image.debug_id).indexOf(idSearchTerm) === 0 ||
-      // Any match for file paths
-      (image.code_file?.toLowerCase() || '').indexOf(searchTerm) >= 0 ||
-      (image.debug_file?.toLowerCase() || '').indexOf(searchTerm) >= 0
-    );
-  }
-
-  filterImages() {
-    const foundFrame = this.getFrame();
-    // skip null values indicating invalid debug images
-    const debugImages = this.getDebugImages();
-
-    if (!debugImages.length) {
-      return;
-    }
-
-    const filteredImages = debugImages.filter(image => this.filterImage(image));
-
-    this.setState({debugImages, filteredImages, foundFrame});
-  }
-
-  isValidImage(image: Image) {
-    // in particular proguard images do not have a code file, skip them
-    if (image === null || image.code_file === null || image.type === 'proguard') {
-      return false;
-    }
-
-    if (getFileName(image.code_file) === 'dyld_sim') {
-      // this is only for simulator builds
-      return false;
-    }
-
+  const definedImages = images?.filter(image => defined(image));
+  if (!definedImages?.length) {
     return true;
   }
-
-  getFrame(): Frame | undefined {
-    const {
-      event: {entries},
-    } = this.props;
-
-    const frames: Array<Frame> | undefined = entries.find(
-      ({type}) => type === 'exception'
-    )?.data?.values?.[0]?.stacktrace?.frames;
-
-    if (!frames) {
-      return undefined;
-    }
-
-    const searchTerm = normalizeId(this.state.filter);
-    const relMatch = searchTerm.match(/^\s*(.*?)!(.*)$/); // debug_id!address
-
-    if (relMatch) {
-      const debugImages = this.getDebugImages().map(
-        (image, idx) => [idx, image] as [number, Image]
-      );
-      const filteredImages = debugImages.filter(([_, image]) => this.filterImage(image));
-      if (filteredImages.length === 1) {
-        return frames.find(
-          frame =>
-            frame.addrMode === `rel:${filteredImages[0][0]}` &&
-            frame.instructionAddr?.toLowerCase() === relMatch[2]
-        );
-      }
-
-      return undefined;
-    }
-
-    return frames.find(frame => frame.instructionAddr?.toLowerCase() === searchTerm);
-  }
-
-  getDebugImages() {
-    const {
-      data: {images},
-    } = this.props;
-
-    // There are a bunch of images in debug_meta that are not relevant to this
-    // component. Filter those out to reduce the noise. Most importantly, this
-    // includes proguard images, which are rendered separately.
-    const filtered = images.filter(image => this.isValidImage(image));
-
-    // Sort images by their start address. We assume that images have
-    // non-overlapping ranges. Each address is given as hex string (e.g.
-    // "0xbeef").
-    filtered.sort((a, b) => parseAddress(a.image_addr) - parseAddress(b.image_addr));
-
-    return filtered;
-  }
-
-  getNoImagesMessage() {
-    const {filter, showUnused, debugImages} = this.state;
-
-    if (debugImages.length === 0) {
-      return t('No loaded images available.');
-    }
-
-    if (!showUnused && !filter) {
-      return tct(
-        'No images are referenced in the stack trace. [toggle: Show Unreferenced]',
-        {
-          toggle: <Button priority="link" onClick={this.handleShowUnused} />,
-        }
-      );
-    }
-
-    return t('Sorry, no images match your query.');
-  }
-
-  renderToolbar() {
-    const {filter, showDetails, showUnused} = this.state;
-    return (
-      <ToolbarWrapper>
-        <Label>
-          <Checkbox checked={showDetails} onChange={this.handleChangeShowDetails} />
-          {t('details')}
-        </Label>
-
-        <Label>
-          <Checkbox
-            checked={showUnused || !!filter}
-            disabled={!!filter}
-            onChange={this.handleChangeShowUnused}
-          />
-          {t('show unreferenced')}
-        </Label>
-        <SearchInputWrapper>
-          <StyledSearchBar
-            onChange={this.handleChangeFilter}
-            query={filter}
-            placeholder={t('Search images\u2026')}
-          />
-        </SearchInputWrapper>
-      </ToolbarWrapper>
-    );
-  }
-
-  renderRow = ({index, key, parent, style}: ListRowProps) => {
-    const {organization, projectId} = this.props;
-    const {filteredImages, showDetails} = this.state;
-
-    return (
-      <CellMeasurer
-        cache={cache}
-        columnIndex={0}
-        key={key}
-        parent={parent}
-        rowIndex={index}
-      >
-        <DebugImage
-          style={style}
-          image={filteredImages[index]}
-          organization={organization}
-          projectId={projectId}
-          showDetails={showDetails}
-        />
-      </CellMeasurer>
-    );
-  };
-
-  getListHeight() {
-    const {showUnused, showDetails, panelBodyHeight} = this.state;
-
-    if (
-      !panelBodyHeight ||
-      panelBodyHeight > PANEL_MAX_HEIGHT ||
-      showUnused ||
-      showDetails
-    ) {
-      return PANEL_MAX_HEIGHT;
-    }
-
-    return panelBodyHeight;
-  }
-
-  renderImageList() {
-    const {filteredImages, showDetails, panelBodyHeight} = this.state;
-    const {organization, projectId} = this.props;
-
-    if (!panelBodyHeight) {
-      return filteredImages.map(filteredImage => (
-        <DebugImage
-          key={filteredImage.debug_id}
-          image={filteredImage}
-          organization={organization}
-          projectId={projectId}
-          showDetails={showDetails}
-        />
-      ));
-    }
-
-    return (
-      <AutoSizer disableHeight>
-        {({width}) => (
-          <StyledList
-            ref={(el: List | null) => {
-              this.listRef = el;
-            }}
-            deferredMeasurementCache={cache}
-            height={this.getListHeight()}
-            overscanRowCount={5}
-            rowCount={filteredImages.length}
-            rowHeight={cache.rowHeight}
-            rowRenderer={this.renderRow}
-            width={width}
-            isScrolling={false}
-          />
-        )}
-      </AutoSizer>
-    );
-  }
-
-  handleChangeShowUnused = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const showUnused = event.target.checked;
-    this.setState({showUnused});
-  };
-
-  handleShowUnused = () => {
-    this.setState({showUnused: true});
-  };
-
-  handleChangeShowDetails = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const showDetails = event.target.checked;
-    this.setState({showDetails});
-  };
-
-  handleChangeFilter = (value = '') => {
-    DebugMetaActions.updateFilter(value);
-  };
-
-  render() {
-    const {filteredImages, foundFrame} = this.state;
-    const {data} = this.props;
-    const {images} = data;
-
-    if (shouldSkipSection(filteredImages, images)) {
-      return null;
-    }
-
-    return (
-      <StyledEventDataSection
-        type="images-loaded"
-        title={
-          <GuideAnchor target="images-loaded" position="bottom">
-            <h3>{t('Images Loaded')}</h3>
-          </GuideAnchor>
-        }
-        actions={this.renderToolbar()}
-        wrapTitle={false}
-        isCentered
-      >
-        <DebugImagesPanel>
-          {filteredImages.length > 0 ? (
-            <React.Fragment>
-              {foundFrame && (
-                <ImageForBar
-                  frame={foundFrame}
-                  onShowAllImages={this.handleChangeFilter}
-                />
-              )}
-              <PanelBody ref={this.panelBodyRef}>{this.renderImageList()}</PanelBody>
-            </React.Fragment>
-          ) : (
-            <EmptyMessage icon={<IconWarning size="xl" />}>
-              {this.getNoImagesMessage()}
-            </EmptyMessage>
-          )}
-        </DebugImagesPanel>
-      </StyledEventDataSection>
-    );
-  }
+  return definedImages.every(image => image.type === 'proguard');
 }
 
-export default DebugMeta;
+function filterImages(
+  images: ImageWithCombinedStatus[],
+  filterSelections: Array<SelectOption<string>>,
+  searchTerm: string
+) {
+  const selections = new Set(filterSelections.map(option => option.value));
+  let result = images;
 
-// XXX(ts): Emotion11 has some trouble with List's defaultProps
-//
-// It gives the list have a dynamic height; otherwise, in the case of filtered
-// options, a list will be displayed with an empty space
-const StyledList = styled(List as any)<React.ComponentProps<typeof List>>`
-  height: auto !important;
-  max-height: ${p => p.height}px;
-  outline: none;
+  if (selections.size > 0) {
+    result = result.filter(image => selections.has(image.status));
+  }
+
+  if (searchTerm) {
+    const term = searchTerm.toLowerCase();
+    result = result.filter(image => {
+      // When searching for an address, check for the address range of the image
+      // instead of an exact match.  Note that images cannot be found by index
+      // if they are at 0x0.  For those relative addressing has to be used.
+      if (term.startsWith('0x')) {
+        const needle = parseAddress(term);
+        if (needle > 0 && image.image_addr !== '0x0') {
+          const [startAddress, endAddress] = getImageRange(image);
+          return needle >= startAddress! && needle < endAddress!;
+        }
+      }
+      // the searchTerm ending at "!" is the end of the ID search.
+      const relMatch = term.match(/^\s*(.*?)!/);
+      const idTerm = normalizeId(relMatch?.[1] || term);
+      return (
+        // Prefix match for identifiers
+        normalizeId(image.code_id).startsWith(idTerm) ||
+        normalizeId(image.debug_id).startsWith(idTerm) ||
+        // Any match for file paths
+        (image.code_file?.toLowerCase() || '').includes(term) ||
+        (image.debug_file?.toLowerCase() || '').includes(term)
+      );
+    });
+  }
+
+  return result;
+}
+
+interface DebugMetaProps {
+  data: EntryDebugMeta['data'];
+  event: Event;
+  groupId: Group['id'] | undefined;
+  projectSlug: Project['slug'];
+}
+
+type FilterSelections = Array<SelectOption<string>>;
+
+export function DebugMeta({data, projectSlug, groupId, event}: DebugMetaProps) {
+  const theme = useTheme();
+  const organization = useOrganization();
+
+  const [scrollContainer, setScrollContainer] = useState<HTMLDivElement | null>(null);
+  const [filterSelections, setFilterSelections] = useState<FilterSelections>([]);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [filtersInitialized, setFiltersInitialized] = useState(false);
+  const [lockHeight, setLockHeight] = useState(false);
+
+  const {allImages, filterOptions} = useMemo(() => {
+    const relevant = data.images?.filter((image): image is Image => {
+      if (!image?.code_file || image.type === 'proguard') {
+        return false;
+      }
+      if (getFileName(image.code_file) === 'dyld_sim') {
+        return false;
+      }
+      return true;
+    });
+
+    if (!relevant?.length) {
+      return {allImages: [], filterOptions: []};
+    }
+
+    const formatted = relevant
+      .map<ImageWithCombinedStatus>(img => ({
+        ...img,
+        status: combineStatus(img.debug_status, img.unwind_status),
+      }))
+      .sort((a, b) => parseAddress(a.image_addr) - parseAddress(b.image_addr));
+
+    const used = formatted.filter(img => img.debug_status !== ImageStatus.UNUSED);
+    const unused = formatted.filter(img => img.debug_status === ImageStatus.UNUSED);
+    const all = [...used, ...unused];
+
+    const statuses = [...new Set(all.map(img => img.status))];
+    const options: Array<SelectSection<string>> = [
+      {
+        label: t('Status'),
+        options: statuses.map(status => ({
+          value: status,
+          textValue: status,
+          label: <Status status={status} />,
+        })),
+      },
+    ];
+
+    return {allImages: all, filterOptions: options};
+  }, [data.images]);
+
+  useEffect(() => {
+    if (filtersInitialized || !filterOptions.length) {
+      return;
+    }
+
+    const defaults = (
+      'options' in filterOptions[0]! ? filterOptions[0].options : []
+    ).filter(opt => opt.value !== ImageStatus.UNUSED);
+    setFilterSelections(defaults);
+    setFiltersInitialized(true);
+  }, [filterOptions, filtersInitialized]);
+
+  useEffect(() => {
+    const unsubscribe = DebugMetaStore.listen((store: {filter: string}) => {
+      setSearchTerm(store.filter);
+    }, undefined);
+    return () => unsubscribe();
+  }, []);
+
+  const filteredImages = useMemo(
+    () => filterImages(allImages, filterSelections, searchTerm),
+    [allImages, filterSelections, searchTerm]
+  );
+
+  const virtualizer = useVirtualizer({
+    count: filteredImages.length,
+    getScrollElement: () => scrollContainer,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 5,
+  });
+
+  const totalSize = virtualizer.getTotalSize();
+  useLayoutEffect(() => {
+    if (!lockHeight && totalSize > MAX_HEIGHT) {
+      setLockHeight(true);
+    }
+  }, [totalSize, lockHeight]);
+
+  const openDetails = useCallback(
+    (image: ImageWithCombinedStatus) => {
+      openModal(
+        deps => (
+          <DebugImageDetails
+            {...deps}
+            image={image}
+            organization={organization}
+            projSlug={projectSlug}
+            event={event}
+            onReprocessEvent={
+              defined(groupId)
+                ? () => openReprocessEventModal({organization, groupId})
+                : undefined
+            }
+          />
+        ),
+        {modalCss: modalCss(theme)}
+      );
+    },
+    [event, groupId, organization, projectSlug, theme]
+  );
+
+  if (shouldSkipSection(filteredImages, data.images)) {
+    return null;
+  }
+
+  const showFilters = filterOptions.some(s => 'options' in s && s.options.length > 1);
+
+  return (
+    <InterimSection
+      type={SectionKey.DEBUGMETA}
+      title={t('Images Loaded')}
+      help={t(
+        'A list of dynamic libraries or shared objects loaded into process memory at the time of the crash.'
+      )}
+      initialCollapse
+    >
+      <Fragment>
+        <SearchBarAction
+          placeholder={t('Search images')}
+          onChange={v => DebugMetaStore.updateFilter(v)}
+          query={searchTerm}
+          filterOptions={showFilters ? filterOptions : undefined}
+          onFilterChange={setFilterSelections}
+          filterSelections={filterSelections}
+        />
+        <Container border="primary" radius="md" overflow="hidden" marginTop="sm">
+          <Header
+            columns={{
+              '2xs': '0.6fr 1.5fr 0.6fr',
+              xs: '0.6fr 2fr 0.6fr',
+              sm: '0.6fr 2fr 1fr 0.4fr',
+            }}
+            background="secondary"
+            borderBottom="primary"
+          >
+            <Flex align="center" minWidth="0" padding="md lg">
+              {t('Status')}
+            </Flex>
+            <Flex align="center" minWidth="0" paddingTop="md" paddingBottom="md">
+              {t('Image')}
+            </Flex>
+            <Flex
+              align="center"
+              display={{'2xs': 'none', xs: 'none'}}
+              minWidth="0"
+              paddingTop="md"
+              paddingBottom="md"
+            >
+              {t('Processing')}
+            </Flex>
+            <div />
+          </Header>
+          {filteredImages.length ? (
+            <ScrollArea
+              ref={setScrollContainer}
+              style={{height: lockHeight ? MAX_HEIGHT : undefined, maxHeight: MAX_HEIGHT}}
+            >
+              <div style={{height: totalSize, position: 'relative'}}>
+                {virtualizer.getVirtualItems().map(row => (
+                  <div
+                    key={row.key}
+                    ref={virtualizer.measureElement}
+                    data-index={row.index}
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: '100%',
+                      transform: `translateY(${row.start}px)`,
+                    }}
+                  >
+                    <DebugImage
+                      image={filteredImages[row.index]!}
+                      isLast={row.index === filteredImages.length - 1}
+                      onOpenImageDetailsModal={openDetails}
+                    />
+                  </div>
+                ))}
+              </div>
+            </ScrollArea>
+          ) : (
+            <Flex
+              direction="column"
+              align="center"
+              justify="center"
+              gap="md"
+              padding="lg"
+              style={lockHeight ? {height: MAX_HEIGHT} : undefined}
+            >
+              <Text align="center" variant="muted">
+                {searchTerm
+                  ? t('No images match your search query')
+                  : t('There are no images to be displayed')}
+              </Text>
+              {searchTerm && (
+                <Button
+                  size="sm"
+                  onClick={() =>
+                    filterSelections.length ? setFilterSelections([]) : setSearchTerm('')
+                  }
+                >
+                  {filterSelections.length ? t('Reset filter') : t('Clear search')}
+                </Button>
+              )}
+            </Flex>
+          )}
+        </Container>
+      </Fragment>
+    </InterimSection>
+  );
+}
+
+const Header = styled(Grid)`
+  font-size: ${p => p.theme.font.size.sm};
+  font-weight: ${p => p.theme.font.weight.sans.medium};
+  color: ${p => p.theme.tokens.content.secondary};
+  text-transform: uppercase;
 `;
 
-const Label = styled('label')`
-  font-weight: normal;
-  margin-right: 1em;
-  margin-bottom: 0;
-  white-space: nowrap;
-
-  > input {
-    margin-right: 1ex;
-  }
-`;
-
-const StyledEventDataSection = styled(EventDataSection)`
-  @media (max-width: ${p => p.theme.breakpoints[0]}) {
-    padding-bottom: ${space(4)};
-  }
-  /* to increase specificity */
-  @media (min-width: ${p => p.theme.breakpoints[0]}) {
-    padding-bottom: ${space(2)};
-  }
-`;
-
-const DebugImagesPanel = styled(Panel)`
-  margin-bottom: ${space(1)};
-  max-height: ${PANEL_MAX_HEIGHT}px;
-  overflow: hidden;
-`;
-
-const ToolbarWrapper = styled('div')`
-  display: flex;
-  align-items: center;
-  @media (max-width: ${p => p.theme.breakpoints[0]}) {
-    flex-wrap: wrap;
-    margin-top: ${space(1)};
-  }
-`;
-
-const SearchInputWrapper = styled('div')`
-  width: 100%;
-
-  @media (max-width: ${p => p.theme.breakpoints[0]}) {
-    width: 100%;
-    max-width: 100%;
-    margin-top: ${space(1)};
-  }
-
-  @media (min-width: ${p => p.theme.breakpoints[0]}) and (max-width: ${p =>
-      p.theme.breakpoints[3]}) {
-    max-width: 180px;
-    display: inline-block;
-  }
-
-  @media (min-width: ${props => props.theme.breakpoints[3]}) {
-    width: 330px;
-    max-width: none;
-  }
-
-  @media (min-width: 1550px) {
-    width: 510px;
-  }
-`;
-// TODO(matej): remove this once we refactor SearchBar to not use css classes
-// - it could accept size as a prop
-const StyledSearchBar = styled(SearchBar)`
-  .search-input {
-    height: 30px;
-  }
+const ScrollArea = styled('div')`
+  overflow-y: auto;
 `;

@@ -1,15 +1,14 @@
-import * as React from 'react';
-
-import DetailedError from 'app/components/errors/detailedError';
-import {t} from 'app/locale';
-import {Environment} from 'app/types';
+import DetailedError from 'sentry/components/errors/detailedError';
+import List from 'sentry/components/list';
+import ListItem from 'sentry/components/list/listItem';
+import {t} from 'sentry/locale';
 
 type Props = {
-  environments: Environment[];
-  onRetry?: (e: React.MouseEvent<HTMLAnchorElement>) => void;
+  environments: string[];
+  onRetry?: (e: React.MouseEvent) => void;
 };
 
-const GroupEventDetailsLoadingError = ({onRetry, environments}: Props) => {
+function GroupEventDetailsLoadingError({onRetry, environments}: Props) {
   const reasons = [
     t('The events are still processing and are on their way'),
     t('The events have been deleted'),
@@ -23,11 +22,11 @@ const GroupEventDetailsLoadingError = ({onRetry, environments}: Props) => {
     message = (
       <div>
         <p>{t('This could be due to a handful of reasons:')}</p>
-        <ol className="detailed-error-list">
+        <List symbol="bullet">
           {reasons.map((reason, i) => (
-            <li key={i}>{reason}</li>
+            <ListItem key={i}>{reason}</ListItem>
           ))}
-        </ol>
+        </List>
       </div>
     );
   } else {
@@ -38,12 +37,11 @@ const GroupEventDetailsLoadingError = ({onRetry, environments}: Props) => {
 
   return (
     <DetailedError
-      className="group-event-details-error"
       onRetry={environments.length === 0 ? onRetry : undefined}
       heading={t('Sorry, the events for this issue could not be found.')}
       message={message}
     />
   );
-};
+}
 
 export default GroupEventDetailsLoadingError;

@@ -1,127 +1,86 @@
-import * as React from 'react';
-import {RouteComponentProps} from 'react-router';
+import {Fragment, useMemo, useState} from 'react';
 import styled from '@emotion/styled';
 
-import {addErrorMessage, addSuccessMessage} from 'app/actionCreators/indicator';
-import ProjectActions from 'app/actions/projectActions';
-import {Client} from 'app/api';
-import Button from 'app/components/button';
-import DropdownAutoComplete from 'app/components/dropdownAutoComplete';
-import DropdownButton from 'app/components/dropdownButton';
-import LoadingError from 'app/components/loadingError';
-import LoadingIndicator from 'app/components/loadingIndicator';
-import Pagination from 'app/components/pagination';
-import {Panel, PanelBody, PanelHeader, PanelItem} from 'app/components/panels';
-import Tooltip from 'app/components/tooltip';
-import {IconFlag, IconSubtract} from 'app/icons';
-import {t} from 'app/locale';
-import space from 'app/styles/space';
-import {Organization, Project} from 'app/types';
-import {sortProjects} from 'app/utils';
-import withApi from 'app/utils/withApi';
-import withOrganization from 'app/utils/withOrganization';
-import EmptyMessage from 'app/views/settings/components/emptyMessage';
-import ProjectListItem from 'app/views/settings/components/settingsProjectItem';
+import {ProjectAvatar} from '@sentry/scraps/avatar';
+import {Button} from '@sentry/scraps/button';
+import {CompactSelect, type SelectOption} from '@sentry/scraps/compactSelect';
+import {OverlayTrigger} from '@sentry/scraps/overlayTrigger';
+import {Tooltip} from '@sentry/scraps/tooltip';
 
-type Props = {
-  api: Client;
-  organization: Organization;
-} & RouteComponentProps<{orgId: string; teamId: string}, {}>;
+import {addErrorMessage, addSuccessMessage} from 'sentry/actionCreators/indicator';
+import {hasEveryAccess} from 'sentry/components/acl/access';
+import EmptyMessage from 'sentry/components/emptyMessage';
+import LoadingError from 'sentry/components/loadingError';
+import LoadingIndicator from 'sentry/components/loadingIndicator';
+import Pagination from 'sentry/components/pagination';
+import Panel from 'sentry/components/panels/panel';
+import PanelBody from 'sentry/components/panels/panelBody';
+import PanelHeader from 'sentry/components/panels/panelHeader';
+import PanelItem from 'sentry/components/panels/panelItem';
+import {IconFlag, IconSubtract} from 'sentry/icons';
+import {t} from 'sentry/locale';
+import ProjectsStore from 'sentry/stores/projectsStore';
+import {space} from 'sentry/styles/space';
+import type {Project} from 'sentry/types/project';
+import getApiUrl from 'sentry/utils/api/getApiUrl';
+import {sortProjects} from 'sentry/utils/project/sortProjects';
+import {useApiQuery} from 'sentry/utils/queryClient';
+import useApi from 'sentry/utils/useApi';
+import {useLocation} from 'sentry/utils/useLocation';
+import useOrganization from 'sentry/utils/useOrganization';
+import ProjectListItem from 'sentry/views/settings/components/settingsProjectItem';
+import TextBlock from 'sentry/views/settings/components/text/textBlock';
+import {useTeamDetailsOutlet} from 'sentry/views/settings/organizationTeams/teamDetails';
 
-type State = {
-  error: boolean;
-  loading: boolean;
-  pageLinks: null | string;
-  unlinkedProjects: Project[];
-  linkedProjects: Project[];
-};
-
-type DropdownAutoCompleteProps = React.ComponentProps<typeof DropdownAutoComplete>;
-type Item = Parameters<NonNullable<DropdownAutoCompleteProps['onSelect']>>[0];
-
-class TeamProjects extends React.Component<Props, State> {
-  state: State = {
-    error: false,
-    loading: true,
-    pageLinks: null,
-    unlinkedProjects: [],
-    linkedProjects: [],
-  };
-
-  componentDidMount() {
-    this.fetchAll();
-  }
-
-  componentDidUpdate(prevProps: Props) {
-    if (
-      prevProps.params.orgId !== this.props.params.orgId ||
-      prevProps.params.teamId !== this.props.params.teamId
-    ) {
-      this.fetchAll();
-    }
-
-    if (prevProps.location !== this.props.location) {
-      this.fetchTeamProjects();
-    }
-  }
-
-  fetchAll = () => {
-    this.fetchTeamProjects();
-    this.fetchUnlinkedProjects();
-  };
-
-  fetchTeamProjects() {
-    const {
-      location,
-      params: {orgId, teamId},
-    } = this.props;
-
-    this.setState({loading: true});
-
-    this.props.api
-      .requestPromise(`/organizations/${orgId}/projects/`, {
+export default function TeamProjects() {
+  const location = useLocation();
+  const organization = useOrganization();
+  const api = useApi({persistInFlight: true});
+  const [query, setQuery] = useState<string>('');
+  const {team} = useTeamDetailsOutlet();
+  const {
+    data: linkedProjects,
+    isError: linkedProjectsError,
+    isPending: linkedProjectsLoading,
+    getResponseHeader: linkedProjectsHeaders,
+    refetch: refetchLinkedProjects,
+  } = useApiQuery<Project[]>(
+    [
+      getApiUrl(`/organizations/$organizationIdOrSlug/projects/`, {
+        path: {organizationIdOrSlug: organization.slug},
+      }),
+      {
         query: {
-          query: `team:${teamId}`,
-          cursor: location.query.cursor || '',
+          query: `team:${team.slug}`,
+          cursor: location.query.cursor,
         },
-        includeAllArgs: true,
-      })
-      .then(([linkedProjects, _, resp]) => {
-        this.setState({
-          loading: false,
-          error: false,
-          linkedProjects,
-          pageLinks: resp?.getResponseHeader('Link') ?? null,
-        });
-      })
-      .catch(() => {
-        this.setState({loading: false, error: true});
-      });
-  }
+      },
+    ],
+    {staleTime: 0}
+  );
+  const {
+    data: unlinkedProjects = [],
+    isPending: loadingUnlinkedProjects,
+    refetch: refetchUnlinkedProjects,
+  } = useApiQuery<Project[]>(
+    [
+      getApiUrl(`/organizations/$organizationIdOrSlug/projects/`, {
+        path: {organizationIdOrSlug: organization.slug},
+      }),
+      {
+        query: {query: query ? `!team:${team.slug} ${query}` : `!team:${team.slug}`},
+      },
+    ],
+    {staleTime: 0}
+  );
 
-  fetchUnlinkedProjects(query = '') {
-    const {
-      params: {orgId, teamId},
-    } = this.props;
-
-    this.props.api
-      .requestPromise(`/organizations/${orgId}/projects/`, {
-        query: {
-          query: query ? `!team:${teamId} ${query}` : `!team:${teamId}`,
-        },
-      })
-      .then(unlinkedProjects => {
-        this.setState({unlinkedProjects});
-      });
-  }
-
-  handleLinkProject = (project: Project, action: string) => {
-    const {orgId, teamId} = this.props.params;
-    this.props.api.request(`/projects/${orgId}/${project.slug}/teams/${teamId}/`, {
+  const handleLinkProject = (project: Project, action: string) => {
+    api.request(`/projects/${organization.slug}/${project.slug}/teams/${team.slug}/`, {
       method: action === 'add' ? 'POST' : 'DELETE',
       success: resp => {
-        this.fetchAll();
-        ProjectActions.updateSuccess(resp);
+        refetchLinkedProjects();
+        refetchUnlinkedProjects();
+        ProjectsStore.onUpdateSuccess(resp);
         addSuccessMessage(
           action === 'add'
             ? t('Successfully added project to team.')
@@ -134,106 +93,99 @@ class TeamProjects extends React.Component<Props, State> {
     });
   };
 
-  handleProjectSelected = (selection: Item) => {
-    const project = this.state.unlinkedProjects.find(p => p.id === selection.value);
-    if (project) {
-      this.handleLinkProject(project, 'add');
-    }
-  };
+  const linkedProjectsPageLinks = linkedProjectsHeaders?.('Link');
+  const hasWriteAccess = hasEveryAccess(['team:write'], {organization, team});
+  const otherProjects = useMemo(() => {
+    return unlinkedProjects
+      .filter(p => p.access.includes('project:write'))
+      .map<SelectOption<string>>(p => ({
+        value: p.id,
+        leadingItems: <ProjectAvatar project={p} size={16} />,
+        label: p.slug,
+        hideCheck: true,
+      }));
+  }, [unlinkedProjects]);
 
-  handleQueryUpdate = (evt: React.ChangeEvent<HTMLInputElement>) => {
-    this.fetchUnlinkedProjects(evt.target.value);
-  };
-
-  projectPanelContents(projects: Project[]) {
-    const {organization} = this.props;
-    const access = new Set(organization.access);
-    const canWrite = access.has('org:write');
-
-    return projects.length ? (
-      sortProjects(projects).map(project => (
-        <StyledPanelItem key={project.id}>
-          <ProjectListItem project={project} organization={organization} />
-          <Tooltip
-            disabled={canWrite}
-            title={t('You do not have enough permission to change project association.')}
-          >
-            <Button
-              size="small"
-              disabled={!canWrite}
-              icon={<IconSubtract isCircled size="xs" />}
-              onClick={() => {
-                this.handleLinkProject(project, 'remove');
+  return (
+    <Fragment>
+      <TextBlock>
+        {t(
+          'If you have Team Admin permissions for other projects, you can associate them with this team.'
+        )}
+      </TextBlock>
+      <Panel>
+        <PanelHeader hasButtons>
+          <div>{t('Projects')}</div>
+          <div>
+            <CompactSelect
+              size="xs"
+              menuWidth={300}
+              options={otherProjects}
+              value=""
+              disabled={false}
+              onClose={() => setQuery('')}
+              onChange={selection => {
+                const project = unlinkedProjects.find(p => p.id === selection.value);
+                if (project) {
+                  handleLinkProject(project, 'add');
+                }
               }}
-            >
-              {t('Remove')}
-            </Button>
-          </Tooltip>
-        </StyledPanelItem>
-      ))
-    ) : (
-      <EmptyMessage size="large" icon={<IconFlag size="xl" />}>
-        {t("This team doesn't have access to any projects.")}
-      </EmptyMessage>
-    );
-  }
-
-  render() {
-    const {linkedProjects, unlinkedProjects, error, loading} = this.state;
-
-    if (error) {
-      return <LoadingError onRetry={() => this.fetchAll()} />;
-    }
-
-    if (loading) {
-      return <LoadingIndicator />;
-    }
-
-    const access = new Set(this.props.organization.access);
-
-    const otherProjects = unlinkedProjects.map(p => ({
-      value: p.id,
-      searchKey: p.slug,
-      label: <ProjectListElement>{p.slug}</ProjectListElement>,
-    }));
-
-    return (
-      <React.Fragment>
-        <Panel>
-          <PanelHeader hasButtons>
-            <div>{t('Projects')}</div>
-            <div style={{textTransform: 'none'}}>
-              {!access.has('org:write') ? (
-                <DropdownButton
-                  disabled
-                  title={t('You do not have enough permission to associate a project.')}
-                  size="xsmall"
-                >
+              menuTitle={t('Projects')}
+              trigger={triggerProps => (
+                <OverlayTrigger.Button {...triggerProps}>
                   {t('Add Project')}
-                </DropdownButton>
-              ) : (
-                <DropdownAutoComplete
-                  items={otherProjects}
-                  onChange={this.handleQueryUpdate}
-                  onSelect={this.handleProjectSelected}
-                  emptyMessage={t('No projects')}
-                  alignMenu="right"
-                >
-                  {({isOpen}) => (
-                    <DropdownButton isOpen={isOpen} size="xsmall">
-                      {t('Add Project')}
-                    </DropdownButton>
-                  )}
-                </DropdownAutoComplete>
+                </OverlayTrigger.Button>
               )}
-            </div>
-          </PanelHeader>
-          <PanelBody>{this.projectPanelContents(linkedProjects)}</PanelBody>
-        </Panel>
-        <Pagination pageLinks={this.state.pageLinks} {...this.props} />
-      </React.Fragment>
-    );
-  }
+              search={{
+                placeholder: t('Search Projects'),
+                filter: false,
+                onChange: setQuery,
+              }}
+              emptyMessage={t('No projects')}
+              loading={loadingUnlinkedProjects}
+            />
+          </div>
+        </PanelHeader>
+
+        <PanelBody>
+          {linkedProjectsError && (
+            <LoadingError onRetry={() => refetchLinkedProjects()} />
+          )}
+          {linkedProjectsLoading && <LoadingIndicator />}
+          {linkedProjects?.length ? (
+            sortProjects(linkedProjects).map(project => (
+              <StyledPanelItem key={project.id}>
+                <ProjectListItem project={project} organization={organization} />
+                <Tooltip
+                  disabled={hasWriteAccess}
+                  title={t(
+                    'You do not have enough permission to change project association.'
+                  )}
+                >
+                  <Button
+                    size="sm"
+                    disabled={!hasWriteAccess}
+                    icon={<IconSubtract />}
+                    aria-label={t('Remove')}
+                    onClick={() => {
+                      handleLinkProject(project, 'remove');
+                    }}
+                  >
+                    {t('Remove')}
+                  </Button>
+                </Tooltip>
+              </StyledPanelItem>
+            ))
+          ) : linkedProjectsLoading ? null : (
+            <EmptyMessage size="lg" icon={<IconFlag />}>
+              {t("This team doesn't have access to any projects.")}
+            </EmptyMessage>
+          )}
+        </PanelBody>
+      </Panel>
+      <Pagination pageLinks={linkedProjectsPageLinks} />
+    </Fragment>
+  );
 }
 
 const StyledPanelItem = styled(PanelItem)`
@@ -241,12 +193,5 @@ const StyledPanelItem = styled(PanelItem)`
   align-items: center;
   justify-content: space-between;
   padding: ${space(2)};
+  max-width: 100%;
 `;
-
-const ProjectListElement = styled('div')`
-  padding: ${space(0.25)} 0;
-`;
-
-export {TeamProjects};
-
-export default withApi(withOrganization(TeamProjects));

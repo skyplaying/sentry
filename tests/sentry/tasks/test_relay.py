@@ -1,199 +1,295 @@
-import pytest
+import contextlib
+from unittest import mock
 
-from sentry.models import ProjectKey, ProjectOption
+import pytest
+from django.db import connections, router, transaction
+from django.db.transaction import TransactionManagementError
+
+from sentry.db.postgres.transactions import in_test_hide_transaction_boundary
+from sentry.models.options.project_option import ProjectOption
+from sentry.models.projectkey import ProjectKey, ProjectKeyStatus
 from sentry.relay.projectconfig_cache.redis import RedisProjectConfigCache
 from sentry.relay.projectconfig_debounce_cache.redis import RedisProjectConfigDebounceCache
-from sentry.tasks.relay import schedule_update_config_cache
-from sentry.utils.compat.mock import patch
+from sentry.tasks.relay import (
+    _schedule_invalidate_project_config,
+    build_project_config,
+    invalidate_project_config,
+    schedule_build_project_config,
+    schedule_invalidate_project_config,
+)
+from sentry.testutils.helpers.options import override_options
+from sentry.testutils.helpers.task_runner import BurstTaskRunner
+from sentry.testutils.hybrid_cloud import simulated_transaction_watermarks
+from sentry.testutils.pytest.fixtures import django_db_all
+from sentry.testutils.thread_leaks.pytest import thread_leak_allowlist
 
 
 def _cache_keys_for_project(project):
-    yield project.id
     for key in ProjectKey.objects.filter(project_id=project.id):
         yield key.public_key
 
 
+@pytest.fixture(autouse=True)
+def disable_auto_on_commit():
+    simulated_transaction_watermarks.state["default"] = -1
+    with in_test_hide_transaction_boundary():
+        yield
+
+
 @pytest.fixture
-def redis_cache(monkeypatch):
-    monkeypatch.setattr(
-        "django.conf.settings.SENTRY_RELAY_PROJECTCONFIG_CACHE",
-        "sentry.relay.projectconfig_cache.redis.RedisProjectConfigCache",
-    )
+def emulate_transactions(django_capture_on_commit_callbacks):
+    # This contraption helps in testing the usage of `transaction.on_commit` in
+    # schedule_build_project_config. Normally tests involving transactions would
+    # require us to use the transactional testcase (or
+    # `pytest.mark.django_db(transaction=True)`), but that incurs a 2x slowdown
+    # in test speed and we're trying to keep our testcases fast.
+    @contextlib.contextmanager
+    def inner(assert_num_callbacks=1):
+        with BurstTaskRunner() as burst:
+            with django_capture_on_commit_callbacks(execute=True) as callbacks:
+                yield
 
+                # Assert there are no relay-related jobs in the queue yet, as we should have
+                # some on_commit callbacks instead. If we don't, then the model
+                # hook has scheduled the build_project_config task prematurely.
+                #
+                # Remove any other jobs from the queue that may have been triggered via model hooks
+                assert not any("relay" in task.name for task, _, _ in burst.queue)
+                burst.queue.clear()
+
+            # for some reason, the callbacks array is only populated by
+            # pytest-django's implementation after the context manager has
+            # exited, not while they are being registered
+            assert len(callbacks) == assert_num_callbacks
+
+            # Callbacks have been executed, job(s) should've been scheduled now, so
+            # let's execute them.
+            #
+            # Note: We can't directly assert that the data race has not occured, as
+            # there are no real DB transactions available in this testcase. The
+            # entire test runs in one transaction because that's how pytest-django
+            # sets up things unless one uses
+            # pytest.mark.django_db(transaction=True).
+            burst(max_jobs=20)
+
+    return inner
+
+
+@pytest.fixture
+def redis_cache():
     cache = RedisProjectConfigCache()
-    monkeypatch.setattr("sentry.relay.projectconfig_cache.set_many", cache.set_many)
-    monkeypatch.setattr("sentry.relay.projectconfig_cache.delete_many", cache.delete_many)
-    monkeypatch.setattr("sentry.relay.projectconfig_cache.get", cache.get)
+    with (
+        mock.patch(
+            "django.conf.settings.SENTRY_RELAY_PROJECTCONFIG_CACHE",
+            "sentry.relay.projectconfig_cache.redis.RedisProjectConfigCache",
+        ),
+        mock.patch("sentry.relay.projectconfig_cache.set_many", cache.set_many),
+        mock.patch("sentry.relay.projectconfig_cache.delete_many", cache.delete_many),
+        mock.patch("sentry.relay.projectconfig_cache.get", cache.get),
+    ):
+        yield cache
 
-    monkeypatch.setattr(
-        "django.conf.settings.SENTRY_RELAY_PROJECTCONFIG_DEBOUNCE_CACHE",
-        "sentry.relay.projectconfig_debounce_cache.redis.RedisProjectConfigDebounceCache",
-    )
 
+@pytest.fixture
+def debounce_cache():
+    cache = RedisProjectConfigDebounceCache()
+    with (
+        mock.patch(
+            "django.conf.settings.SENTRY_RELAY_PROJECTCONFIG_DEBOUNCE_CACHE",
+            "sentry.relay.projectconfig_debounce_cache.redis.RedisProjectConfigDebounceCache",
+        ),
+        mock.patch(
+            "sentry.relay.projectconfig_debounce_cache.backend.mark_task_done", cache.mark_task_done
+        ),
+        mock.patch("sentry.relay.projectconfig_debounce_cache.backend.debounce", cache.debounce),
+        mock.patch(
+            "sentry.relay.projectconfig_debounce_cache.backend.is_debounced", cache.is_debounced
+        ),
+    ):
+        yield cache
+
+
+@pytest.fixture
+def invalidation_debounce_cache():
     debounce_cache = RedisProjectConfigDebounceCache()
-    monkeypatch.setattr(
-        "sentry.relay.projectconfig_debounce_cache.mark_task_done", debounce_cache.mark_task_done
-    )
-    monkeypatch.setattr(
-        "sentry.relay.projectconfig_debounce_cache.check_is_debounced",
-        debounce_cache.check_is_debounced,
-    )
-
-    return cache
-
-
-@pytest.mark.django_db
-def test_no_cache(monkeypatch, default_project):
-    def apply_async(*a, **kw):
-        assert False
-
-    monkeypatch.setattr("sentry.tasks.relay.update_config_cache.apply_async", apply_async)
-    schedule_update_config_cache(generate=True, project_id=default_project.id)
+    with (
+        mock.patch(
+            "sentry.relay.projectconfig_debounce_cache.invalidation.mark_task_done",
+            debounce_cache.mark_task_done,
+        ),
+        mock.patch(
+            "sentry.relay.projectconfig_debounce_cache.invalidation.debounce",
+            debounce_cache.debounce,
+        ),
+        mock.patch(
+            "sentry.relay.projectconfig_debounce_cache.invalidation.is_debounced",
+            debounce_cache.is_debounced,
+        ),
+    ):
+        yield debounce_cache
 
 
-@pytest.mark.django_db
-def test_debounce(monkeypatch, default_project, default_organization, redis_cache):
+@django_db_all
+def test_debounce(
+    default_projectkey,
+    default_organization,
+    debounce_cache,
+    django_cache,
+):
     tasks = []
 
-    def apply_async(args, kwargs):
+    def signal_send(self, task, args, kwargs):
         assert not args
         tasks.append(kwargs)
 
-    monkeypatch.setattr("sentry.tasks.relay.update_config_cache.apply_async", apply_async)
+    with mock.patch("sentry.taskworker.task.Task._signal_send", signal_send):
+        schedule_build_project_config(public_key=default_projectkey.public_key)
+        schedule_build_project_config(public_key=default_projectkey.public_key)
 
-    schedule_update_config_cache(generate=True, project_id=default_project.id)
-    schedule_update_config_cache(generate=False, project_id=default_project.id)
-
-    schedule_update_config_cache(generate=True, organization_id=default_organization.id)
-    schedule_update_config_cache(generate=False, organization_id=default_organization.id)
-
-    assert tasks == [
-        {
-            "generate": True,
-            "project_id": default_project.id,
-            "organization_id": None,
-            "update_reason": None,
-        },
-        {
-            "generate": True,
-            "project_id": None,
-            "organization_id": default_organization.id,
-            "update_reason": None,
-        },
-    ]
+    assert len(tasks) == 1
+    assert tasks[0]["public_key"] == default_projectkey.public_key
 
 
-@pytest.mark.django_db
-@pytest.mark.parametrize("entire_organization", (True, False))
+@django_db_all
 def test_generate(
-    monkeypatch,
     default_project,
     default_organization,
     default_projectkey,
-    task_runner,
-    entire_organization,
     redis_cache,
+    django_cache,
 ):
-    assert not redis_cache.get(default_project.id)
+    # redis_cache.delete_many([default_projectkey.public_key])
+    assert not redis_cache.get(default_projectkey.public_key)
 
-    if not entire_organization:
-        kwargs = {"project_id": default_project.id}
-    else:
-        kwargs = {"organization_id": default_organization.id}
+    build_project_config(default_projectkey.public_key)
 
-    with task_runner():
-        schedule_update_config_cache(generate=True, **kwargs)
-
-    cfg = redis_cache.get(default_project.id)
+    cfg = redis_cache.get(default_projectkey.public_key)
 
     assert cfg["organizationId"] == default_organization.id
     assert cfg["projectId"] == default_project.id
     assert cfg["publicKeys"] == [
         {
-            "publicKey": default_projectkey.public_key,
             "isEnabled": True,
+            "publicKey": default_projectkey.public_key,
             "numericId": default_projectkey.id,
-            "quotas": [],
         }
     ]
 
 
-@pytest.mark.django_db
-@pytest.mark.parametrize("entire_organization", (True, False))
-def test_invalidate(
-    monkeypatch,
+@django_db_all
+def test_project_update_option(
+    default_projectkey,
     default_project,
-    default_organization,
-    task_runner,
-    entire_organization,
+    emulate_transactions,
     redis_cache,
+    django_cache,
 ):
+    # Put something in the cache, otherwise triggers/the invalidation task won't compute
+    # anything.
+    redis_cache.set_many({default_projectkey.public_key: {"dummy": "dummy"}})
 
-    cfg = {"foo": "bar"}
-    redis_cache.set_many({default_project.id: cfg})
-    assert redis_cache.get(default_project.id) == cfg
-
-    if not entire_organization:
-        kwargs = {"project_id": default_project.id}
-    else:
-        kwargs = {"organization_id": default_organization.id}
-
-    with task_runner():
-        schedule_update_config_cache(generate=False, **kwargs)
-
-    for cache_key in _cache_keys_for_project(default_project):
-        assert not redis_cache.get(cache_key)
-
-
-@pytest.mark.django_db
-def test_project_update_option(default_project, task_runner, redis_cache):
-    with task_runner():
+    # XXX: there should only be one hook triggered, regardless of debouncing
+    with emulate_transactions(assert_num_callbacks=2):
         default_project.update_option(
             "sentry:relay_pii_config", '{"applications": {"$string": ["@creditcard:mask"]}}'
         )
 
-    assert redis_cache.get(default_project.id)["config"]["piiConfig"] == {
+    assert redis_cache.get(default_projectkey.public_key)["config"]["piiConfig"] == {
         "applications": {"$string": ["@creditcard:mask"]}
     }
 
-    with task_runner():
+    # XXX: there should only be one hook triggered, regardless of debouncing
+    with emulate_transactions(assert_num_callbacks=2):
         default_project.organization.update_option(
             "sentry:relay_pii_config", '{"applications": {"$string": ["@creditcard:mask"]}}'
         )
 
+    # They should be recalculated.  Note that oddly enough we actually get the same rule
+    # twice.  once for the org and once for the project
     for cache_key in _cache_keys_for_project(default_project):
-        assert redis_cache.get(cache_key) is None
+        cache = redis_cache.get(cache_key)
+        assert cache["config"]["piiConfig"]["applications"] == {
+            "$string": ["@creditcard:mask", "@creditcard:mask"]
+        }
 
 
-@pytest.mark.django_db
-def test_project_delete_option(default_project, task_runner, redis_cache):
-    with task_runner():
+@django_db_all
+def test_project_delete_option(
+    default_projectkey,
+    default_project,
+    emulate_transactions,
+    redis_cache,
+    django_cache,
+):
+    # Put something in the cache, otherwise triggers/the invalidation task won't compute
+    # anything.
+    redis_cache.set_many({default_projectkey.public_key: {"dummy": "dummy"}})
+
+    # XXX: there should only be one hook triggered, regardless of debouncing
+    with emulate_transactions(assert_num_callbacks=1):
         default_project.delete_option("sentry:relay_pii_config")
 
-    for cache_key in _cache_keys_for_project(default_project):
-        assert redis_cache.get(cache_key)["config"]["piiConfig"] == {}
+    assert redis_cache.get(default_projectkey)["config"]["piiConfig"] == {}
 
 
-@pytest.mark.django_db
-def test_project_get_option_does_not_reload(default_project, task_runner, monkeypatch):
-
+@django_db_all
+def test_project_get_option_does_not_reload(
+    default_project,
+    emulate_transactions,
+    django_cache,
+):
     ProjectOption.objects._option_cache.clear()
+    with (
+        emulate_transactions(assert_num_callbacks=0),
+        mock.patch("sentry.utils.cache.cache.get", return_value=None),
+        mock.patch("sentry.tasks.relay.schedule_build_project_config") as build_project_config,
+    ):
+        default_project.get_option(
+            "sentry:relay_pii_config", '{"applications": {"$string": ["@creditcard:mask"]}}'
+        )
 
-    with task_runner():
-        with patch("sentry.models.projectoption.cache.get", return_value=None):
-            with patch(
-                "sentry.models.projectoption.schedule_update_config_cache"
-            ) as update_config_cache:
-                default_project.get_option(
-                    "sentry:relay_pii_config", '{"applications": {"$string": ["@creditcard:mask"]}}'
-                )
-
-    update_config_cache.assert_not_called()  # noqa
+    assert not build_project_config.called
 
 
-@pytest.mark.django_db
-def test_projectkeys(default_project, task_runner, redis_cache):
-    with task_runner():
+@django_db_all
+def test_invalidation_project_deleted(
+    default_project,
+    emulate_transactions,
+    redis_cache,
+    django_cache,
+):
+    # Ensure we have a ProjectKey
+    project_key = next(_cache_keys_for_project(default_project))
+    assert project_key
+
+    # Ensure we have a config in the cache.
+    build_project_config(public_key=project_key)
+    assert redis_cache.get(project_key)["disabled"] is False
+
+    project_id = default_project.id
+
+    # Delete the project normally, this will delete it from the cache
+    with emulate_transactions(assert_num_callbacks=4):
+        default_project.delete()
+    assert redis_cache.get(project_key)["disabled"]
+
+    # Duplicate invoke the invalidation task, this needs to be fine with the missing project.
+    invalidate_project_config(project_id=project_id, trigger="testing-double-delete")
+    assert redis_cache.get(project_key)["disabled"]
+
+
+@django_db_all
+def test_projectkeys(
+    default_project,
+    emulate_transactions,
+    redis_cache,
+    django_cache,
+):
+    # When a projectkey is deleted the invalidation task should be triggered and the project
+    # should be cached as disabled.
+
+    # XXX: there should only be one hook triggered, regardless of debouncing
+    with emulate_transactions(assert_num_callbacks=2):
         deleted_pks = list(ProjectKey.objects.filter(project=default_project))
         for key in deleted_pks:
             key.delete()
@@ -202,20 +298,295 @@ def test_projectkeys(default_project, task_runner, redis_cache):
         pk.save()
 
     for key in deleted_pks:
-        # XXX: Ideally we would write `{"disabled": False}` into Redis, however
-        # it's fine if we don't and instead Relay starts hitting the endpoint
-        # which will write this for us.
-        assert not redis_cache.get(key.public_key)
+        assert redis_cache.get(key.public_key)["disabled"]
 
-    for cache_key in (default_project.id, pk.public_key):
-        (pk_json,) = redis_cache.get(cache_key)["publicKeys"]
-        assert pk_json["publicKey"] == pk.public_key
-        assert pk_json["isEnabled"]
+    (pk_json,) = redis_cache.get(pk.public_key)["publicKeys"]
+    assert pk_json["publicKey"] == pk.public_key
 
-    with task_runner():
+    with emulate_transactions():
+        pk.status = ProjectKeyStatus.INACTIVE
+        pk.save()
+
+    assert redis_cache.get(pk.public_key)["disabled"]
+
+    with emulate_transactions():
         pk.delete()
 
-    assert not redis_cache.get(default_project.id)["publicKeys"]
+    assert redis_cache.get(pk.public_key)["disabled"]
 
     for key in ProjectKey.objects.filter(project_id=default_project.id):
-        assert not redis_cache.get(default_project.id)
+        assert not redis_cache.get(key.public_key)
+
+
+@django_db_all(transaction=True)
+def test_db_transaction(
+    default_project,
+    default_projectkey,
+    redis_cache,
+    task_runner,
+    django_cache,
+):
+    # Put something in the cache, otherwise triggers/the invalidation task won't compute
+    # anything.
+    redis_cache.set_many({default_projectkey.public_key: {"dummy": "dummy"}})
+
+    with task_runner(), transaction.atomic(router.db_for_write(ProjectOption)):
+        default_project.update_option(
+            "sentry:relay_pii_config", '{"applications": {"$string": ["@creditcard:mask"]}}'
+        )
+
+        # Assert that cache entry hasn't been created yet, only after the
+        # transaction has committed.
+        assert redis_cache.get(default_projectkey.public_key) == {"dummy": "dummy"}
+
+    assert redis_cache.get(default_projectkey.public_key)["config"]["piiConfig"] == {
+        "applications": {"$string": ["@creditcard:mask"]}
+    }
+
+    try:
+        with task_runner(), transaction.atomic(router.db_for_write(ProjectOption)):
+            default_project.update_option(
+                "sentry:relay_pii_config", '{"applications": {"$string": ["@password:mask"]}}'
+            )
+
+            raise Exception("rollback!")
+
+    except Exception:
+        pass
+
+    # Assert that database rollback is honored
+    assert redis_cache.get(default_projectkey.public_key)["config"]["piiConfig"] == {
+        "applications": {"$string": ["@creditcard:mask"]}
+    }
+
+
+@django_db_all(transaction=True)
+class TestInvalidationTask:
+    def test_debounce(
+        self,
+        default_project,
+        default_organization,
+        invalidation_debounce_cache,
+        django_cache,
+    ):
+        tasks = []
+
+        def apply_async(args=None, kwargs=None, countdown=None):
+            assert not args
+            tasks.append(kwargs)
+
+        with mock.patch("sentry.tasks.relay.invalidate_project_config.apply_async", apply_async):
+            invalidation_debounce_cache.mark_task_done(
+                public_key=None, project_id=default_project.id, organization_id=None
+            )
+            schedule_invalidate_project_config(project_id=default_project.id, trigger="test")
+            schedule_invalidate_project_config(project_id=default_project.id, trigger="test")
+
+            invalidation_debounce_cache.mark_task_done(
+                public_key=None, project_id=None, organization_id=default_organization.id
+            )
+            schedule_invalidate_project_config(
+                organization_id=default_organization.id, trigger="test", trigger_details="more test"
+            )
+            schedule_invalidate_project_config(
+                organization_id=default_organization.id, trigger="test", trigger_details="more test"
+            )
+
+        assert tasks == [
+            {
+                "project_id": default_project.id,
+                "organization_id": None,
+                "public_key": None,
+                "trigger": "test",
+                "trigger_details": None,
+            },
+            {
+                "project_id": None,
+                "organization_id": default_organization.id,
+                "public_key": None,
+                "trigger": "test",
+                "trigger_details": "more test",
+            },
+        ]
+
+    def test_invalidate(
+        self,
+        default_project,
+        default_organization,
+        default_projectkey,
+        task_runner,
+        redis_cache,
+        django_cache,
+    ):
+        cfg = {"dummy-key": "val"}
+        redis_cache.set_many({default_projectkey.public_key: cfg})
+        assert redis_cache.get(default_projectkey.public_key) == cfg
+
+        with task_runner():
+            schedule_invalidate_project_config(project_id=default_project.id, trigger="test")
+
+        for cache_key in _cache_keys_for_project(default_project):
+            cfg_from_cache = redis_cache.get(cache_key)
+            assert "dummy-key" not in cfg_from_cache
+            assert cfg_from_cache["disabled"] is False
+            assert cfg_from_cache["projectId"] == default_project.id
+
+    def test_invalidate_org(
+        self,
+        default_project,
+        default_organization,
+        default_projectkey,
+        redis_cache,
+        task_runner,
+        django_cache,
+    ):
+        # Currently for org-wide we delete the config instead of computing it.
+        cfg = {"dummy-key": "val"}
+        redis_cache.set_many({default_projectkey.public_key: cfg})
+        assert redis_cache.get(default_projectkey.public_key) == cfg
+
+        with task_runner():
+            schedule_invalidate_project_config(
+                organization_id=default_organization.id, trigger="test"
+            )
+
+        for cache_key in _cache_keys_for_project(default_project):
+            new_cfg = redis_cache.get(cache_key)
+            assert new_cfg is not None
+            assert new_cfg != cfg
+
+    @mock.patch(
+        "sentry.tasks.relay._schedule_invalidate_project_config",
+        wraps=_schedule_invalidate_project_config,
+    )
+    @mock.patch("django.db.transaction.on_commit", wraps=transaction.on_commit)
+    def test_project_config_invalidations_after_commit(
+        self,
+        oncommit,
+        schedule_inner,
+        default_project,
+    ):
+        schedule_invalidate_project_config(
+            trigger="test", project_id=default_project.id, countdown=2
+        )
+
+        assert oncommit.call_count == 1
+        assert schedule_inner.call_count == 1
+        assert schedule_inner.call_args == mock.call(
+            trigger="test",
+            trigger_details=None,
+            organization_id=None,
+            project_id=default_project.id,
+            public_key=None,
+            countdown=2,
+        )
+
+    @mock.patch("sentry.tasks.relay._schedule_invalidate_project_config")
+    def test_project_config_invalidations_delayed(
+        self,
+        schedule_inner,
+        default_project,
+    ):
+        with transaction.atomic(router.db_for_write(ProjectOption)):
+            schedule_invalidate_project_config(
+                trigger="inside-transaction", project_id=default_project, countdown=2
+            )
+            assert schedule_inner.call_count == 0
+
+        assert schedule_inner.call_count == 1
+        schedule_invalidate_project_config(
+            trigger="outside-transaction", project_id=default_project, countdown=2
+        )
+        assert schedule_inner.call_count == 2
+
+
+@override_options({"taskworker.enabled": True})
+@django_db_all(transaction=True)
+@thread_leak_allowlist(reason="relay integration tests", issue=97040)
+def test_invalidate_hierarchy(
+    default_project,
+    default_projectkey,
+    redis_cache,
+    debounce_cache,
+    invalidation_debounce_cache,
+    django_cache,
+):
+    # Put something in the cache, otherwise the invalidation task won't compute anything.
+    redis_cache.set_many({default_projectkey.public_key: {"dummy": "dummy"}})
+
+    orig_apply_async = invalidate_project_config.apply_async
+    calls = []
+
+    def proxy(*args, **kwargs):
+        calls.append((args, kwargs))
+        orig_apply_async(*args, **kwargs)
+
+    with (
+        mock.patch.object(invalidate_project_config, "apply_async", proxy),
+        BurstTaskRunner() as run,
+    ):
+        schedule_invalidate_project_config(
+            organization_id=default_project.organization.id, trigger="test"
+        )
+        schedule_invalidate_project_config(project_id=default_project.id, trigger="test")
+        run(max_jobs=10)
+
+    assert len(calls) == 1
+    cache = redis_cache.get(default_projectkey)
+    assert cache["disabled"] is False
+
+
+@django_db_all(transaction=True)
+@override_options({"relay.invalidation-direct-outside-atomic": False})
+def test_schedule_invalidate_project_config_without_autocommit_option_off(default_project):
+    """
+    Without the option, the old behavior is preserved: on_commit() is called
+    unconditionally, which raises TransactionManagementError when autocommit
+    is off and there is no active atomic block.
+    """
+    conn = connections["default"]
+    conn.ensure_connection()
+    try:
+        conn.set_autocommit(False)
+        with pytest.raises(TransactionManagementError):
+            schedule_invalidate_project_config(
+                project_id=default_project.id,
+                trigger="test",
+            )
+    finally:
+        conn.rollback()
+        conn.set_autocommit(True)
+
+
+@django_db_all(transaction=True)
+@override_options({"relay.invalidation-direct-outside-atomic": True})
+def test_schedule_invalidate_project_config_without_autocommit_option_on(default_project):
+    """
+    Regression test: with the option enabled, schedule_invalidate_project_config
+    must not raise TransactionManagementError when called without autocommit and
+    outside an atomic block, as happens in the taskworker.
+
+    See: https://sentry.sentry.io/issues/7223923952/
+    """
+    conn = connections["default"]
+    conn.ensure_connection()
+    try:
+        conn.set_autocommit(False)
+        with mock.patch("sentry.tasks.relay._schedule_invalidate_project_config") as mock_schedule:
+            schedule_invalidate_project_config(
+                project_id=default_project.id,
+                trigger="test",
+            )
+            # The callback should have been called directly (not via on_commit)
+            assert mock_schedule.call_count == 1
+            mock_schedule.assert_called_once_with(
+                trigger="test",
+                trigger_details=None,
+                organization_id=None,
+                project_id=default_project.id,
+                public_key=None,
+                countdown=5,
+            )
+    finally:
+        conn.rollback()
+        conn.set_autocommit(True)

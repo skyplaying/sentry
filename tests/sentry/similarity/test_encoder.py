@@ -3,7 +3,7 @@ import pytest
 from sentry.similarity.encoder import Encoder
 
 
-def test_builtin_types():
+def test_builtin_types() -> None:
     encoder = Encoder()
     values = [
         1,
@@ -18,11 +18,6 @@ def test_builtin_types():
         [{"a": 1}, set("b"), ["c"], "text"],
     ]
 
-    try:
-        values.append(long(1))  # noqa
-    except NameError:
-        pass
-
     for value in values:
         encoded = encoder.dumps(value)
         assert isinstance(encoded, bytes)
@@ -31,7 +26,7 @@ def test_builtin_types():
         encoder.dumps(object())
 
 
-def test_custom_types():
+def test_custom_types() -> None:
     class Widget:
         def __init__(self, color):
             self.color = color

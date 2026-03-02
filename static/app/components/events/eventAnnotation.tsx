@@ -1,18 +1,18 @@
 import styled from '@emotion/styled';
 
-import space from 'app/styles/space';
+import {space} from 'sentry/styles/space';
 
 const EventAnnotation = styled('span')`
-  font-size: ${p => p.theme.fontSizeSmall};
-  border-left: 1px solid ${p => p.theme.innerBorder};
+  font-size: ${p => p.theme.font.size.sm};
+  border-left: 1px solid ${p => p.theme.tokens.border.secondary};
   padding-left: ${space(1)};
-  color: ${p => p.theme.gray300};
+  color: ${p => p.theme.tokens.content.secondary};
 
   a {
-    color: ${p => p.theme.gray300};
+    color: ${p => p.theme.tokens.content.secondary};
 
     &:hover {
-      color: ${p => p.theme.subText};
+      color: ${p => p.theme.tokens.content.secondary};
     }
   }
 `;

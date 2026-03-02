@@ -1,8 +1,15 @@
-import {useEffect, useRef} from 'react';
+import {useCallback, useEffect, useRef} from 'react';
 
-import {Client} from 'app/api';
+import {Client} from 'sentry/api';
 
 type Options = {
+  /**
+   * An existing API client may be provided.
+   *
+   * This is a continent way to re-use clients and still inherit the
+   * persistInFlight configuration.
+   */
+  api?: Client;
   /**
    * Enabling this option will disable clearing in-flight requests when the
    * component is unmounted.
@@ -12,21 +19,14 @@ type Options = {
    * component is unmounted.
    */
   persistInFlight?: boolean;
-  /**
-   * An existing API client may be provided.
-   *
-   * This is a continent way to re-use clients and still inherit the
-   * persistInFlight configuration.
-   */
-  api?: Client;
 };
 
 /**
- * Returns an API client that will have it's requests canceled when the owning
+ * Returns an API client that will have its requests canceled when the owning
  * React component is unmounted (may be disabled via options).
  */
 function useApi({persistInFlight, api: providedApi}: Options = {}) {
-  const localApi = useRef<Client>();
+  const localApi = useRef<Client | undefined>(undefined);
 
   // Lazily construct the client if we weren't provided with one
   if (localApi.current === undefined && providedApi === undefined) {
@@ -36,11 +36,14 @@ function useApi({persistInFlight, api: providedApi}: Options = {}) {
   // Use the provided client if available
   const api = providedApi ?? localApi.current!;
 
-  function handleCleanup() {
-    !persistInFlight && api.clear();
-  }
+  // Clear API calls on unmount (if persistInFlight is disabled
+  const clearOnUnmount = useCallback(() => {
+    if (!persistInFlight) {
+      api.clear();
+    }
+  }, [api, persistInFlight]);
 
-  useEffect(() => handleCleanup, []);
+  useEffect(() => clearOnUnmount, [clearOnUnmount]);
 
   return api;
 }

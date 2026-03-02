@@ -1,78 +1,80 @@
-import {Component, Fragment} from 'react';
-import {RouteComponentProps} from 'react-router';
+import {Fragment} from 'react';
+import styled from '@emotion/styled';
 
-import Link from 'app/components/links/link';
-import NavTabs from 'app/components/navTabs';
-import SentryDocumentTitle from 'app/components/sentryDocumentTitle';
-import {t} from 'app/locale';
-import {Project} from 'app/types';
-import recreateRoute from 'app/utils/recreateRoute';
-import SettingsPageHeader from 'app/views/settings/components/settingsPageHeader';
-import TextBlock from 'app/views/settings/components/text/textBlock';
-import PermissionAlert from 'app/views/settings/project/permissionAlert';
-import GroupTombstones from 'app/views/settings/project/projectFilters/groupTombstones';
-import ProjectFiltersChart from 'app/views/settings/project/projectFilters/projectFiltersChart';
-import ProjectFiltersSettings from 'app/views/settings/project/projectFilters/projectFiltersSettings';
+import {TabList, Tabs} from '@sentry/scraps/tabs';
 
-type Props = {
-  project: Project;
-} & RouteComponentProps<{projectId: string; orgId: string; filterType: string}, {}>;
+import SentryDocumentTitle from 'sentry/components/sentryDocumentTitle';
+import {t} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import recreateRoute from 'sentry/utils/recreateRoute';
+import {useParams} from 'sentry/utils/useParams';
+import {useRoutes} from 'sentry/utils/useRoutes';
+import SettingsPageHeader from 'sentry/views/settings/components/settingsPageHeader';
+import TextBlock from 'sentry/views/settings/components/text/textBlock';
+import GroupTombstones from 'sentry/views/settings/project/projectFilters/groupTombstones';
+import {ProjectFiltersChart} from 'sentry/views/settings/project/projectFilters/projectFiltersChart';
+import {ProjectFiltersSettings} from 'sentry/views/settings/project/projectFilters/projectFiltersSettings';
+import {ProjectPermissionAlert} from 'sentry/views/settings/project/projectPermissionAlert';
+import {useProjectSettingsOutlet} from 'sentry/views/settings/project/projectSettingsLayout';
 
-class ProjectFilters extends Component<Props> {
-  render() {
-    const {project, params, location} = this.props;
-    const {orgId, projectId, filterType} = params;
-    if (!project) {
-      return null;
-    }
+export default function ProjectFilters() {
+  const routes = useRoutes();
+  const params = useParams<{filterType: string; projectId: string}>();
+  const {projectId, filterType} = params;
+  const {project} = useProjectSettingsOutlet();
 
-    const features = new Set(project.features);
+  if (!project) {
+    return null;
+  }
 
-    return (
-      <Fragment>
-        <SentryDocumentTitle title={t('Inbound Filters')} projectSlug={projectId} />
-        <SettingsPageHeader title={t('Inbound Data Filters')} />
-        <PermissionAlert />
+  const features = new Set(project.features);
 
-        <TextBlock>
-          {t(
-            'Filters allow you to prevent Sentry from storing events in certain situations. Filtered events are tracked separately from rate limits, and do not apply to any project quotas.'
-          )}
-        </TextBlock>
+  return (
+    <Fragment>
+      <SentryDocumentTitle title={t('Inbound Filters')} projectSlug={projectId} />
+      <SettingsPageHeader title={t('Inbound Data Filters')} />
+      <TextBlock>
+        {t(
+          'Filters allow you to prevent Sentry from storing events in certain situations. Filtered events are tracked separately from rate limits, and do not apply to any project quotas.'
+        )}
+      </TextBlock>
 
-        <div>
-          <ProjectFiltersChart project={project} params={this.props.params} />
+      <ProjectPermissionAlert project={project} />
 
-          {features.has('discard-groups') && (
-            <NavTabs underlined style={{paddingTop: '30px'}}>
-              <li className={filterType === 'data-filters' ? 'active' : ''}>
-                <Link to={recreateRoute('data-filters/', {...this.props, stepBack: -1})}>
+      <div>
+        <ProjectFiltersChart project={project} />
+
+        {features.has('discard-groups') && (
+          <TabsContainer>
+            <Tabs value={filterType}>
+              <TabList>
+                <TabList.Item
+                  key="data-filters"
+                  to={recreateRoute('data-filters/', {routes, params, stepBack: -1})}
+                >
                   {t('Data Filters')}
-                </Link>
-              </li>
-              <li className={filterType === 'discarded-groups' ? 'active' : ''}>
-                <Link
-                  to={recreateRoute('discarded-groups/', {...this.props, stepBack: -1})}
+                </TabList.Item>
+                <TabList.Item
+                  key="discarded-groups"
+                  to={recreateRoute('discarded-groups/', {routes, params, stepBack: -1})}
                 >
                   {t('Discarded Issues')}
-                </Link>
-              </li>
-            </NavTabs>
-          )}
+                </TabList.Item>
+              </TabList>
+            </Tabs>
+          </TabsContainer>
+        )}
 
-          {filterType === 'discarded-groups' ? (
-            <GroupTombstones orgId={orgId} projectId={project.slug} location={location} />
-          ) : (
-            <ProjectFiltersSettings
-              project={project}
-              params={this.props.params}
-              features={features}
-            />
-          )}
-        </div>
-      </Fragment>
-    );
-  }
+        {filterType === 'discarded-groups' ? (
+          <GroupTombstones project={project} />
+        ) : (
+          <ProjectFiltersSettings project={project} params={params} features={features} />
+        )}
+      </div>
+    </Fragment>
+  );
 }
 
-export default ProjectFilters;
+const TabsContainer = styled('div')`
+  margin-bottom: ${space(2)};
+`;

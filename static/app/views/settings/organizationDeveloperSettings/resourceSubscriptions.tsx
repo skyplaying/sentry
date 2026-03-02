@@ -1,25 +1,24 @@
 import {Component, Fragment} from 'react';
 import styled from '@emotion/styled';
 
-import {Context} from 'app/components/forms/form';
-import {Permissions, WebhookEvent} from 'app/types';
-import FormContext from 'app/views/settings/components/forms/formContext';
+import FormContext from 'sentry/components/forms/formContext';
+import type {Permissions, WebhookEvent} from 'sentry/types/integrations';
 import {
   EVENT_CHOICES,
   PERMISSIONS_MAP,
-} from 'app/views/settings/organizationDeveloperSettings/constants';
-import SubscriptionBox from 'app/views/settings/organizationDeveloperSettings/subscriptionBox';
+} from 'sentry/views/settings/organizationDeveloperSettings/constants';
+import SubscriptionBox from 'sentry/views/settings/organizationDeveloperSettings/subscriptionBox';
 
-type Resource = typeof EVENT_CHOICES[number];
+type Resource = (typeof EVENT_CHOICES)[number];
 
 type DefaultProps = {
   webhookDisabled: boolean;
 };
 
 type Props = DefaultProps & {
-  permissions: Permissions;
   events: WebhookEvent[];
   onChange: (events: WebhookEvent[]) => void;
+  permissions: Permissions;
 };
 
 export default class Subscriptions extends Component<Props> {
@@ -27,35 +26,38 @@ export default class Subscriptions extends Component<Props> {
     webhookDisabled: false,
   };
 
-  constructor(props: Props, context: Context) {
-    super(props, context);
+  UNSAFE_componentWillMount(): void {
     this.context.form.setValue('events', this.props.events);
   }
 
-  UNSAFE_componentWillReceiveProps(nextProps: Props) {
-    // if webhooks are disabled, unset the events
-    if (nextProps.webhookDisabled && this.props.events.length) {
-      this.save([]);
-    }
-  }
-
-  componentDidUpdate() {
-    const {permissions, events} = this.props;
+  componentDidUpdate(prevProps: Props) {
+    const {webhookDisabled, permissions, events} = this.props;
 
     const permittedEvents = events.filter(
       resource => permissions[PERMISSIONS_MAP[resource]] !== 'no-access'
     );
+
+    // When disabling webhooks unset the events
+    if (!prevProps.webhookDisabled && webhookDisabled && prevProps.events.length) {
+      this.save([]);
+      return;
+    }
 
     if (JSON.stringify(events) !== JSON.stringify(permittedEvents)) {
       this.save(permittedEvents);
     }
   }
 
+  declare context: Required<React.ContextType<typeof FormContext>>;
   static contextType = FormContext;
 
   onChange = (resource: Resource, checked: boolean) => {
     const events = new Set(this.props.events);
-    checked ? events.add(resource) : events.delete(resource);
+    if (checked) {
+      events.add(resource);
+    } else {
+      events.delete(resource);
+    }
     this.save(Array.from(events));
   };
 
@@ -81,6 +83,7 @@ export default class Subscriptions extends Component<Props> {
                 checked={events.includes(choice) && !disabledFromPermissions}
                 resource={choice}
                 onChange={this.onChange}
+                isNew={false}
               />
             </Fragment>
           );
@@ -91,6 +94,9 @@ export default class Subscriptions extends Component<Props> {
 }
 
 const SubscriptionGrid = styled('div')`
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template: auto / 1fr 1fr 1fr;
+  @media (max-width: ${props => props.theme.breakpoints.lg}) {
+    grid-template: 1fr 1fr 1fr / auto;
+  }
 `;

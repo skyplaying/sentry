@@ -1,12 +1,11 @@
-import * as React from 'react';
-import * as Sentry from '@sentry/react';
+import {cloneElement, Fragment, isValidElement} from 'react';
+// @ts-expect-error TS(7016): Could not find a declaration file for module 'jed'... Remove this comment to see the full error message
 import Jed from 'jed';
-import isArray from 'lodash/isArray';
-import isObject from 'lodash/isObject';
-import isString from 'lodash/isString';
+// @ts-expect-error TS(7016): Could not find a declaration file for module 'spri... Remove this comment to see the full error message
 import {sprintf} from 'sprintf-js';
 
-import localStorage from 'app/utils/localStorage';
+import toArray from 'sentry/utils/array/toArray';
+import localStorage from 'sentry/utils/localStorage';
 
 const markerStyles = {
   background: '#ff801790',
@@ -23,7 +22,7 @@ export const DEFAULT_LOCALE_DATA = {
   },
 };
 
-export function setLocaleDebug(value: boolean) {
+function setLocaleDebug(value: boolean) {
   localStorage.setItem('localeDebug', value ? '1' : '0');
   // eslint-disable-next-line no-console
   console.log(`Locale debug is: ${value ? 'on' : 'off'}. Reload page to apply changes!`);
@@ -41,7 +40,8 @@ export function toggleLocaleDebug() {
 /**
  * Global Jed locale object loaded with translations via setLocale
  */
-let i18n: any = null;
+let i18n: Jed | null = null;
+const staticTranslations = new Set<string>();
 
 /**
  * Set the current application locale.
@@ -50,7 +50,7 @@ let i18n: any = null;
  * translation functions, as this mutates a singleton translation object used
  * to lookup translations at runtime.
  */
-export function setLocale(translations: any) {
+export function setLocale(translations: any): Jed {
   i18n = new Jed({
     domain: 'sentry',
     missing_key_callback: () => {},
@@ -68,29 +68,32 @@ type FormatArg = ComponentMap | React.ReactNode;
  * Helper to return the i18n client, and initialize for the default locale (English)
  * if it has otherwise not been initialized.
  */
-function getClient() {
+function getClient(): Jed | null {
   if (!i18n) {
-    // If this happens, it could mean that an import was added/changed where
-    // locale initialization does not happen soon enough.
-    const warning = new Error('Locale not set, defaulting to English');
-    console.error(warning); // eslint-disable-line no-console
-    Sentry.captureException(warning);
     return setLocale(DEFAULT_LOCALE_DATA);
   }
 
   return i18n;
 }
 
+export function isStaticString(formatString: string): boolean {
+  if (formatString.trim() === '') {
+    return false;
+  }
+
+  return staticTranslations.has(formatString);
+}
+
 /**
  * printf style string formatting which render as react nodes.
  */
-function formatForReact(formatString: string, args: FormatArg[]) {
-  const nodes: React.ReactNodeArray = [];
+function formatForReact(formatString: string, args: FormatArg[]): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
   let cursor = 0;
 
   // always re-parse, do not cache, because we change the match
   sprintf.parse(formatString).forEach((match: any, idx: number) => {
-    if (isString(match)) {
+    if (typeof match === 'string') {
       nodes.push(match);
       return;
     }
@@ -106,16 +109,16 @@ function formatForReact(formatString: string, args: FormatArg[]) {
     }
 
     // this points to a react element!
-    if (React.isValidElement(arg)) {
-      nodes.push(React.cloneElement(arg, {key: idx}));
+    if (isValidElement(arg)) {
+      nodes.push(cloneElement(arg, {key: idx}));
     } else {
-      // not a react element, fuck around with it so that sprintf.format
-      // can format it for us.  We make sure match[2] is null so that we
-      // do not go down the object path, and we set match[1] to the first
-      // index and then pass an array with two items in.
+      // Not a react element, massage it so that sprintf.format can format it
+      // for us.  We make sure match[2] is null so that we do not go down the
+      // object path, and we set match[1] to the first index and then pass an
+      // array with two items in.
       match[2] = null;
       match[1] = 1;
-      nodes.push(<span key={idx++}>{sprintf.format([match], [null, arg])}</span>);
+      nodes.push(<Fragment key={idx++}>{sprintf.format([match], [null, arg])}</Fragment>);
     }
   });
 
@@ -125,18 +128,18 @@ function formatForReact(formatString: string, args: FormatArg[]) {
 /**
  * Determine if any arguments include React elements.
  */
-function argsInvolveReact(args: FormatArg[]) {
-  if (args.some(React.isValidElement)) {
+function argsInvolveReact(args: FormatArg[]): boolean {
+  if (args.some(isValidElement)) {
     return true;
   }
 
-  if (args.length !== 1 || !isObject(args[0])) {
+  if (args.length !== 1 || !args[0] || typeof args[0] !== 'object') {
     return false;
   }
 
   const componentMap = args[0] as ComponentMap;
 
-  return Object.keys(componentMap).some(key => React.isValidElement(componentMap[key]));
+  return Object.keys(componentMap).some(key => isValidElement(componentMap[key]));
 }
 
 /**
@@ -144,12 +147,12 @@ function argsInvolveReact(args: FormatArg[]) {
  * this represents either a portion of the string, or a object with the group
  * key indicating the group to lookup the group value in.
  */
-type TemplateSubvalue = string | {group: string};
+type TemplateSubvalue = string | {group: string; id: string};
 
 /**
  * ParsedTemplate is a mapping of group names to Template Subvalue arrays.
  */
-type ParsedTemplate = {[group: string]: TemplateSubvalue[]};
+type ParsedTemplate = Record<string, TemplateSubvalue[]>;
 
 /**
  * ComponentMap maps template group keys to react node instances.
@@ -161,7 +164,7 @@ type ParsedTemplate = {[group: string]: TemplateSubvalue[]};
  * In the above example the component map of {groupName: <strong>text</strong>}
  * will be translated to `<strong>this string is the sub value</strong>`.
  */
-type ComponentMap = {[group: string]: React.ReactNode};
+type ComponentMap = Record<string, React.ReactNode>;
 
 /**
  * Parses a template string into groups.
@@ -169,8 +172,9 @@ type ComponentMap = {[group: string]: React.ReactNode};
  * The top level group will be keyed as `root`. All other group names will have
  * been extracted from the template string.
  */
-export function parseComponentTemplate(template: string) {
+function parseComponentTemplate(template: string): ParsedTemplate {
   const parsed: ParsedTemplate = {};
+  let groupId = 1;
 
   function process(startPos: number, group: string, inGroup: boolean) {
     const regex = /\[(.*?)(:|\])|\]/g;
@@ -183,7 +187,7 @@ export function parseComponentTemplate(template: string) {
 
     // eslint-disable-next-line no-cond-assign
     while ((match = regex.exec(template)) !== null) {
-      const substr = template.substr(pos, match.index - pos);
+      const substr = template.substring(pos, match.index);
       if (substr !== '') {
         buf.push(substr);
       }
@@ -200,17 +204,20 @@ export function parseComponentTemplate(template: string) {
         }
       }
 
+      const currentGroupId = groupId.toString();
+      groupId++;
+
       if (closeBraceOrValueSeparator === ']') {
         pos = regex.lastIndex;
       } else {
-        pos = regex.lastIndex = process(regex.lastIndex, groupName, true);
+        pos = regex.lastIndex = process(regex.lastIndex, currentGroupId, true);
       }
-      buf.push({group: groupName});
+      buf.push({group: groupName!, id: currentGroupId});
     }
 
     let endPos = regex.lastIndex;
     if (!satisfied) {
-      const rest = template.substr(pos);
+      const rest = template.substring(pos);
       if (rest) {
         buf.push(rest);
       }
@@ -230,37 +237,40 @@ export function parseComponentTemplate(template: string) {
  * Renders a parsed template into a React tree given a ComponentMap to use for
  * the parsed groups.
  */
-export function renderTemplate(template: ParsedTemplate, components: ComponentMap) {
+function renderTemplate(
+  template: ParsedTemplate,
+  components: ComponentMap
+): React.JSX.Element {
   let idx = 0;
 
-  function renderGroup(groupKey: string) {
+  function renderGroup(name: string, id: string) {
     const children: React.ReactNode[] = [];
-    const group = template[groupKey] || [];
+    const group = template[id] || [];
 
     for (const item of group) {
-      if (isString(item)) {
-        children.push(<span key={idx++}>{item}</span>);
+      if (typeof item === 'string') {
+        children.push(<Fragment key={idx++}>{item}</Fragment>);
       } else {
-        children.push(renderGroup(item.group));
+        children.push(renderGroup(item.group, item.id));
       }
     }
 
     // In case we cannot find our component, we call back to an empty
     // span so that stuff shows up at least.
-    let reference = components[groupKey] ?? <span key={idx++} />;
+    let reference = components[name] ?? <Fragment key={idx++} />;
 
-    if (!React.isValidElement(reference)) {
-      reference = <span key={idx++}>{reference}</span>;
+    if (!isValidElement(reference)) {
+      reference = <Fragment key={idx++}>{reference}</Fragment>;
     }
 
     const element = reference as React.ReactElement;
 
     return children.length === 0
-      ? React.cloneElement(element, {key: idx++})
-      : React.cloneElement(element, {key: idx++}, children);
+      ? cloneElement(element, {key: idx++})
+      : cloneElement(element, {key: idx++}, children);
   }
 
-  return <React.Fragment>{renderGroup('root')}</React.Fragment>;
+  return <Fragment>{renderGroup('root', 'root')}</Fragment>;
 }
 
 /**
@@ -269,7 +279,7 @@ export function renderTemplate(template: ParsedTemplate, components: ComponentMa
  * NOTE: This is a no-op and will return the node if LOCALE_DEBUG is not
  * currently enabled. See setLocaleDebug and toggleLocaleDebug.
  */
-function mark<T>(node: T): T {
+function mark<T extends React.ReactNode>(node: T): T {
   if (!LOCALE_DEBUG) {
     return node;
   }
@@ -277,22 +287,23 @@ function mark<T>(node: T): T {
   // TODO(epurkhiser): Explain why we manually create a react node and assign
   // the toString function. This could likely also use better typing, but will
   // require some understanding of reacts internal types.
-  const proxy: any = {
+  const proxy = {
     $$typeof: Symbol.for('react.element'),
-    type: 'span',
+    type: Symbol.for('react.fragment'),
     key: null,
     ref: null,
     props: {
       style: markerStyles,
-      children: isArray(node) ? node : [node],
+      children: toArray(node),
     },
     _owner: null,
     _store: {},
   };
 
+  // eslint-disable-next-line @typescript-eslint/no-base-to-string
   proxy.toString = () => '✅' + node + '✅';
-
-  return proxy;
+  // TODO(TS): Should proxy be created using `React.createElement`?
+  return proxy as any as T;
 }
 
 /**
@@ -303,7 +314,7 @@ function mark<T>(node: T): T {
  *
  * [0]: https://github.com/alexei/sprintf.js
  */
-export function format(formatString: string, args: FormatArg[]) {
+function format(formatString: string, args: FormatArg[]): React.ReactNode {
   if (argsInvolveReact(args)) {
     return formatForReact(formatString, args);
   }
@@ -319,10 +330,11 @@ export function format(formatString: string, args: FormatArg[]) {
  *
  * [0]: https://github.com/alexei/sprintf.js
  */
-export function gettext(string: string, ...args: FormatArg[]) {
+function gettext(string: string, ...args: FormatArg[]): string {
   const val: string = getClient().gettext(string);
 
   if (args.length === 0) {
+    staticTranslations.add(val);
     return mark(val);
   }
 
@@ -342,15 +354,22 @@ export function gettext(string: string, ...args: FormatArg[]) {
  *
  * [0]: https://github.com/alexei/sprintf.js
  */
-export function ngettext(singular: string, plural: string, ...args: FormatArg[]) {
+function ngettext(singular: string, plural: string, ...args: FormatArg[]): string {
   let countArg = 0;
 
   if (args.length > 0) {
     countArg = Math.abs(args[0] as number) || 0;
 
-    // `toLocaleString` will render `999` as `"999"` but `9999` as `"9,999"`. This means that any call with `tn` or `ngettext` cannot use `%d` in the codebase but has to use `%s`.
-    // This means a string is always being passed in as an argument, but `sprintf-js` implicitly coerces strings that can be parsed as integers into an integer.
-    // This would break under any locale that used different formatting and other undesirable behaviors.
+    // `toLocaleString` will render `999` as `"999"` but `9999` as `"9,999"`.
+    // This means that any call with `tn` or `ngettext` cannot use `%d` in the
+    // codebase but has to use `%s`.
+    //
+    // This means a string is always being passed in as an argument, but
+    // `sprintf-js` implicitly coerces strings that can be parsed as integers
+    // into an integer.
+    //
+    // This would break under any locale that used different formatting and
+    // other undesirable behaviors.
     if ((singular + plural).includes('%d')) {
       // eslint-disable-next-line no-console
       console.error(new Error('You should not use %d within tn(), use %s instead'));
@@ -379,12 +398,39 @@ export function ngettext(singular: string, plural: string, ...args: FormatArg[])
  *
  * You may recursively nest additional groups within the grouped string values.
  */
-export function gettextComponentTemplate(template: string, components: ComponentMap) {
-  const tmpl = parseComponentTemplate(getClient().gettext(template));
-  return mark(renderTemplate(tmpl, components));
+function gettextComponentTemplate(
+  template: string,
+  components: ComponentMap
+): React.JSX.Element {
+  const parsedTemplate = parseComponentTemplate(getClient().gettext(template));
+  return mark(renderTemplate(parsedTemplate, components));
+}
+
+/**
+ * Helper over `gettextComponentTemplate` with a pre-populated `<code />` component that
+ * is commonly used.
+ */
+export function tctCode(template: string, components: ComponentMap = {}) {
+  return gettextComponentTemplate(template, {code: <code />, ...components});
+}
+
+/**
+ * Translates a string without formatting support. Used for translating
+ * pre-extracted strings like attribute descriptions from @sentry/conventions.
+ * This function is intentionally not included in the gettext extraction script.
+ */
+function gettextDescription(string: string): string {
+  const val: string = getClient().gettext(string);
+  staticTranslations.add(val);
+  return mark(val);
 }
 
 /**
  * Shorthand versions should primarily be used.
  */
-export {gettext as t, gettextComponentTemplate as tct, ngettext as tn};
+export {
+  gettext as t,
+  gettextComponentTemplate as tct,
+  ngettext as tn,
+  gettextDescription as td,
+};

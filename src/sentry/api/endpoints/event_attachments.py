@@ -1,20 +1,33 @@
-from sentry import eventstore, features
+from rest_framework.request import Request
+from rest_framework.response import Response
+
+from sentry import features
+from sentry.api.api_owners import ApiOwner
+from sentry.api.api_publish_status import ApiPublishStatus
+from sentry.api.base import region_silo_endpoint
 from sentry.api.bases.project import ProjectEndpoint
 from sentry.api.paginator import OffsetPaginator
 from sentry.api.serializers import serialize
-from sentry.models import EventAttachment
+from sentry.models.eventattachment import EventAttachment, event_attachment_screenshot_filter
 from sentry.search.utils import tokenize_query
+from sentry.services import eventstore
 
 
+@region_silo_endpoint
 class EventAttachmentsEndpoint(ProjectEndpoint):
-    def get(self, request, project, event_id):
+    owner = ApiOwner.OWNERS_INGEST
+    publish_status = {
+        "GET": ApiPublishStatus.PRIVATE,
+    }
+
+    def get(self, request: Request, project, event_id) -> Response:
         """
         Retrieve attachments for an event
         `````````````````````````````````
 
-        :pparam string organization_slug: the slug of the organization the
+        :pparam string organization_id_or_slug: the id or slug of the organization the
                                           issues belong to.
-        :pparam string project_slug: the slug of the project the event
+        :pparam string project_id_or_slug: the id or slug of the project the event
                                      belongs to.
         :pparam string event_id: the id of the event.
         :auth: required
@@ -24,7 +37,7 @@ class EventAttachmentsEndpoint(ProjectEndpoint):
         ):
             return self.respond(status=404)
 
-        event = eventstore.get_event_by_id(project.id, event_id)
+        event = eventstore.backend.get_event_by_id(project.id, event_id)
         if event is None:
             return self.respond({"detail": "Event not found"}, status=404)
 
@@ -35,8 +48,12 @@ class EventAttachmentsEndpoint(ProjectEndpoint):
             tokens = tokenize_query(query)
             for key, value in tokens.items():
                 if key == "query":
-                    value = " ".join(value)
-                    queryset = queryset.filter(name__icontains=value)
+                    value_s = " ".join(value)
+                    queryset = queryset.filter(name__icontains=value_s)
+                elif key == "is":
+                    value_s = " ".join(value)
+                    if value_s == "screenshot":
+                        queryset = event_attachment_screenshot_filter(queryset)
                 else:
                     queryset = queryset.none()
 

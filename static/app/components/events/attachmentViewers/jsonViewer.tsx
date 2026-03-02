@@ -1,49 +1,64 @@
 import styled from '@emotion/styled';
 
-import AsyncComponent from 'app/components/asyncComponent';
-import ContextData from 'app/components/contextData';
-import PreviewPanelItem from 'app/components/events/attachmentViewers/previewPanelItem';
-import {
-  getAttachmentUrl,
-  ViewerProps,
-} from 'app/components/events/attachmentViewers/utils';
+import {Flex} from '@sentry/scraps/layout';
 
-type Props = ViewerProps & AsyncComponent['props'];
+import PreviewPanelItem from 'sentry/components/events/attachmentViewers/previewPanelItem';
+import type {ViewerProps} from 'sentry/components/events/attachmentViewers/utils';
+import {getAttachmentUrl} from 'sentry/components/events/attachmentViewers/utils';
+import LoadingError from 'sentry/components/loadingError';
+import LoadingIndicator from 'sentry/components/loadingIndicator';
+import {JsonEventData} from 'sentry/components/structuredEventData/jsonEventData';
+import {t} from 'sentry/locale';
+import {useApiQuery} from 'sentry/utils/queryClient';
 
-type State = AsyncComponent['state'];
-
-export default class JsonViewer extends AsyncComponent<Props, State> {
-  getEndpoints(): [string, string][] {
-    return [['attachmentJson', getAttachmentUrl(this.props)]];
-  }
-
-  renderBody() {
-    const {attachmentJson} = this.state;
-    if (!attachmentJson) {
-      return null;
+export default function JsonViewer(props: ViewerProps) {
+  const query = useApiQuery(
+    [
+      getAttachmentUrl(props),
+      {headers: {Accept: '*/*; charset=utf-8'}, query: {download: true}},
+    ],
+    {
+      staleTime: Infinity,
+      retry: false,
     }
+  );
 
-    let json;
-    try {
-      json = JSON.parse(attachmentJson);
-    } catch (e) {
-      json = null;
-    }
-
+  if (query.isPending) {
     return (
-      <PreviewPanelItem>
-        <StyledContextData
-          data={json}
-          maxDefaultDepth={4}
-          preserveQuotes
-          style={{width: '100%'}}
-          jsonConsts
-        />
-      </PreviewPanelItem>
+      <Flex align="center" padding="md">
+        <LoadingIndicator mini />
+      </Flex>
     );
   }
+
+  if (query.isError) {
+    return (
+      <LoadingError message={t('Failed to load attachment.')} onRetry={query.refetch} />
+    );
+  }
+
+  if (!query.data) {
+    return null;
+  }
+
+  let json: any;
+  try {
+    /**
+     * The api might return a string or an object depending on headers and filename.
+     */
+    json = typeof query.data === 'object' ? query.data : JSON.parse(query.data as string);
+  } catch (e) {
+    json = null;
+  }
+
+  return (
+    <PreviewPanelItem>
+      <StyledJsonData data={json} maxDefaultDepth={4} />
+    </PreviewPanelItem>
+  );
 }
 
-const StyledContextData = styled(ContextData)`
+const StyledJsonData = styled(JsonEventData)`
   margin-bottom: 0;
+  width: 100%;
 `;

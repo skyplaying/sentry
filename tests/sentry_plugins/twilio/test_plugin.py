@@ -1,17 +1,66 @@
+from functools import cached_property
 from urllib.parse import parse_qs
 
 import responses
-from exam import fixture
 
-from sentry.models import Rule
+from sentry.models.rule import Rule
 from sentry.plugins.base import Notification
-from sentry.testutils import PluginTestCase, TestCase
-from sentry.utils.compat import map
-from sentry_plugins.twilio.plugin import TwilioConfigurationForm, TwilioPlugin
+from sentry.testutils.cases import PluginTestCase, TestCase
+from sentry_plugins.twilio.plugin import TwilioConfigurationForm, TwilioPlugin, split_sms_to
+
+
+class TwilioPluginSMSSplitTest(TestCase):
+    def test_valid_split_sms_to(self) -> None:
+        to = "330-509-3095, (330)-509-3095, +13305093095, 4045550144"
+        expected = {"330-509-3095", "(330)-509-3095", "+13305093095", "4045550144"}
+        actual = split_sms_to(to)
+        assert expected == actual
+
+    def test_valid_split_sms_to_with_extra_spaces(self) -> None:
+        to = "330-509-3095       ,            (330)-509-3095,     +13305093095,    4045550144"
+        expected = {"330-509-3095", "(330)-509-3095", "+13305093095", "4045550144"}
+        actual = split_sms_to(to)
+        assert expected == actual
+
+    def test_valid_split_sms_to_with_just_spaces(self) -> None:
+        to = "330-509-3095 (330)-509-3095 +13305093095 4045550144"
+        expected = {"330-509-3095", "(330)-509-3095", "+13305093095", "4045550144"}
+        actual = split_sms_to(to)
+        assert expected == actual
+
+    def test_valid_split_sms_to_with_no_whitespace(self) -> None:
+        to = "330-509-3095,(330)-509-3095,+13305093095,4045550144"
+        expected = {"330-509-3095", "(330)-509-3095", "+13305093095", "4045550144"}
+        actual = split_sms_to(to)
+        assert expected == actual
+
+    def test_split_sms_to_with_single_number(self) -> None:
+        to = "555-555-5555"
+        expected = {"555-555-5555"}
+        actual = split_sms_to(to)
+        assert expected == actual
+
+    def test_valid_split_sms_to_newline(self) -> None:
+        to = "330-509-3095,\n(330)-509-3095\n,+13305093095\n,\n4045550144"
+        expected = {"330-509-3095", "(330)-509-3095", "+13305093095", "4045550144"}
+        actual = split_sms_to(to)
+        assert expected == actual
+
+    def test_valid_split_sms_to_with_just_newlines(self) -> None:
+        to = "330-509-3095\n(330)-509-3095\n+13305093095\n\n4045550144"
+        expected = {"330-509-3095", "(330)-509-3095", "+13305093095", "4045550144"}
+        actual = split_sms_to(to)
+        assert expected == actual
+
+    def test_valid_split_sms_to_with_extra_newlines(self) -> None:
+        to = "330-509-3095\n\n\n\n\n,\n\n\n\n\n\n\n\n\n(330)-509-3095,\n\n\n\n+13305093095,\n\n4045550144"
+        expected = {"330-509-3095", "(330)-509-3095", "+13305093095", "4045550144"}
+        actual = split_sms_to(to)
+        assert expected == actual
 
 
 class TwilioConfigurationFormTest(TestCase):
-    def test_valid_form(self):
+    def test_valid_form(self) -> None:
         form = TwilioConfigurationForm(
             data={
                 "sms_from": "3305093095",
@@ -22,8 +71,10 @@ class TwilioConfigurationFormTest(TestCase):
         )
 
         self.assertTrue(form.is_valid())
+        cleaned = form.clean()
+        assert cleaned is not None
         self.assertDictEqual(
-            form.clean(),
+            cleaned,
             {
                 "auth_token": "foo",
                 "sms_to": "+13305093095,+14045550144",
@@ -32,18 +83,15 @@ class TwilioConfigurationFormTest(TestCase):
             },
         )
 
-    def test_invalid_form(self):
+    def test_invalid_form(self) -> None:
         form = TwilioConfigurationForm(data={"sms_from": "foobar", "sms_to": "911"})
         self.assertFalse(form.is_valid())
         errors = form.errors.as_data()
 
-        # extracting the message from django.forms.ValidationError
-        # is the easiest and simplest way I've found to assert as_data
-        for e in errors:
-            errors[e] = map(lambda x: x.message, errors[e])
+        error_msgs = {k: [e.message for e in v] for k, v in errors.items()}
 
         self.assertDictEqual(
-            errors,
+            error_msgs,
             {
                 "auth_token": ["This field is required."],
                 "account_sid": ["This field is required."],
@@ -53,25 +101,23 @@ class TwilioConfigurationFormTest(TestCase):
         )
 
 
+def test_conf_key() -> None:
+    assert TwilioPlugin().conf_key == "twilio"
+
+
 class TwilioPluginTest(PluginTestCase):
-    @fixture
-    def plugin(self):
+    @cached_property
+    def plugin(self) -> TwilioPlugin:
         return TwilioPlugin()
 
-    def test_conf_key(self):
-        assert self.plugin.conf_key == "twilio"
-
-    def test_entry_point(self):
-        self.assertPluginInstalled("twilio", self.plugin)
-
-    def test_is_configured(self):
+    def test_is_configured(self) -> None:
         for o in ("account_sid", "auth_token", "sms_from", "sms_to"):
             assert self.plugin.is_configured(self.project) is False
             self.plugin.set_option(o, "foo", self.project)
         assert self.plugin.is_configured(self.project) is True
 
     @responses.activate
-    def test_simple_notification(self):
+    def test_simple_notification(self) -> None:
         responses.add("POST", "https://api.twilio.com/2010-04-01/Accounts/abcdef/Messages.json")
         self.plugin.set_option("account_sid", "abcdef", self.project)
         self.plugin.set_option("auth_token", "abcd", self.project)

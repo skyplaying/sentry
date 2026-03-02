@@ -1,17 +1,15 @@
 from django.test.client import RequestFactory
 from django.utils import timezone
 
-from tests.apidocs.util import APIDocsTestCase
+from fixtures.apidocs_test_case import APIDocsTestCase
 
 
 class ProjectUserFeedbackDocs(APIDocsTestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         event = self.create_event("a", message="oh no")
-        group = self.create_group(project=self.project, message="Foo bar")
         self.event_id = event.event_id
         self.create_userreport(
             date_added=timezone.now(),
-            group=group,
             project=self.project,
             event_id=self.event_id,
         )
@@ -20,13 +18,13 @@ class ProjectUserFeedbackDocs(APIDocsTestCase):
 
         self.login_as(user=self.user)
 
-    def test_get(self):
+    def test_get(self) -> None:
         response = self.client.get(self.url)
         request = RequestFactory().get(self.url)
 
         self.validate_schema(request, response)
 
-    def test_post(self):
+    def test_post(self) -> None:
         data = {
             "event_id": self.event_id,
             "name": "Hellboy",

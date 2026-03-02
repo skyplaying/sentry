@@ -1,30 +1,99 @@
+from __future__ import annotations
+
 import logging
+from collections.abc import Collection, Iterable, Mapping
+from datetime import datetime, timedelta, timezone
 from time import time
-from typing import Container, Optional
+from typing import TYPE_CHECKING, Any
+from urllib.parse import urlencode, urlparse
 
 from django.conf import settings
 from django.contrib.auth import login as _login
 from django.contrib.auth.backends import ModelBackend
+from django.contrib.auth.models import AnonymousUser
+from django.http.request import HttpRequest
 from django.urls import resolve, reverse
-from django.utils.http import is_safe_url
+from django.utils.http import url_has_allowed_host_and_scheme
+from rest_framework.request import Request
 
-from sentry.models import Authenticator, User
+from sentry import options
+from sentry.demo_mode.utils import is_demo_mode_enabled, is_demo_user
+from sentry.hybridcloud.models.outbox import outbox_context
+from sentry.models.organization import Organization
+from sentry.organizations.absolute_url import generate_organization_url
+from sentry.organizations.services.organization import RpcOrganization
+from sentry.users.models.user import User
+from sentry.users.services.user import RpcUser
+from sentry.users.services.user.service import user_service
+from sentry.utils import metrics
+from sentry.utils.http import absolute_uri
+
+if TYPE_CHECKING:
+    from django.utils.functional import _StrPromise
 
 logger = logging.getLogger("sentry.auth")
 
-_LOGIN_URL = None
-
-SSO_SESSION_KEY = "sso"
+_LOGIN_URL: str | None = None
 
 MFA_SESSION_KEY = "mfa"
 
+DISABLE_SSO_CHECK_FOR_LOCAL_DEV = getattr(settings, "DISABLE_SSO_CHECK_FOR_LOCAL_DEV", False)
+
+
+def _sso_expiry_from_env(seconds: str | None) -> timedelta:
+    if seconds is None:
+        return timedelta(days=7)
+    return timedelta(seconds=int(seconds))
+
+
+SSO_EXPIRY_TIME = _sso_expiry_from_env(settings.SENTRY_SSO_EXPIRY_SECONDS)
+
+
+class SsoSession:
+    """
+    The value returned from to_dict is stored in the django session cookie, with the org id being the key.
+    """
+
+    SSO_SESSION_KEY = "sso_s"
+    SSO_LOGIN_TIMESTAMP = "ts"
+
+    def __init__(self, organization_id: int, time: datetime) -> None:
+        self.organization_id = organization_id
+        self.authenticated_at_time = time
+        self.session_key = self.django_session_key(organization_id)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {self.SSO_LOGIN_TIMESTAMP: self.authenticated_at_time.timestamp()}
+
+    @classmethod
+    def create(cls, organization_id: int) -> SsoSession:
+        return cls(organization_id, datetime.now(tz=timezone.utc))
+
+    @classmethod
+    def from_django_session_value(
+        cls, organization_id: int, session_value: Mapping[str, Any]
+    ) -> SsoSession:
+        return cls(
+            organization_id,
+            datetime.fromtimestamp(session_value[cls.SSO_LOGIN_TIMESTAMP], tz=timezone.utc),
+        )
+
+    def is_sso_authtime_fresh(self) -> bool:
+        expired_time_cutoff = datetime.now(tz=timezone.utc) - SSO_EXPIRY_TIME
+
+        return self.authenticated_at_time > expired_time_cutoff
+
+    @staticmethod
+    def django_session_key(organization_id: int) -> str:
+        return f"{SsoSession.SSO_SESSION_KEY}:{organization_id}"
+
 
 class AuthUserPasswordExpired(Exception):
-    def __init__(self, user):
+    def __init__(self, user: User) -> None:
         self.user = user
 
 
-def get_auth_providers():
+def get_auth_providers() -> Collection[str]:
     return [
         key
         for key, cfg_names in settings.AUTH_PROVIDERS.items()
@@ -32,10 +101,10 @@ def get_auth_providers():
     ]
 
 
-def get_pending_2fa_user(request):
+def get_pending_2fa_user(request: HttpRequest) -> User | None:
     rv = request.session.get("_pending_2fa")
     if rv is None:
-        return
+        return None
 
     user_id, created_at = rv[:2]
     if created_at < time() - 60 * 5:
@@ -44,35 +113,42 @@ def get_pending_2fa_user(request):
     try:
         return User.objects.get(pk=user_id)
     except User.DoesNotExist:
-        pass
+        return None
 
 
-def has_pending_2fa(request):
+def has_pending_2fa(request: HttpRequest) -> bool:
     return request.session.get("_pending_2fa") is not None
 
 
-def get_login_url(reset=False):
+def get_login_url(reset: bool = False) -> str:
     global _LOGIN_URL
 
     if _LOGIN_URL is None or reset:
         # if LOGIN_URL resolves force login_required to it instead of our own
         # XXX: this must be done as late as possible to avoid idempotent requirements
+        value: str | _StrPromise | None
         try:
             resolve(settings.LOGIN_URL)
         except Exception:
-            _LOGIN_URL = settings.SENTRY_LOGIN_URL
+            value = settings.SENTRY_LOGIN_URL
         else:
-            _LOGIN_URL = settings.LOGIN_URL
+            value = settings.LOGIN_URL
 
-        if _LOGIN_URL is None:
-            _LOGIN_URL = reverse("sentry-login")
+        if value is None:
+            value = reverse("sentry-login")
         # ensure type is coerced to string (to avoid lazy proxies)
-        _LOGIN_URL = str(_LOGIN_URL)
+        _LOGIN_URL = str(value)
     return _LOGIN_URL
 
 
-def initiate_login(request, next_url=None):
-    for key in ("_next", "_after_2fa", "_pending_2fa"):
+def initiate_login(
+    request: HttpRequest, next_url: str | None = None, referrer: str | None = None
+) -> None:
+    """
+    Clears existing login state and initializes a new login flow.
+    Optionally sets the post-login redirect destination and referrer.
+    """
+    for key in ("_next", "_after_2fa", "_pending_2fa", "_referrer"):
         try:
             del request.session[key]
         except KeyError:
@@ -80,20 +156,22 @@ def initiate_login(request, next_url=None):
 
     if next_url:
         request.session["_next"] = next_url
+    if referrer:
+        request.session["_referrer"] = referrer
 
 
-def get_org_redirect_url(request, active_organization):
+def get_org_redirect_url(request: HttpRequest, active_organization: RpcOrganization | None) -> str:
     from sentry import features
 
     # TODO(dcramer): deal with case when the user cannot create orgs
     if active_organization:
-        return active_organization.get_url()
+        return Organization.get_url(active_organization.slug)
     if not features.has("organizations:create"):
         return "/auth/login/"
     return "/organizations/new/"
 
 
-def get_login_redirect(request, default=None):
+def _get_login_redirect(request: HttpRequest, default: str | None = None) -> str:
     if default is None:
         default = get_login_url()
 
@@ -118,58 +196,109 @@ def get_login_redirect(request, default=None):
     return login_url
 
 
-def is_valid_redirect(url: str, allowed_hosts: Optional[Container] = None) -> bool:
+def get_login_redirect(request: HttpRequest, default: str | None = None) -> str:
+    login_redirect = _get_login_redirect(request, default)
+    url_prefix = None
+    if hasattr(request, "subdomain") and request.subdomain:
+        url_prefix = generate_organization_url(request.subdomain)
+        return absolute_uri(login_redirect, url_prefix=url_prefix)
+    return login_redirect
+
+
+def is_valid_redirect(url: str, allowed_hosts: Iterable[str] | None = None) -> bool:
     if not url:
         return False
     if url.startswith(get_login_url()):
         return False
-    return is_safe_url(url, allowed_hosts=allowed_hosts)
+    parsed_url = urlparse(url)
+    url_host = parsed_url.netloc
+    base_hostname = options.get("system.base-hostname")
+    if url_host.endswith(f".{base_hostname}"):
+        if allowed_hosts is None:
+            allowed_hosts = {url_host}
+        else:
+            allowed_hosts = set(allowed_hosts)
+            allowed_hosts.add(url_host)
+    return url_has_allowed_host_and_scheme(url, allowed_hosts=allowed_hosts)
 
 
-def mark_sso_complete(request, organization_id):
+def mark_sso_complete(request: HttpRequest, organization_id: int) -> None:
+    """
+    Store sso session status in the django session per org, with the value being the timestamp of when they logged in,
+    for usage when expiring sso sessions.
+    """
     # TODO(dcramer): this needs to be bound based on SSO options (e.g. changing
     # or enabling SSO invalidates this)
-    sso = request.session.get(SSO_SESSION_KEY, "")
-    if sso:
-        sso = sso.split(",")
-    else:
-        sso = []
-    sso.append(str(organization_id))
-    request.session[SSO_SESSION_KEY] = ",".join(sso)
+    sso_session = SsoSession.create(organization_id)
+    request.session[sso_session.session_key] = sso_session.to_dict()
+
+    metrics.incr("sso.session-added-success")
+
     request.session.modified = True
 
 
-def has_completed_sso(request, organization_id):
-    sso = request.session.get(SSO_SESSION_KEY, "").split(",")
-    return str(organization_id) in sso
+def has_completed_sso(request: HttpRequest, organization_id: int) -> bool:
+    """
+    look for the org id under the sso session key, and check that the timestamp isn't past our expiry limit
+    """
+    if DISABLE_SSO_CHECK_FOR_LOCAL_DEV:
+        return True
+
+    sso_session_in_request = request.session.get(
+        SsoSession.django_session_key(organization_id), None
+    )
+
+    if not sso_session_in_request:
+        metrics.incr("sso.no-value-in-session")
+        return False
+
+    django_session_value = SsoSession.from_django_session_value(
+        organization_id, sso_session_in_request
+    )
+
+    if not django_session_value.is_sso_authtime_fresh():
+        metrics.incr("sso.session-timed-out")
+        return False
+
+    metrics.incr("sso.session-verify-success")
+
+    return True
 
 
-def find_users(username, with_valid_password=True, is_active=None):
+def find_users(
+    username: str | None, with_valid_password: bool = True, is_active: bool | None = None
+) -> list[User]:
     """
     Return a list of users that match a username
     and falling back to email
     """
-    qs = User.objects
-
+    if username is None:
+        return []
+    queryset = User.objects.filter()
     if is_active is not None:
-        qs = qs.filter(is_active=is_active)
-
+        queryset = queryset.filter(is_active=is_active)
     if with_valid_password:
-        qs = qs.exclude(password="!")
-
+        queryset = queryset.exclude(password="!")
     try:
-        # First, assume username is an iexact match for username
-        user = qs.get(username__iexact=username)
+        # First try username case insenstive match on username.
+        user = queryset.get(username__iexact=username)
         return [user]
     except User.DoesNotExist:
         # If not, we can take a stab at guessing it's an email address
         if "@" in username:
             # email isn't guaranteed unique
-            return list(qs.filter(email__iexact=username))
-    return []
+            return list(queryset.filter(email__iexact=username))
+        return []
 
 
-def login(request, user, passed_2fa=None, after_2fa=None, organization_id=None, source=None):
+def login(
+    request: HttpRequest,
+    user: User,
+    passed_2fa: bool | None = None,
+    after_2fa: str | None = None,
+    organization_id: int | None = None,
+    source: Any = None,
+) -> bool:
     """
     This logs a user in for the session and current request.
 
@@ -185,11 +314,10 @@ def login(request, user, passed_2fa=None, after_2fa=None, organization_id=None, 
 
     Returns boolean indicating if the user was logged in.
     """
-    has_2fa = Authenticator.objects.user_has_2fa(user)
     if passed_2fa is None:
         passed_2fa = request.session.get(MFA_SESSION_KEY, "") == str(user.id)
 
-    if has_2fa and not passed_2fa:
+    if user.has_2fa() and not passed_2fa:
         request.session["_pending_2fa"] = [user.id, time(), organization_id]
         if after_2fa is not None:
             request.session["_after_2fa"] = after_2fa
@@ -225,14 +353,24 @@ def login(request, user, passed_2fa=None, after_2fa=None, organization_id=None, 
     # reasonable place.
     if not hasattr(user, "backend"):
         user.backend = settings.AUTHENTICATION_BACKENDS[0]
-    _login(request, user)
     if organization_id:
         mark_sso_complete(request, organization_id)
+
+    # Do not require flush the user during login -- the mutation here is just  `last_login` update which isn't
+    # critical to flush.
+    with outbox_context(flush=False):
+        _login(request, user)
+
     log_auth_success(request, user.username, organization_id, source)
     return True
 
 
-def log_auth_success(request, username, organization_id=None, source=None):
+def log_auth_success(
+    request: HttpRequest,
+    username: str,
+    organization_id: int | None = None,
+    source: Any = None,
+) -> None:
     logger.info(
         "user.auth.success",
         extra={
@@ -244,26 +382,33 @@ def log_auth_success(request, username, organization_id=None, source=None):
     )
 
 
-def log_auth_failure(request, username=None):
+def log_auth_failure(request: HttpRequest, username: str | None = None) -> None:
     logger.info(
         "user.auth.fail", extra={"ip_address": request.META["REMOTE_ADDR"], "username": username}
     )
 
 
-def has_user_registration():
+def has_user_registration() -> bool:
     from sentry import features, options
 
     return features.has("auth:register") and options.get("auth.allow-registration")
 
 
-def is_user_signed_request(request):
+def is_user_signed_request(request: Request) -> bool:
     """
     This function returns True if the request is a signed valid link
     """
     try:
-        return request.user_from_signed_request
+        return bool(request.user_from_signed_request)
     except AttributeError:
         return False
+
+
+def set_active_org(request: HttpRequest, org_slug: str) -> None:
+    # even if the value being set is the same this will trigger a session
+    # modification and reset the users expiry, so check if they are different first.
+    if hasattr(request, "session") and request.session.get("activeorg") != org_slug:
+        request.session["activeorg"] = org_slug
 
 
 class EmailAuthBackend(ModelBackend):
@@ -273,22 +418,48 @@ class EmailAuthBackend(ModelBackend):
     Supports authenticating via an email address or a username.
     """
 
-    def authenticate(self, request, username=None, password=None):
-        users = find_users(username)
-        if users:
-            for user in users:
-                try:
-                    if user.password:
-                        # XXX(joshuarli): This is checked before (and therefore, regardless of outcome)
-                        # password checking as a mechanism to drop old password hashers immediately and
-                        # then lazily sending out password reset emails.
-                        if user.is_password_expired:
-                            raise AuthUserPasswordExpired(user)
-                        if user.check_password(password):
-                            return user
-                except ValueError:
-                    continue
+    def authenticate(
+        self,
+        request: HttpRequest | None,
+        username: str | None = None,
+        password: str | None = None,
+        **kwargs: Any,
+    ) -> User | None:
+        for user in find_users(username):
+            try:
+                if is_demo_mode_enabled() and is_demo_user(user):
+                    return user
+                if user.password:
+                    # XXX(joshuarli): This is checked before (and therefore, regardless of outcome)
+                    # password checking as a mechanism to drop old password hashers immediately and
+                    # then lazily sending out password reset emails.
+                    if user.is_password_expired:
+                        raise AuthUserPasswordExpired(user)
+                    if password is not None and user.check_password(password):
+                        return user
+            except ValueError:
+                continue
         return None
 
-    def user_can_authenticate(self, user):
+    def user_can_authenticate(self, user: User | AnonymousUser | None) -> bool:
         return True
+
+    def get_user(self, user_id: int) -> RpcUser | None:  # type: ignore[override]  # XXX: HC "pretends" to be the user model
+        return user_service.get_user(user_id=user_id)
+
+
+def construct_link_with_query(path: str, query_params: Mapping[str, str | None]) -> str:
+    """
+    constructs a link with url encoded query params given a base path
+    """
+    query_string = urlencode({k: v for k, v in query_params.items() if v})
+    redirect_uri = f"{path}"
+    if query_string:
+        redirect_uri += f"?{query_string}"
+    return redirect_uri
+
+
+# Used to create a HttpRequest that's guaranteed to have an authenticated user
+# Ref: https://github.com/typeddjango/django-stubs?tab=readme-ov-file#how-can-i-create-a-httprequest-thats-guaranteed-to-have-an-authenticated-user
+class AuthenticatedHttpRequest(Request):
+    user: User

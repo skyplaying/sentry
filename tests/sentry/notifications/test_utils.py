@@ -1,202 +1,181 @@
-from sentry.models import NotificationSetting
-from sentry.notifications.helpers import (
-    _get_setting_mapping_from_mapping,
-    collect_groups_by_project,
-    get_scope_type,
-    get_settings_by_provider,
-    get_subscription_from_attributes,
-    get_target_id,
-    get_values_by_provider_by_type,
-    validate,
+import types
+from unittest import TestCase
+
+from sentry.issue_detection.performance_problem import PerformanceProblem
+from sentry.issues.grouptype import (
+    PerformanceNPlusOneAPICallsGroupType,
+    PerformanceNPlusOneGroupType,
+    PerformanceRenderBlockingAssetSpanGroupType,
 )
-from sentry.notifications.notify import notification_providers
-from sentry.notifications.types import (
-    NotificationScopeType,
-    NotificationSettingOptionValues,
-    NotificationSettingTypes,
+from sentry.notifications.utils import (
+    NPlusOneAPICallProblemContext,
+    PerformanceProblemContext,
+    RenderBlockingAssetProblemContext,
 )
-from sentry.testutils import TestCase
-from sentry.types.integrations import ExternalProviders
 
 
-class NotificationHelpersTest(TestCase):
-    def setUp(self):
-        super().setUp()
+def mock_event(*, transaction, data=None):
+    return types.SimpleNamespace(data=data or {}, transaction=transaction)
 
-        NotificationSetting.objects.update_settings(
-            ExternalProviders.SLACK,
-            NotificationSettingTypes.WORKFLOW,
-            NotificationSettingOptionValues.ALWAYS,
-            user=self.user,
+
+class PerformanceProblemContextTestCase(TestCase):
+    def test_creates_correct_context(self) -> None:
+        assert (
+            PerformanceProblemContext.from_problem_and_spans(
+                PerformanceProblem(
+                    fingerprint="",
+                    op="",
+                    desc="",
+                    type=PerformanceNPlusOneGroupType,
+                    parent_span_ids=[],
+                    cause_span_ids=[],
+                    offender_span_ids=[],
+                    evidence_data={},
+                    evidence_display=[],
+                ),
+                [],
+            ).__class__
+            == PerformanceProblemContext
         )
-        NotificationSetting.objects.update_settings(
-            ExternalProviders.SLACK,
-            NotificationSettingTypes.DEPLOY,
-            NotificationSettingOptionValues.ALWAYS,
-            user=self.user,
-        )
-        NotificationSetting.objects.update_settings(
-            ExternalProviders.SLACK,
-            NotificationSettingTypes.ISSUE_ALERTS,
-            NotificationSettingOptionValues.ALWAYS,
-            user=self.user,
+
+        assert (
+            PerformanceProblemContext.from_problem_and_spans(
+                PerformanceProblem(
+                    fingerprint="",
+                    op="",
+                    desc="",
+                    type=PerformanceNPlusOneAPICallsGroupType,
+                    parent_span_ids=[],
+                    cause_span_ids=[],
+                    offender_span_ids=[],
+                    evidence_data={},
+                    evidence_display=[],
+                ),
+                [],
+            ).__class__
+            == NPlusOneAPICallProblemContext
         )
 
-    def test_get_setting_mapping_from_mapping_issue_alerts(self):
-        notification_settings = {
-            self.user: {
-                NotificationScopeType.USER: {
-                    ExternalProviders.EMAIL: NotificationSettingOptionValues.ALWAYS
-                }
-            }
+    def test_returns_n_plus_one_db_query_context(self) -> None:
+        event = mock_event(transaction="sentry transaction")
+        context = PerformanceProblemContext(
+            PerformanceProblem(
+                fingerprint=f"1-{PerformanceNPlusOneGroupType.type_id}-153198dd61706844cf3d9a922f6f82543df8125f",
+                op="db",
+                desc="SELECT * FROM table",
+                type=PerformanceNPlusOneGroupType,
+                parent_span_ids=["b93d2be92cd64fd5"],
+                cause_span_ids=[],
+                offender_span_ids=["054ba3a374d543eb"],
+                evidence_data={},
+                evidence_display=[],
+            ),
+            [
+                {
+                    "span_id": "b93d2be92cd64fd5",
+                    "description": "SELECT * FROM parent_table",
+                    "start_timestamp": 1.0,
+                    "timestamp": 2.0,
+                },
+                {
+                    "span_id": "054ba3a374d543eb",
+                    "description": "SELECT * FROM table WHERE id=%s",
+                    "start_timestamp": 1.0,
+                    "timestamp": 2.0,
+                },
+            ],
+            event,
+        )
+
+        assert context.to_dict() == {
+            "transaction_name": "sentry transaction",
+            "parent_span": "SELECT * FROM parent_table",
+            "repeating_spans": "SELECT * FROM table WHERE id=%s",
+            "num_repeating_spans": "1",
         }
-        mapping = _get_setting_mapping_from_mapping(
-            notification_settings,
-            self.user,
-            NotificationSettingTypes.ISSUE_ALERTS,
-        )
-        assert mapping == {ExternalProviders.EMAIL: NotificationSettingOptionValues.ALWAYS}
 
-    def test_get_setting_mapping_from_mapping_deploy(self):
-        notification_settings = {
-            self.user: {
-                NotificationScopeType.USER: {
-                    ExternalProviders.EMAIL: NotificationSettingOptionValues.COMMITTED_ONLY
-                }
-            }
-        }
-        mapping = _get_setting_mapping_from_mapping(
-            notification_settings,
-            self.user,
-            NotificationSettingTypes.DEPLOY,
+    def test_returns_n_plus_one_api_call_context(self) -> None:
+        event = mock_event(transaction="/resources")
+        context = NPlusOneAPICallProblemContext(
+            PerformanceProblem(
+                fingerprint=f"1-{PerformanceNPlusOneAPICallsGroupType.type_id}-153198dd61706844cf3d9a922f6f82543df8125f",
+                op="http.client",
+                desc="/resources",
+                type=PerformanceNPlusOneAPICallsGroupType,
+                parent_span_ids=[],
+                cause_span_ids=[],
+                offender_span_ids=["b93d2be92cd64fd5", "054ba3a374d543eb", "563712f9722fb09"],
+                evidence_data={},
+                evidence_display=[],
+            ),
+            [
+                {
+                    "span_id": "b93d2be92cd64fd5",
+                    "description": "GET https://resource.io/resource?id=1",
+                    "start_timestamp": 1.0,
+                    "timestamp": 2.0,
+                },
+                {
+                    "span_id": "054ba3a374d543eb",
+                    "description": "GET https://resource.io/resource?id=2",
+                    "start_timestamp": 1.0,
+                    "timestamp": 2.0,
+                },
+                {
+                    "span_id": "563712f9722fb09",
+                    "description": "GET https://resource.io/resource",
+                    "start_timestamp": 1.0,
+                    "timestamp": 2.0,
+                },
+            ],
+            event,
         )
-        assert mapping == {ExternalProviders.EMAIL: NotificationSettingOptionValues.COMMITTED_ONLY}
 
-    def test_get_setting_mapping_from_mapping_workflow(self):
-        notification_settings = {
-            self.user: {
-                NotificationScopeType.USER: {
-                    ExternalProviders.EMAIL: NotificationSettingOptionValues.SUBSCRIBE_ONLY
-                }
-            }
-        }
-        mapping = _get_setting_mapping_from_mapping(
-            notification_settings,
-            self.user,
-            NotificationSettingTypes.WORKFLOW,
-        )
-        assert mapping == {ExternalProviders.EMAIL: NotificationSettingOptionValues.SUBSCRIBE_ONLY}
-
-    def test_get_deploy_values_by_provider_empty_settings(self):
-        values_by_provider = get_values_by_provider_by_type(
-            {},
-            notification_providers(),
-            NotificationSettingTypes.DEPLOY,
-        )
-        assert values_by_provider == {
-            ExternalProviders.EMAIL: NotificationSettingOptionValues.COMMITTED_ONLY,
-            ExternalProviders.SLACK: NotificationSettingOptionValues.NEVER,
+        assert context.to_dict() == {
+            "transaction_name": "/resources",
+            "repeating_spans": "/resource",
+            "parameters": ["{id: 1,2}"],
+            "num_repeating_spans": "3",
         }
 
-    def test_get_deploy_values_by_provider(self):
-        notification_settings_by_scope = {
-            NotificationScopeType.ORGANIZATION: {
-                ExternalProviders.SLACK: NotificationSettingOptionValues.COMMITTED_ONLY
+    def test_returns_render_blocking_asset_context(self) -> None:
+        event = mock_event(
+            transaction="/details",
+            data={
+                "start_timestamp": 0,
+                "timestamp": 3,
+                "measurements": {"fcp": {"value": 1500, "unit": "milliseconds"}},
             },
-            NotificationScopeType.USER: {
-                ExternalProviders.EMAIL: NotificationSettingOptionValues.ALWAYS
-            },
-        }
-        values_by_provider = get_values_by_provider_by_type(
-            notification_settings_by_scope,
-            notification_providers(),
-            NotificationSettingTypes.DEPLOY,
-        )
-        assert values_by_provider == {
-            ExternalProviders.EMAIL: NotificationSettingOptionValues.ALWAYS,
-            ExternalProviders.SLACK: NotificationSettingOptionValues.COMMITTED_ONLY,
-        }
-
-    def test_validate(self):
-        self.assertTrue(
-            validate(NotificationSettingTypes.ISSUE_ALERTS, NotificationSettingOptionValues.ALWAYS)
-        )
-        self.assertTrue(
-            validate(NotificationSettingTypes.ISSUE_ALERTS, NotificationSettingOptionValues.NEVER)
         )
 
-        self.assertTrue(
-            validate(NotificationSettingTypes.DEPLOY, NotificationSettingOptionValues.ALWAYS)
-        )
-        self.assertTrue(
-            validate(NotificationSettingTypes.DEPLOY, NotificationSettingOptionValues.NEVER)
-        )
-        self.assertTrue(
-            validate(
-                NotificationSettingTypes.DEPLOY, NotificationSettingOptionValues.COMMITTED_ONLY
-            )
-        )
-        self.assertFalse(
-            validate(
-                NotificationSettingTypes.DEPLOY, NotificationSettingOptionValues.SUBSCRIBE_ONLY
-            )
-        )
-
-        self.assertTrue(
-            validate(NotificationSettingTypes.WORKFLOW, NotificationSettingOptionValues.ALWAYS)
-        )
-        self.assertTrue(
-            validate(NotificationSettingTypes.WORKFLOW, NotificationSettingOptionValues.NEVER)
-        )
-        self.assertTrue(
-            validate(
-                NotificationSettingTypes.WORKFLOW, NotificationSettingOptionValues.SUBSCRIBE_ONLY
-            )
-        )
-        self.assertFalse(
-            validate(
-                NotificationSettingTypes.WORKFLOW, NotificationSettingOptionValues.COMMITTED_ONLY
-            )
+        context = RenderBlockingAssetProblemContext(
+            PerformanceProblem(
+                fingerprint=f"1-{PerformanceRenderBlockingAssetSpanGroupType.type_id}-153198dd61706844cf3d9a922f6f82543df8125f",
+                op="http.client",
+                desc="/details",
+                type=PerformanceRenderBlockingAssetSpanGroupType,
+                parent_span_ids=[],
+                cause_span_ids=[],
+                offender_span_ids=["b93d2be92cd64fd5"],
+                evidence_data={},
+                evidence_display=[],
+            ),
+            [
+                {
+                    "op": "resource.script",
+                    "span_id": "b93d2be92cd64fd5",
+                    "description": "/assets/script.js",
+                    "start_timestamp": 1677078164.09656,
+                    "timestamp": 1677078165.09656,
+                },
+            ],
+            event,
         )
 
-    def test_get_scope_type(self):
-        assert get_scope_type(NotificationSettingTypes.DEPLOY) == NotificationScopeType.ORGANIZATION
-        assert get_scope_type(NotificationSettingTypes.WORKFLOW) == NotificationScopeType.PROJECT
-        assert (
-            get_scope_type(NotificationSettingTypes.ISSUE_ALERTS) == NotificationScopeType.PROJECT
-        )
-        assert not get_scope_type(NotificationSettingTypes.DEPLOY) == NotificationScopeType.PROJECT
-        assert (
-            not get_scope_type(NotificationSettingTypes.WORKFLOW)
-            == NotificationScopeType.ORGANIZATION
-        )
-        assert (
-            not get_scope_type(NotificationSettingTypes.ISSUE_ALERTS)
-            == NotificationScopeType.ORGANIZATION
-        )
-
-    def test_get_target_id(self):
-        assert get_target_id(self.user) == self.user.actor_id
-        assert get_target_id(self.team) == self.team.actor_id
-
-    def test_get_subscription_from_attributes(self):
-        attrs = {"subscription": (True, True, None)}
-        assert get_subscription_from_attributes(attrs) == (True, {"disabled": True})
-
-        attrs = {"subscription": (True, False, None)}
-        assert get_subscription_from_attributes(attrs) == (False, {"disabled": True})
-
-    def test_collect_groups_by_project(self):
-        assert collect_groups_by_project([self.group]) == {self.project: {self.group}}
-
-    def test_get_settings_by_provider(self):
-        settings = {
-            NotificationScopeType.USER: {
-                ExternalProviders.EMAIL: NotificationSettingOptionValues.NEVER
-            }
-        }
-        assert get_settings_by_provider(settings) == {
-            ExternalProviders.EMAIL: {
-                NotificationScopeType.USER: NotificationSettingOptionValues.NEVER
-            }
+        assert context.to_dict() == {
+            "transaction_name": "/details",
+            "slow_span_description": "/assets/script.js",
+            "slow_span_duration": 1000,
+            "transaction_duration": 3000,
+            "fcp": 1500,
         }

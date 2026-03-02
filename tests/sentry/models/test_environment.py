@@ -1,11 +1,11 @@
 import pytest
 
-from sentry.models import Environment
-from sentry.testutils import TestCase
+from sentry.models.environment import Environment
+from sentry.testutils.cases import TestCase
 
 
 class GetOrCreateTest(TestCase):
-    def test_simple(self):
+    def test_simple(self) -> None:
         project = self.create_project()
 
         with pytest.raises(Environment.DoesNotExist):
@@ -40,5 +40,5 @@ class GetOrCreateTest(TestCase):
         ("no\fform-feed", False),
     ],
 )
-def test_valid_name(val, expected):
+def test_valid_name(val: str, expected: bool) -> None:
     assert Environment.is_valid_name(val) == expected

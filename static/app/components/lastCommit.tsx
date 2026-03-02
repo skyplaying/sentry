@@ -1,11 +1,16 @@
-import UserAvatar from 'app/components/avatar/userAvatar';
-import TimeSince from 'app/components/timeSince';
-import {t} from 'app/locale';
-import {AvatarUser, Commit} from 'app/types';
+import styled from '@emotion/styled';
+
+import {UserAvatar} from '@sentry/scraps/avatar';
+
+import CommitLink from 'sentry/components/commitLink';
+import TimeSince from 'sentry/components/timeSince';
+import {t} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {Commit} from 'sentry/types/integrations';
+import type {AvatarUser} from 'sentry/types/user';
 
 type Props = {
   commit: Commit;
-  headerClass: string;
 };
 
 const unknownUser: AvatarUser = {
@@ -21,43 +26,81 @@ const unknownUser: AvatarUser = {
   ip_address: '',
 };
 
-function LastCommit({commit, headerClass}: Props) {
+function LastCommit({commit}: Props) {
   function renderMessage(message: Commit['message']) {
     if (!message) {
-      return t('No message provided');
+      return (
+        <StyledCommitLink
+          inline
+          commitId={commit.id}
+          repository={commit.repository}
+          showIcon={false}
+        />
+      );
     }
 
-    const firstLine = message.split(/\n/)[0];
-    if (firstLine.length > 100) {
-      let truncated = firstLine.substr(0, 90);
+    let finalMessage = message.split(/\n/)[0]!;
+    if (finalMessage.length > 100) {
+      let truncated = finalMessage.substring(0, 90);
       const words = truncated.split(/ /);
-      // try to not have elipsis mid-word
+      // try to not have ellipsis mid-word
       if (words.length > 1) {
         words.pop();
         truncated = words.join(' ');
       }
-      return `${truncated}\u2026`;
+      finalMessage = `${truncated}\u2026`;
     }
-    return firstLine;
+
+    return (
+      <StyledCommitLink
+        inline
+        commitId={commit.id}
+        repository={commit.repository}
+        commitTitle={finalMessage}
+        showIcon={false}
+      />
+    );
   }
 
   const commitAuthor = commit?.author;
   return (
     <div>
-      <h6 className={headerClass}>Last commit</h6>
-      <div className="commit">
-        <div className="commit-avatar">
-          <UserAvatar user={commitAuthor || unknownUser} />
-        </div>
-        <div className="commit-message truncate">{renderMessage(commit.message)}</div>
-        <div className="commit-meta">
+      <h6>Last commit</h6>
+      <div>
+        <Message>{renderMessage(commit.message)}</Message>
+        <Meta>
+          <UserAvatar user={commitAuthor || unknownUser} size={14} />
           <strong>{commitAuthor?.name || t('Unknown Author')}</strong>
-          &nbsp;
           <TimeSince date={commit.dateCreated} />
-        </div>
+        </Meta>
       </div>
     </div>
   );
 }
 
 export default LastCommit;
+
+const Message = styled('div')`
+  display: block;
+  width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: ${space(0.5)};
+`;
+
+const Meta = styled('div')`
+  display: flex;
+  align-items: center;
+  gap: ${space(0.5)};
+  font-size: ${p => p.theme.font.size.sm};
+  color: ${p => p.theme.tokens.content.secondary};
+`;
+
+const StyledCommitLink = styled(CommitLink)`
+  color: ${p => p.theme.tokens.content.primary};
+  &:hover {
+    color: ${p => p.theme.tokens.content.primary};
+    text-decoration: underline dotted ${p => p.theme.tokens.content.primary};
+  }
+`;

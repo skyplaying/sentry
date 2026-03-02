@@ -1,77 +1,67 @@
-import styled from '@emotion/styled';
+import {Flex} from '@sentry/scraps/layout';
 
-import ActivityAuthor from 'app/components/activity/author';
-import LinkWithConfirmation from 'app/components/links/linkWithConfirmation';
-import Tooltip from 'app/components/tooltip';
-import {t} from 'app/locale';
-import ConfigStore from 'app/stores/configStore';
-import {User} from 'app/types';
-import {Theme} from 'app/utils/theme';
-
-import EditorTools from './editorTools';
+import {ActivityAuthor} from 'sentry/components/activity/author';
+import {openConfirmModal} from 'sentry/components/confirm';
+import {DropdownMenu} from 'sentry/components/dropdownMenu';
+import {IconEllipsis} from 'sentry/icons';
+import {t} from 'sentry/locale';
+import type {User} from 'sentry/types/user';
+import {useUser} from 'sentry/utils/useUser';
 
 type Props = {
   authorName: string;
-  user: User;
-  onEdit: () => void;
   onDelete: () => void;
+  onEdit: () => void;
+  // Naming is not great here, but this seems to be the author, aka user who wrote the note.
+  user?: User;
 };
 
-const NoteHeader = ({authorName, user, onEdit, onDelete}: Props) => {
-  const activeUser = ConfigStore.get('user');
-  const canEdit = activeUser && (activeUser.isSuperuser || user.id === activeUser.id);
+function NoteHeader({authorName, user, onEdit, onDelete}: Props) {
+  const activeUser = useUser();
+  const canEdit = activeUser && (activeUser.isSuperuser || user?.id === activeUser.id);
 
   return (
-    <div>
+    <Flex align="center" gap="md">
       <ActivityAuthor>{authorName}</ActivityAuthor>
       {canEdit && (
-        <EditorTools>
-          <Tooltip
-            title={t('You can edit this comment due to your superuser status')}
-            disabled={!activeUser.isSuperuser}
-          >
-            <Edit onClick={onEdit}>{t('Edit')}</Edit>
-          </Tooltip>
-          <Tooltip
-            title={t('You can delete this comment due to your superuser status')}
-            disabled={!activeUser.isSuperuser}
-          >
-            <LinkWithConfirmation
-              title={t('Remove')}
-              message={t('Are you sure you wish to delete this comment?')}
-              onConfirm={onDelete}
-            >
-              <Remove>{t('Remove')}</Remove>
-            </LinkWithConfirmation>
-          </Tooltip>
-        </EditorTools>
+        <DropdownMenu
+          offset={4}
+          size="sm"
+          triggerProps={{
+            size: 'xs',
+            showChevron: false,
+            priority: 'transparent',
+            icon: <IconEllipsis />,
+            'aria-label': t('Comment Actions'),
+          }}
+          items={[
+            {
+              key: 'edit',
+              label: t('Edit'),
+              onAction: onEdit,
+              tooltip: activeUser.isSuperuser
+                ? t('You can edit this comment due to your superuser status')
+                : undefined,
+            },
+            {
+              key: 'delete',
+              label: t('Remove'),
+              priority: 'danger',
+              onAction: () =>
+                openConfirmModal({
+                  header: t('Remove'),
+                  message: t('Are you sure you wish to delete this comment?'),
+                  onConfirm: onDelete,
+                }),
+              tooltip: activeUser.isSuperuser
+                ? t('You can delete this comment due to your superuser status')
+                : undefined,
+            },
+          ]}
+        />
       )}
-    </div>
+    </Flex>
   );
-};
+}
 
-const getActionStyle = (p: {theme: Theme}) => `
-  padding: 0 7px;
-  color: ${p.theme.gray200};
-  font-weight: normal;
-`;
-
-const Edit = styled('a')`
-  ${getActionStyle};
-  margin-left: 7px;
-
-  &:hover {
-    color: ${p => p.theme.gray300};
-  }
-`;
-
-const Remove = styled('span')`
-  ${getActionStyle};
-  border-left: 1px solid ${p => p.theme.border};
-
-  &:hover {
-    color: ${p => p.theme.error};
-  }
-`;
-
-export default NoteHeader;
+export {NoteHeader};

@@ -1,7 +1,5 @@
 ---
-created: '2019-04-30T08:25:08.305752Z'
-creator: sentry
-source: tests/sentry/event_manager/interfaces/test_exception.py
+source: tests/sentry/event_manager/interfaces/test_exception.py::test_basic
 ---
 errors: null
 get_api_context:
@@ -10,7 +8,10 @@ get_api_context:
   values:
   - mechanism: null
     module: foo.bar
+    rawModule: null
     rawStacktrace: null
+    rawType: null
+    rawValue: null
     stacktrace:
       frames:
       - absPath: foo/baz.py
@@ -22,10 +23,14 @@ get_api_context:
         inApp: true
         instructionAddr: null
         lineNo: 1
+        lock: null
         module: null
         package: null
+        parentIndex: null
         platform: null
         rawFunction: null
+        sampleCount: null
+        sourceLink: null
         symbol: null
         symbolAddr: null
         trust: null
@@ -38,7 +43,10 @@ get_api_context:
     value: hello world
   - mechanism: null
     module: foo.bar
+    rawModule: null
     rawStacktrace: null
+    rawType: null
+    rawValue: null
     stacktrace:
       frames:
       - absPath: foo/baz.py
@@ -50,10 +58,14 @@ get_api_context:
         inApp: true
         instructionAddr: null
         lineNo: 1
+        lock: null
         module: null
         package: null
+        parentIndex: null
         platform: null
         rawFunction: null
+        sampleCount: null
+        sourceLink: null
         symbol: null
         symbolAddr: null
         trust: null

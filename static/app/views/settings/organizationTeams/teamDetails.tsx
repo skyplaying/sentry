@@ -1,216 +1,153 @@
-import * as React from 'react';
-import {browserHistory, RouteComponentProps} from 'react-router';
+import {useState} from 'react';
+import {Outlet, useOutletContext} from 'react-router-dom';
 import styled from '@emotion/styled';
-import isEqual from 'lodash/isEqual';
 
-import {addErrorMessage, addSuccessMessage} from 'app/actionCreators/indicator';
-import {fetchTeamDetails, joinTeam} from 'app/actionCreators/teams';
-import {Client} from 'app/api';
-import Alert from 'app/components/alert';
-import Button from 'app/components/button';
-import IdBadge from 'app/components/idBadge';
-import ListLink from 'app/components/links/listLink';
-import LoadingError from 'app/components/loadingError';
-import LoadingIndicator from 'app/components/loadingIndicator';
-import NavTabs from 'app/components/navTabs';
-import SentryDocumentTitle from 'app/components/sentryDocumentTitle';
-import {t, tct} from 'app/locale';
-import TeamStore from 'app/stores/teamStore';
-import {Organization, Team} from 'app/types';
-import recreateRoute from 'app/utils/recreateRoute';
-import withApi from 'app/utils/withApi';
-import withOrganization from 'app/utils/withOrganization';
-import withTeams from 'app/utils/withTeams';
+import {Alert} from '@sentry/scraps/alert';
+import {Button} from '@sentry/scraps/button';
+import {Flex} from '@sentry/scraps/layout';
+import {TabList, Tabs} from '@sentry/scraps/tabs';
 
-type Props = {
-  api: Client;
-  teams: Team[];
-  children: React.ReactNode;
-  organization: Organization;
-} & RouteComponentProps<{orgId: string; teamId: string}, {}>;
+import {addErrorMessage, addSuccessMessage} from 'sentry/actionCreators/indicator';
+import {joinTeam} from 'sentry/actionCreators/teams';
+import IdBadge from 'sentry/components/idBadge';
+import LoadingIndicator from 'sentry/components/loadingIndicator';
+import SentryDocumentTitle from 'sentry/components/sentryDocumentTitle';
+import {t, tct} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {Team} from 'sentry/types/organization';
+import useApi from 'sentry/utils/useApi';
+import {useLocation} from 'sentry/utils/useLocation';
+import useOrganization from 'sentry/utils/useOrganization';
+import {useParams} from 'sentry/utils/useParams';
+import {useTeamsById} from 'sentry/utils/useTeamsById';
 
-type State = {
-  loading: boolean;
-  error: boolean;
-  requesting: boolean;
-  team: Team | null;
+type TeamDetailsOutletContext = {
+  team: Team;
 };
 
-class TeamDetails extends React.Component<Props, State> {
-  state = this.getInitialState();
+function TeamDetailsOutlet(props: TeamDetailsOutletContext) {
+  return <Outlet context={props} />;
+}
 
-  getInitialState(): State {
-    const team = TeamStore.getBySlug(this.props.params.teamId);
+export function useTeamDetailsOutlet() {
+  return useOutletContext<TeamDetailsOutletContext>();
+}
 
-    return {
-      loading: !TeamStore.initialized,
-      error: false,
-      requesting: false,
-      team,
-    };
-  }
+export default function TeamDetails() {
+  const api = useApi();
+  const location = useLocation();
+  const orgSlug = useOrganization().slug;
+  const [requesting, setRequesting] = useState(false);
+  const params = useParams<{teamId: string}>();
+  const {teams, isLoading, isError} = useTeamsById({slugs: [params.teamId]});
+  const team = teams.find(({slug}) => slug === params.teamId);
 
-  componentDidUpdate(prevProps: Props) {
-    const {params} = this.props;
-
-    if (
-      prevProps.params.teamId !== params.teamId ||
-      prevProps.params.orgId !== params.orgId
-    ) {
-      this.fetchData();
-    }
-    if (!isEqual(this.props.teams, prevProps.teams)) {
-      this.setActiveTeam();
-    }
-  }
-
-  setActiveTeam() {
-    const team = TeamStore.getBySlug(this.props.params.teamId);
-    const loading = !TeamStore.initialized;
-    const error = !loading && !team;
-
-    this.setState({team, loading, error});
-  }
-
-  handleRequestAccess = () => {
-    const {api, params} = this.props;
-    const {team} = this.state;
-    if (!team) {
-      return;
-    }
-
-    this.setState({
-      requesting: true,
-    });
+  function handleRequestAccess(teamSlug: string) {
+    setRequesting(true);
 
     joinTeam(
       api,
       {
-        orgId: params.orgId,
-        teamId: team.slug,
+        orgId: orgSlug,
+        teamId: teamSlug,
       },
       {
         success: () => {
           addSuccessMessage(
             tct('You have requested access to [team]', {
-              team: `#${team.slug}`,
+              team: `#${teamSlug}`,
             })
           );
-          this.setState({
-            requesting: false,
-          });
+          setRequesting(false);
         },
         error: () => {
           addErrorMessage(
             tct('Unable to request access to [team]', {
-              team: `#${team.slug}`,
+              team: `#${teamSlug}`,
             })
           );
-          this.setState({
-            requesting: false,
-          });
+          setRequesting(false);
         },
       }
     );
-  };
+  }
 
-  fetchData = () => {
-    this.setState({
-      loading: true,
-      error: false,
-    });
-    fetchTeamDetails(this.props.api, this.props.params);
-  };
+  if (isLoading) {
+    return <LoadingIndicator />;
+  }
 
-  onTeamChange = (data: Team) => {
-    const team = this.state.team;
-    if (data.slug !== team?.slug) {
-      const orgId = this.props.params.orgId;
-      browserHistory.replace(`/organizations/${orgId}/teams/${data.slug}/settings/`);
-    } else {
-      this.setState({
-        team: {
-          ...team,
-          ...data,
-        },
-      });
-    }
-  };
+  if (!team || isError) {
+    return (
+      <Alert.Container>
+        <Alert variant="warning" showIcon={false}>
+          <div>{t('This team does not exist, or you do not have access to it.')}</div>
+        </Alert>
+      </Alert.Container>
+    );
+  }
+  const routePrefix = `/settings/${orgSlug}/teams/${params.teamId}/`;
+  const tab = location.pathname.split('/').at(-2);
 
-  render() {
-    const {children, params, routes} = this.props;
-    const {team, loading, requesting, error} = this.state;
+  const activeTab = ['members', 'projects', 'notifications', 'settings'].includes(
+    tab ?? ''
+  )
+    ? tab
+    : 'members';
 
-    if (loading) {
-      return <LoadingIndicator />;
-    }
-    if (!team || !team.hasAccess) {
-      return (
-        <Alert type="warning">
-          {team ? (
-            <RequestAccessWrapper>
-              {tct('You do not have access to the [teamSlug] team.', {
-                teamSlug: <strong>{`#${team.slug}`}</strong>,
-              })}
+  return (
+    <div>
+      <SentryDocumentTitle title={t('Team Details')} orgSlug={orgSlug} />
+      {team.hasAccess ? (
+        <div>
+          <h3>
+            <IdBadge hideAvatar hideOverflow={false} team={team} avatarSize={36} />
+          </h3>
+
+          <TabsContainer>
+            <Tabs value={activeTab}>
+              <TabList>
+                <TabList.Item key="members" to={`${routePrefix}members/`}>
+                  {t('Members')}
+                </TabList.Item>
+                <TabList.Item key="projects" to={`${routePrefix}projects/`}>
+                  {t('Projects')}
+                </TabList.Item>
+                <TabList.Item key="notifications" to={`${routePrefix}notifications/`}>
+                  {t('Notifications')}
+                </TabList.Item>
+                <TabList.Item key="settings" to={`${routePrefix}settings/`}>
+                  {t('Settings')}
+                </TabList.Item>
+              </TabList>
+            </Tabs>
+          </TabsContainer>
+
+          <TeamDetailsOutlet team={team} />
+        </div>
+      ) : (
+        <Alert.Container>
+          <Alert variant="warning">
+            <Flex justify="between" align="center">
+              <div>
+                {tct('You do not have access to the [teamSlug] team.', {
+                  teamSlug: <strong>{`#${team.slug}`}</strong>,
+                })}
+              </div>
               <Button
                 disabled={requesting || team.isPending}
-                size="small"
-                onClick={this.handleRequestAccess}
+                size="sm"
+                onClick={() => handleRequestAccess(team.slug)}
               >
                 {team.isPending ? t('Request Pending') : t('Request Access')}
               </Button>
-            </RequestAccessWrapper>
-          ) : (
-            <div>{t('You do not have access to this team.')}</div>
-          )}
-        </Alert>
-      );
-    }
-    if (error) {
-      return <LoadingError onRetry={this.fetchData} />;
-    }
-
-    // `/organizations/${orgId}/teams/${teamId}`;
-    const routePrefix = recreateRoute('', {routes, params, stepBack: -1});
-
-    const navigationTabs = [
-      <ListLink key={0} to={`${routePrefix}members/`}>
-        {t('Members')}
-      </ListLink>,
-      <ListLink key={1} to={`${routePrefix}projects/`}>
-        {t('Projects')}
-      </ListLink>,
-      <ListLink key={2} to={`${routePrefix}notifications/`}>
-        {t('Notifications')}
-      </ListLink>,
-      <ListLink key={3} to={`${routePrefix}settings/`}>
-        {t('Settings')}
-      </ListLink>,
-    ];
-
-    return (
-      <div>
-        <SentryDocumentTitle title={t('Team Details')} orgSlug={params.orgId} />
-        <h3>
-          <IdBadge hideAvatar team={team} avatarSize={36} />
-        </h3>
-
-        <NavTabs underlined>{navigationTabs}</NavTabs>
-
-        {React.isValidElement(children) &&
-          React.cloneElement(children, {
-            team,
-            onTeamChange: this.onTeamChange,
-          })}
-      </div>
-    );
-  }
+            </Flex>
+          </Alert>
+        </Alert.Container>
+      )}
+    </div>
+  );
 }
 
-export default withApi(withOrganization(withTeams(TeamDetails)));
-
-const RequestAccessWrapper = styled('div')`
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+const TabsContainer = styled('div')`
+  margin-bottom: ${space(2)};
 `;

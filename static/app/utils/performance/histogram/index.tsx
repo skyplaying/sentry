@@ -1,55 +1,50 @@
-import * as React from 'react';
-import {browserHistory} from 'react-router';
-import {Location} from 'history';
+import type {Location} from 'history';
 
-import {SelectValue} from 'app/types';
-import {decodeScalar} from 'app/utils/queryString';
+import type {SelectValue} from 'sentry/types/core';
+import {decodeScalar} from 'sentry/utils/queryString';
+import {useNavigate} from 'sentry/utils/useNavigate';
 
 import {FILTER_OPTIONS} from './constants';
-import {DataFilter} from './types';
+import type {DataFilter} from './types';
 
 type HistogramChildrenProps = {
-  isZoomed: boolean;
-  handleResetView: () => void;
   activeFilter: SelectValue<DataFilter>;
-  handleFilterChange: (option: string) => void;
   filterOptions: typeof FILTER_OPTIONS;
+  handleFilterChange: (option: string) => void;
+  handleResetView: () => void;
+  isZoomed: boolean;
 };
 
 type Props = {
+  children: (props: HistogramChildrenProps) => React.ReactNode;
   location: Location;
   zoomKeys: string[];
-  children: (props: HistogramChildrenProps) => React.ReactNode;
 };
 
-class Histogram extends React.Component<Props> {
-  isZoomed() {
-    const {location, zoomKeys} = this.props;
+function Histogram(props: Props) {
+  const {location, zoomKeys, children} = props;
+  const navigate = useNavigate();
+
+  const isZoomed = () => {
     return zoomKeys.map(key => location.query[key]).some(value => value !== undefined);
-  }
+  };
 
-  handleResetView = () => {
-    const {location, zoomKeys} = this.props;
-
-    browserHistory.push({
+  const handleResetView = () => {
+    navigate({
       pathname: location.pathname,
       query: removeHistogramQueryStrings(location, zoomKeys),
     });
   };
 
-  getActiveFilter() {
-    const {location} = this.props;
-
+  const getActiveFilter = () => {
     const dataFilter = location.query.dataFilter
       ? decodeScalar(location.query.dataFilter)
-      : FILTER_OPTIONS[0].value;
+      : FILTER_OPTIONS[0]!.value;
     return FILTER_OPTIONS.find(item => item.value === dataFilter) || FILTER_OPTIONS[0];
-  }
+  };
 
-  handleFilterChange = (value: string) => {
-    const {location, zoomKeys} = this.props;
-
-    browserHistory.push({
+  const handleFilterChange = (value: string) => {
+    navigate({
       pathname: location.pathname,
       query: {
         ...removeHistogramQueryStrings(location, zoomKeys),
@@ -58,16 +53,14 @@ class Histogram extends React.Component<Props> {
     });
   };
 
-  render() {
-    const childrenProps = {
-      isZoomed: this.isZoomed(),
-      handleResetView: this.handleResetView,
-      activeFilter: this.getActiveFilter(),
-      handleFilterChange: this.handleFilterChange,
-      filterOptions: FILTER_OPTIONS,
-    };
-    return this.props.children(childrenProps);
-  }
+  const childrenProps = {
+    isZoomed: isZoomed(),
+    handleResetView,
+    activeFilter: getActiveFilter()!,
+    handleFilterChange,
+    filterOptions: FILTER_OPTIONS,
+  };
+  return children(childrenProps);
 }
 
 export function removeHistogramQueryStrings(location: Location, zoomKeys: string[]) {

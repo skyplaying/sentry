@@ -1,11 +1,13 @@
-import * as React from 'react';
 import styled from '@emotion/styled';
 
-import LoadingMask from 'app/components/loadingMask';
+import LoadingMask from 'sentry/components/loadingMask';
 
-type Props = {
+interface Props extends React.HTMLAttributes<HTMLDivElement> {
+  /**
+   * @default '200px'
+   */
   height?: string;
-} & React.HTMLProps<HTMLDivElement>;
+}
 
 const LoadingPanel = styled(({height: _height, ...props}: Props) => (
   <div {...props}>
@@ -15,14 +17,10 @@ const LoadingPanel = styled(({height: _height, ...props}: Props) => (
   flex: 1;
   flex-shrink: 0;
   overflow: hidden;
-  height: ${p => p.height};
+  height: ${p => p.height ?? '200px'};
   position: relative;
   border-color: transparent;
   margin-bottom: 0;
 `;
-
-LoadingPanel.defaultProps = {
-  height: '200px',
-};
 
 export default LoadingPanel;

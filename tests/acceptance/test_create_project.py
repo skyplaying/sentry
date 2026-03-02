@@ -1,60 +1,56 @@
-from sentry.models import Project
-from sentry.testutils import AcceptanceTestCase
-from sentry.utils.compat.mock import patch
+from sentry.models.project import Project
+from sentry.testutils.asserts import assert_existing_projects_status
+from sentry.testutils.cases import AcceptanceTestCase
+from sentry.testutils.silo import no_silo_test
+from sentry.testutils.thread_leaks.pytest import thread_leak_allowlist
 
 
+@no_silo_test
+@thread_leak_allowlist(reason="sentry sdk background worker", issue=97042)
 class CreateProjectTest(AcceptanceTestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         super().setUp()
         self.user = self.create_user("foo@example.com")
-        self.org = self.create_organization(name="Rowdy Tiger")
+        self.org = self.create_organization(name="Rowdy Tiger", owner=self.user)
         self.login_as(self.user)
-
         self.path = f"/organizations/{self.org.slug}/projects/new/"
 
-    @patch("django.db.models.signals.ModelSignal.send")
-    def test_simple(self, mock_signal):
-        self.team = self.create_team(organization=self.org, name="Mariachi Band")
-        self.create_member(user=self.user, organization=self.org, role="owner", teams=[self.team])
-
+    def load_project_creation_page(self) -> None:
         self.browser.get(self.path)
-        self.browser.wait_until_not(".loading")
+        self.browser.wait_until('[aria-label="Create Project"]')
 
-        self.browser.click('[data-test-id="platform-java"]')
-        self.browser.snapshot(name="create project")
-
-        self.browser.click('[data-test-id="create-project"]')
-        self.browser.wait_until_not(".loading")
-        self.browser.wait_until("#installation")
-
-        project = Project.objects.get(organization=self.org)
-        assert project.name == "Java"
-        assert project.platform == "java"
-        assert project.teams.first() == self.team
-        self.browser.snapshot(name="docs redirect")
-
-    def test_no_teams(self):
-        self.create_member(user=self.user, organization=self.org, role="owner", teams=[])
-        self.browser.get(self.path)
-        self.browser.wait_until_not(".loading")
-
-        self.browser.click('[data-test-id="create-team"]')
+    def test_no_teams(self) -> None:
+        self.load_project_creation_page()
+        self.browser.click(None, "//*[text()='Select a Team']")
+        self.browser.click('[data-test-id="create-team-option"]')
         self.browser.wait_until("[role='dialog']")
         input = self.browser.element('input[name="slug"]')
         input.send_keys("new-team")
-
         self.browser.element("[role='dialog'] form").submit()
+        self.browser.wait_until(xpath='//div[text()="#new-team"]')
 
-        # After creating team, should end up in onboarding screen
-        self.browser.wait_until(xpath='//span[text()="#new-team"]')
-        self.browser.snapshot(name="create project no teams - after create team")
+    def test_select_correct_platform(self) -> None:
+        self.create_team(organization=self.org, name="team three")
+        self.load_project_creation_page()
+        self.browser.click("[data-test-id='platform-javascript-react']")
+        self.browser.click('[data-test-id="create-project"]')
+        self.browser.wait_until(xpath="//h2[text()='Configure React SDK']")
 
-    def test_many_teams(self):
-        self.team = self.create_team(organization=self.org, name="Mariachi Band")
-        self.team2 = self.create_team(organization=self.org, name="team two")
-        self.create_member(
-            user=self.user, organization=self.org, role="owner", teams=[self.team, self.team2]
+    def test_project_deletion_on_going_back(self) -> None:
+        self.create_team(organization=self.org, name="team three", members=[self.user])
+        self.load_project_creation_page()
+        self.browser.click("[data-test-id='platform-php-laravel']")
+        self.browser.click('[data-test-id="create-project"]')
+        self.browser.wait_until(xpath="//h2[text()='Configure Laravel SDK']")
+        project1 = Project.objects.get(organization=self.org, slug="php-laravel")
+        self.browser.click('[aria-label="Back to Platform Selection"]')
+        self.browser.click("[data-test-id='platform-javascript-nextjs']")
+        self.browser.click('[data-test-id="create-project"]')
+        self.browser.wait_until(xpath="//h2[text()='Configure Next.js SDK']")
+        project2 = Project.objects.get(organization=self.org, slug="javascript-nextjs")
+        self.browser.back()
+        self.browser.get("/organizations/%s/projects/" % self.org.slug)
+        self.browser.wait_until(xpath='//h1[text()="Remain Calm"]')
+        assert_existing_projects_status(
+            self.org, active_project_ids=[], deleted_project_ids=[project1.id, project2.id]
         )
-        self.browser.get(self.path)
-        self.browser.wait_until_not(".loading")
-        self.browser.snapshot(name="create project many teams")

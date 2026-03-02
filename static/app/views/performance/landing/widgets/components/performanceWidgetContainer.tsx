@@ -1,11 +1,13 @@
 import styled from '@emotion/styled';
 
-import {Panel} from 'app/components/panels';
-import space from 'app/styles/space';
+import Panel from 'sentry/components/panels/panel';
+import {space} from 'sentry/styles/space';
 
 export type PerformanceWidgetContainerTypes = 'panel' | 'inline';
 
 const StyledPanel = styled(Panel)`
+  display: flex;
+  flex-direction: column;
   padding-top: ${space(2)};
   margin-bottom: 0;
 `;
@@ -18,11 +20,11 @@ const getPerformanceWidgetContainer = ({
 }) => {
   if (containerType === 'panel') {
     return StyledPanel;
-  } else if (containerType === 'inline') {
-    return Div;
-  } else {
+  }
+  if (containerType === 'inline') {
     return Div;
   }
+  return Div;
 };
 
 export default getPerformanceWidgetContainer;

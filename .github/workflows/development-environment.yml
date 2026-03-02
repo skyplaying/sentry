@@ -2,77 +2,71 @@ name: dev env
 on:
   pull_request:
     paths:
+      - '.pre-commit-config.yaml'
       - 'Makefile'
-      - '.github/actions/*'
       - '.github/workflows/development-environment.yml'
+      - '.github/workflows/scripts/**'
+      - 'requirements-*.txt'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.python-version'
       - '.envrc'
       - 'Brewfile'
-      - 'scripts/*'
+      - 'scripts/**'
+      - 'tools/**'
       - 'src/sentry/runner/commands/devserver.py'
       - 'src/sentry/runner/commands/devservices.py'
+      - 'bin/load-mocks'
+
+# Cancel in progress workflows on pull_requests.
+# https://docs.github.com/en/actions/using-jobs/using-concurrency#example-using-a-fallback-value
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+# hack for https://github.com/actions/cache/issues/810#issuecomment-1222550359
+env:
+  SEGMENT_DOWNLOAD_TIMEOUT_MINS: 3
 
 jobs:
-  dev-environment:
-    name: set up
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
-    strategy:
-      matrix:
-        # Using Ubuntu 18 until I figure out this error:
-        # -> ImportError: libffi.so.6: cannot open shared object file: No such file or directory
-        os: [macos-11.0, ubuntu-18.04]
-      fail-fast: false
-    env:
-      PIP_DISABLE_PIP_VERSION_CHECK: on
-      # Make the environment more similar to what Mac defaults to
-      SHELL: /bin/zsh
-
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
-      - name: Checkout sentry
-        uses: actions/checkout@v2
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
 
-      - name: Set variables for caches
-        id: info
-        run: |
-          echo "::set-output name=brew-cache-dir::$(brew --cache)"
-          echo "::set-output name=yarn-cache-dir::$(yarn cache dir)"
-
-      - name: Cache (brew)
-        uses: actions/cache@v2
+      - uses: astral-sh/setup-uv@884ad927a57e558e7a70b92f2bccf9198a4be546 # v6
         with:
-          path: ${{ steps.info.outputs.brew-cache-dir }}
-          key: devenv-${{ runner.os }}-brew-${{ hashFiles('Brewfile') }}
-          restore-keys: devenv-${{ runner.os }}-brew
+          version: '0.9.28'
+          # we just cache the venv-dir directly in action-setup-venv
+          enable-cache: false
 
-      - name: Install prerequisites
-        # brew can be finicky but it does not always means that the rest of the job will fail
-        # Xcode CLI & brew are already installed, thus, no need to call xcode-select install
-        continue-on-error: true
-        run: |
-          make prerequisites
-
-      - name: Setup Python
-        uses: ./.github/actions/setup-python
-
-      - name: Cache (pyenv)
-        uses: actions/cache@v2
+      - uses: getsentry/action-setup-venv@5a80476d175edf56cb205b08bc58986fa99d1725 # v3.2.0
         with:
-          path: ~/.pyenv
-          key: devenv-${{ matrix.os }}-pyenv-${{ hashFiles('.python-version') }}
+          cache-dependency-path: uv.lock
+          install-cmd: uv sync --only-dev --frozen --active
 
-      - name: Cache (yarn)
-        uses: actions/cache@v1 # We are explicitly using v1 due to perf reasons
+      - name: test-tools
+        run: make test-tools
+
+  devenv:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+
+      - uses: astral-sh/setup-uv@884ad927a57e558e7a70b92f2bccf9198a4be546 # v6
         with:
-          path: ${{ steps.info.outputs.yarn-cache-dir }}
-          key: devenv-${{ matrix.os }}-v2-yarn-${{ hashFiles('yarn.lock') }}
+          version: '0.9.28'
+          # we just cache the venv-dir directly in action-setup-venv
+          enable-cache: false
 
-      - name: Set up development environment (mostly as per docs)
+      - uses: getsentry/action-setup-venv@5a80476d175edf56cb205b08bc58986fa99d1725 # v3.2.0
+        with:
+          cache-dependency-path: uv.lock
+          # technically we can just use --only-dev but more cache is nice
+          install-cmd: uv sync --frozen --active
+
+      - name: devenv sync
         run: |
-          curl https://get.volta.sh | bash
-          export VOLTA_HOME="$HOME/.volta"
-          export PATH="$HOME/.volta/bin:$PATH"
-          make setup-pyenv
-          eval "$(pyenv init --path)"
-          python -m venv .venv
-          source .venv/bin/activate
-          make develop init-config
+          devenv --nocoderoot sync

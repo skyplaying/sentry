@@ -1,9 +1,9 @@
 from sentry.api.serializers import serialize
-from sentry.testutils import TestCase
+from sentry.testutils.cases import TestCase
 
 
 class DebugFileSerializerTest(TestCase):
-    def test_simple(self):
+    def test_simple(self) -> None:
         file = self.create_file(
             name="baz.dSYM",
             size=42,
@@ -37,7 +37,7 @@ class DebugFileSerializerTest(TestCase):
             "data": {"features": ["debug"]},
         }
 
-    def test_long_debug_id(self):
+    def test_long_debug_id(self) -> None:
         file = self.create_file(
             name="baz.dSYM",
             size=42,

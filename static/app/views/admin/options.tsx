@@ -1,34 +1,37 @@
-import * as React from 'react';
 import keyBy from 'lodash/keyBy';
 
-import {t, tct} from 'app/locale';
-import ConfigStore from 'app/stores/configStore';
-import {
-  BooleanField,
-  EmailField,
-  RadioBooleanField,
-  TextField,
-} from 'app/views/settings/components/forms';
+import {ExternalLink} from '@sentry/scraps/link';
+
+import BooleanField from 'sentry/components/forms/fields/booleanField';
+import EmailField from 'sentry/components/forms/fields/emailField';
+import RadioField from 'sentry/components/forms/fields/radioField';
+import TextField from 'sentry/components/forms/fields/textField';
+import {t, tct} from 'sentry/locale';
+import ConfigStore from 'sentry/stores/configStore';
 
 type Section = {
   key: string;
   heading?: string;
 };
 
-type Field = {
+// TODO(epurkhiser): This should really use the types from the form system, but
+// they're still pretty bad so that's difficult I guess?
+export type Field = {
   key: string;
   label: React.ReactNode;
+  allowEmpty?: boolean;
+  choices?: Array<[value: string, label: string]>;
+  component?: React.ComponentType<any>;
+  defaultValue?: () => string | number | false;
+  disabled?: boolean;
+  disabledReason?: string;
   help?: React.ReactNode;
-  noLabel?: string;
-  yesLabel?: string;
-  yesFirst?: boolean;
+  isSet?: boolean;
+  max?: number;
+  min?: number;
   placeholder?: string;
   required?: boolean;
-  allowEmpty?: boolean;
-  disabledReason?: string;
-  disabled?: boolean;
-  defaultValue?: () => string | false;
-  component?: React.ComponentType<any>;
+  step?: number;
 };
 
 // This are ordered based on their display order visually
@@ -87,14 +90,6 @@ const definitions: Field[] = [
     defaultValue: () => ConfigStore.get('user').email,
   },
   {
-    key: 'system.rate-limit',
-    label: t('Rate Limit'),
-    placeholder: 'e.g. 500',
-    help: t(
-      'The maximum number of events the system should accept per minute. A value of 0 will disable the default rate limit.'
-    ),
-  },
-  {
     key: 'auth.allow-registration',
     label: t('Allow Registration'),
     help: t('Allow anyone to create an account and access this Sentry installation.'),
@@ -119,7 +114,7 @@ const definitions: Field[] = [
   },
   {
     key: 'api.rate-limit.org-create',
-    label: 'Organization Creation Rate Limit',
+    label: t('Organization Creation Rate Limit'),
     placeholder: 'e.g. 5',
     help: t(
       'The maximum number of organizations which may be created by a single account in a one hour window.'
@@ -128,16 +123,37 @@ const definitions: Field[] = [
   {
     key: 'beacon.anonymous',
     label: 'Usage Statistics',
-    component: RadioBooleanField,
+    component: RadioField,
     // yes and no are inverted here due to the nature of this configuration
-    noLabel: 'Send my contact information along with usage statistics',
-    yesLabel: 'Please keep my usage information anonymous',
-    yesFirst: false,
+    choices: [
+      ['false', t('Send my contact information along with usage statistics')],
+      ['true', t('Please keep my usage information anonymous')],
+    ],
     help: tct(
-      'If enabled, any stats reported to sentry.io will exclude identifying information (such as your administrative email address). By anonymizing your installation the Sentry team will be unable to contact you about security updates. For more information on what data is sent to Sentry, see the [link:documentation].',
+      'If enabled, any stats reported to sentry.io will exclude identifying information (such as your administrative email address). By anonymizing your installation the Sentry team will be unable to contact you about security updates. For more information on what data is sent to Sentry, see the [link:documentation]. Note: This is separate from error-reporting for the self-hosted installer. The data reported to the beacon only includes usage stats from your running self-hosted instance.',
       {
-        link: <a href="https://develop.sentry.dev/self-hosted/" />,
+        link: <ExternalLink href="https://develop.sentry.dev/self-hosted/" />,
       }
+    ),
+  },
+  {
+    key: 'beacon.record_cpu_ram_usage',
+    label: 'RAM/CPU usage',
+    component: RadioField,
+    defaultValue: () => 'true',
+    choices: [
+      [
+        'true',
+        t(
+          'Yes, I would love to help Sentry developers improve the experience of self-hosted by sending CPU/RAM usage'
+        ),
+      ],
+      ['false', t('No, I would prefer to keep CPU/RAM usage private')],
+    ],
+    help: tct(
+      `Recording CPU/RAM usage will greatly help our development team understand how self-hosted sentry
+      is being typically used, and to keep track of improvements that we hope to bring you in the future.`,
+      {link: <ExternalLink href="https://sentry.io/privacy/" />}
     ),
   },
   {
@@ -196,10 +212,10 @@ const disabledReasons = {
 };
 
 export function getOption(option: string): Field {
-  return definitionsMap[option];
+  return definitionsMap[option]!;
 }
 
-export function getOptionDefault(option: string): string | false | undefined {
+export function getOptionDefault(option: string): string | number | false | undefined {
   const meta = getOption(option);
   return meta.defaultValue ? meta.defaultValue() : undefined;
 }
@@ -218,12 +234,13 @@ export function getOptionField(option: string, field: Field) {
       key={option}
       defaultValue={getOptionDefault(option)}
       required={meta.required && !meta.allowEmpty}
+      // @ts-expect-error TS(7053): Element implicitly has an 'any' type because expre... Remove this comment to see the full error message
       disabledReason={meta.disabledReason && disabledReasons[meta.disabledReason]}
     />
   );
 }
 
-function getSectionFieldSet(section: Section, fields: Field[]) {
+function getSectionFieldSet(section: Section, fields: React.ReactNode[]) {
   return (
     <fieldset key={section.key}>
       {section.heading && <legend>{section.heading}</legend>}
@@ -232,11 +249,11 @@ function getSectionFieldSet(section: Section, fields: Field[]) {
   );
 }
 
-export function getForm(fieldMap: Record<string, Field>) {
+export function getForm(fieldMap: Record<string, React.ReactNode>) {
   const sets: React.ReactNode[] = [];
 
   for (const section of sections) {
-    const set: Field[] = [];
+    const set: React.ReactNode[] = [];
 
     for (const option of optionsForSection(section)) {
       if (fieldMap[option.key]) {

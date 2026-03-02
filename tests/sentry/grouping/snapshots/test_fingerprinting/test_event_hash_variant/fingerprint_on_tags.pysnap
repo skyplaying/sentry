@@ -1,7 +1,5 @@
 ---
-created: '2020-12-08T17:25:04.966299Z'
-creator: sentry
-source: tests/sentry/grouping/test_fingerprinting.py
+source: tests/sentry/grouping/test_fingerprinting.py::test_event_hash_variant
 ---
 config:
   rules:
@@ -12,21 +10,27 @@ config:
     matchers:
     - - tags.foobar
       - '*stuff*'
+    text: tags.foobar:"*stuff*" -> "foobar-matched-stuff-{{ tags.barfoo }}"
   version: 1
 fingerprint:
 - foobar-matched-stuff-
 - '{{ tags.barfoo }}'
 title: Hello my sweet Love
 variants:
-  custom-fingerprint:
+  custom_server_fingerprint:
+    contributes: true
+    hint: null
+    key: custom_server_fingerprint
     matched_rule: tags.foobar:"*stuff*" -> "foobar-matched-stuff-{{ tags.barfoo }}"
-    type: custom-fingerprint
+    type: custom_fingerprint
     values:
     - foobar-matched-stuff-
     - amazing
   default:
     component:
       contributes: false
-      contributes_to_similarity: true
-      hint: custom fingerprint takes precedence
+      hint: ignored because custom server fingerprint takes precedence
+    contributes: false
+    hint: ignored because custom server fingerprint takes precedence
+    key: message
     type: component

@@ -11,11 +11,11 @@ from sentry.utils.kafka_config import (
 )
 
 settings.KAFKA_CLUSTERS["default"] = {
-    "common": {"bootstrap.servers": os.environ.get("SENTRY_KAFKA_HOSTS", "localhost:9092")},
+    "common": {"bootstrap.servers": os.environ.get("SENTRY_KAFKA_HOSTS", "127.0.0.1:9092")},
 }
 
 
-def test_get_kafka_producer_cluster_options():
+def test_get_kafka_producer_cluster_options() -> None:
     cluster_options = get_kafka_producer_cluster_options("default")
     assert (
         cluster_options["bootstrap.servers"]
@@ -42,7 +42,7 @@ def test_get_kafka_producer_cluster_options():
         assert cluster_options["security.protocol"] == "plain"
 
 
-def test_get_kafka_consumer_cluster_options():
+def test_get_kafka_consumer_cluster_options() -> None:
     cluster_options = get_kafka_consumer_cluster_options("default")
     assert (
         cluster_options["bootstrap.servers"]
@@ -70,7 +70,7 @@ def test_get_kafka_consumer_cluster_options():
         assert "security.protocol" not in cluster_options
 
 
-def test_get_kafka_admin_cluster_options():
+def test_get_kafka_admin_cluster_options() -> None:
     cluster_options = get_kafka_admin_cluster_options("default")
     assert (
         cluster_options["bootstrap.servers"]
@@ -78,13 +78,13 @@ def test_get_kafka_admin_cluster_options():
     )
 
 
-def test_get_kafka_consumer_cluster_options_invalid():
+def test_get_kafka_consumer_cluster_options_invalid() -> None:
     with override_settings(KAFKA_CLUSTERS={"default": {"common": {"invalid.setting": "value"}}}):
         with pytest.raises(ValueError):
             get_kafka_consumer_cluster_options("default")
 
 
-def test_bootstrap_format():
+def test_bootstrap_format() -> None:
     with override_settings(
         KAFKA_CLUSTERS={"default": {"common": {"bootstrap.servers": ["I", "am", "a", "list"]}}}
     ):
@@ -102,7 +102,7 @@ def test_bootstrap_format():
         assert cluster_options["bootstrap.servers"] == "I,am,a,list"
 
 
-def test_legacy_custom_mix_customer():
+def test_legacy_custom_mix_customer() -> None:
     with override_settings(
         KAFKA_CLUSTERS={
             "default": {

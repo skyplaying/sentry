@@ -1,30 +1,30 @@
-import {useContext} from 'react';
-
-import AppStoreConnectContext from 'app/components/projects/appStoreConnectContext';
-import {Organization, Project} from 'app/types';
-import withProject from 'app/utils/withProject';
-import SettingsNavigation from 'app/views/settings/components/settingsNavigation';
-import getConfiguration from 'app/views/settings/project/navigationConfiguration';
+import type {Organization} from 'sentry/types/organization';
+import type {Project} from 'sentry/types/project';
+import withProject from 'sentry/utils/withProject';
+import {PrimaryNavGroup} from 'sentry/views/nav/types';
+import SettingsNavigation from 'sentry/views/settings/components/settingsNavigation';
+import getConfiguration from 'sentry/views/settings/project/navigationConfiguration';
 
 type Props = {
   organization: Organization;
   project?: Project;
 };
 
-const ProjectSettingsNavigation = ({organization, project}: Props) => {
-  const appStoreConnectContext = useContext(AppStoreConnectContext);
-
-  const debugFilesNeedsReview = !!appStoreConnectContext?.updateAlertMessage;
-
+function ProjectSettingsNavigation({organization, project}: Props) {
   return (
     <SettingsNavigation
-      navigationObjects={getConfiguration({project, organization, debugFilesNeedsReview})}
+      navigationObjects={getConfiguration({
+        project,
+        organization,
+        debugFilesNeedsReview: false,
+      })}
       access={new Set(organization.access)}
       features={new Set(organization.features)}
       organization={organization}
       project={project}
+      primaryNavGroup={PrimaryNavGroup.SETTINGS}
     />
   );
-};
+}
 
 export default withProject(ProjectSettingsNavigation);

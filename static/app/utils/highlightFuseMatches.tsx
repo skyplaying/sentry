@@ -1,9 +1,6 @@
-import * as React from 'react';
+import type {Fuse} from 'sentry/utils/fuzzySearch';
 
-type Match = {
-  value: string;
-  indices: [number, number][];
-};
+type Match = Fuse.FuseResultMatch;
 
 type HighlightResult = {
   highlight: boolean;
@@ -35,6 +32,10 @@ type MatchResult = HighlightResult[];
  * @param match.indices Array of indices that represent matches
  */
 const getFuseMatches = ({value, indices}: Match): MatchResult => {
+  if (value === undefined) {
+    return [];
+  }
+
   if (indices.length === 0) {
     return [{highlight: false, text: value}];
   }
@@ -45,10 +46,10 @@ const getFuseMatches = ({value, indices}: Match): MatchResult => {
 
   indices.forEach(([start, end]) => {
     // Unhighlighted string before the match
-    const stringBeforeMatch = value.substring(prev[1] + 1, start);
+    const stringBeforeMatch = value.substring(prev[1]! + 1, start);
 
     // Only add to result if non-empty string
-    if (!!stringBeforeMatch) {
+    if (stringBeforeMatch) {
       result.push({
         highlight: false,
         text: stringBeforeMatch,
@@ -66,20 +67,22 @@ const getFuseMatches = ({value, indices}: Match): MatchResult => {
   });
 
   // The rest of the string starting from the last match index
-  const restOfString = value.substring(prev[1] + 1, strLength);
+  const restOfString = value.substring(prev[1]! + 1, strLength);
   // Only add to result if non-empty string
-  if (!!restOfString) {
+  if (restOfString) {
     result.push({highlight: false, text: restOfString});
   }
 
   return result;
 };
 
+type MarkProps = React.DetailedHTMLProps<React.HTMLAttributes<HTMLElement>, HTMLElement>;
+
 /**
  * Given a match object from fuse.js, returns an array of components with
  * "highlighted" (bold) substrings.
  */
-const highlightFuseMatches = (matchObj: Match, Marker: React.ElementType = 'mark') =>
+const highlightFuseMatches = (matchObj: Match, Marker: React.ComponentType<MarkProps>) =>
   getFuseMatches(matchObj).map(({highlight, text}, index) => {
     if (!text) {
       return null;

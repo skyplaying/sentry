@@ -1,71 +1,81 @@
-import {RouteComponentProps} from 'react-router';
+import {useState} from 'react';
+import styled from '@emotion/styled';
+import debounce from 'lodash/debounce';
+import partition from 'lodash/partition';
 
-import {openCreateTeamModal} from 'app/actionCreators/modal';
-import Button from 'app/components/button';
-import {Panel, PanelBody, PanelHeader} from 'app/components/panels';
-import SentryDocumentTitle from 'app/components/sentryDocumentTitle';
-import {IconAdd} from 'app/icons';
-import {t} from 'app/locale';
-import {AccessRequest, Organization, Team} from 'app/types';
-import recreateRoute from 'app/utils/recreateRoute';
-import SettingsPageHeader from 'app/views/settings/components/settingsPageHeader';
+import {Button} from '@sentry/scraps/button';
 
-import AllTeamsList from './allTeamsList';
+import {openCreateTeamModal} from 'sentry/actionCreators/modal';
+import LoadingIndicator from 'sentry/components/loadingIndicator';
+import SearchBar from 'sentry/components/searchBar';
+import SentryDocumentTitle from 'sentry/components/sentryDocumentTitle';
+import {DEFAULT_DEBOUNCE_DURATION} from 'sentry/constants';
+import {IconAdd} from 'sentry/icons';
+import {t} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {AccessRequest, Organization} from 'sentry/types/organization';
+import {useTeams} from 'sentry/utils/useTeams';
+import SettingsPageHeader from 'sentry/views/settings/components/settingsPageHeader';
+
 import OrganizationAccessRequests from './organizationAccessRequests';
+import {OtherTeamsTable} from './otherTeamsTable';
+import {YourTeamsTable} from './yourTeamsTable';
 
 type Props = {
   access: Set<string>;
   features: Set<string>;
-  allTeams: Team[];
-  activeTeams: Team[];
+  onRemoveAccessRequest: (id: string, isApproved: boolean) => void;
   organization: Organization;
   requestList: AccessRequest[];
-  onRemoveAccessRequest: (id: string, isApproved: boolean) => void;
-} & RouteComponentProps<{orgId: string}, {}>;
+};
 
-function OrganizationTeams({
-  allTeams,
-  activeTeams,
+export default function OrganizationTeams({
   organization,
   access,
   features,
-  routes,
-  params,
   requestList,
   onRemoveAccessRequest,
 }: Props) {
+  const [teamQuery, setTeamQuery] = useState('');
+  const {initiallyLoaded} = useTeams({provideUserTeams: true});
+  const {teams, onSearch, loadMore, hasMore, fetching} = useTeams();
+
   if (!organization) {
     return null;
   }
+
   const canCreateTeams = access.has('project:admin');
+  const openMembership = !!(features.has('open-membership') || access.has('org:write'));
 
   const action = (
     <Button
       priority="primary"
-      size="small"
+      size="sm"
       disabled={!canCreateTeams}
-      title={
-        !canCreateTeams ? t('You do not have permission to create teams') : undefined
-      }
-      onClick={() =>
-        openCreateTeamModal({
-          organization,
-        })
-      }
-      icon={<IconAdd size="xs" isCircled />}
+      tooltipProps={{
+        title: canCreateTeams
+          ? undefined
+          : t('You do not have permission to create teams'),
+      }}
+      onClick={() => openCreateTeamModal({organization})}
+      icon={<IconAdd />}
     >
       {t('Create Team')}
     </Button>
   );
 
-  const teamRoute = routes.find(({path}) => path === 'teams/');
-  const urlPrefix = teamRoute
-    ? recreateRoute(teamRoute, {routes, params, stepBack: -2})
-    : '';
-
-  const activeTeamIds = new Set(activeTeams.map(team => team.id));
-  const otherTeams = allTeams.filter(team => !activeTeamIds.has(team.id));
   const title = t('Teams');
+
+  const debouncedSearch = debounce(onSearch, DEFAULT_DEBOUNCE_DURATION);
+  function handleSearch(query: string) {
+    setTeamQuery(query);
+    debouncedSearch(query);
+  }
+
+  const filteredTeams = teams.filter(team =>
+    `#${team.slug}`.toLowerCase().includes(teamQuery.toLowerCase())
+  );
+  const [userTeams, otherTeams] = partition(filteredTeams, team => team.isMember);
 
   return (
     <div data-test-id="team-list">
@@ -73,38 +83,47 @@ function OrganizationTeams({
       <SettingsPageHeader title={title} action={action} />
 
       <OrganizationAccessRequests
-        orgId={params.orgId}
+        orgSlug={organization.slug}
         requestList={requestList}
         onRemoveAccessRequest={onRemoveAccessRequest}
       />
-      <Panel>
-        <PanelHeader>{t('Your Teams')}</PanelHeader>
-        <PanelBody>
-          <AllTeamsList
-            urlPrefix={urlPrefix}
-            organization={organization}
-            teamList={activeTeams}
-            access={access}
-            openMembership={false}
-          />
-        </PanelBody>
-      </Panel>
-      <Panel>
-        <PanelHeader>{t('Other Teams')}</PanelHeader>
-        <PanelBody>
-          <AllTeamsList
-            urlPrefix={urlPrefix}
-            organization={organization}
-            teamList={otherTeams}
-            access={access}
-            openMembership={
-              !!(features.has('open-membership') || access.has('org:write'))
-            }
-          />
-        </PanelBody>
-      </Panel>
+      <StyledSearchBar
+        placeholder={t('Search teams')}
+        onChange={handleSearch}
+        query={teamQuery}
+      />
+      <YourTeamsTable
+        teams={userTeams}
+        isLoading={!initiallyLoaded}
+        canCreateTeams={canCreateTeams}
+        hasSearch={teamQuery.length > 0}
+        allTeamsCount={teams.length}
+      />
+      <OtherTeamsTable
+        teams={otherTeams}
+        openMembership={openMembership}
+        canCreateTeams={canCreateTeams}
+        hasSearch={teamQuery.length > 0}
+        allTeamsCount={teams.length}
+      />
+      {hasMore && (
+        <LoadMoreWrapper>
+          {fetching && <LoadingIndicator mini />}
+          <Button onClick={() => loadMore(teamQuery)}>{t('Show more')}</Button>
+        </LoadMoreWrapper>
+      )}
     </div>
   );
 }
 
-export default OrganizationTeams;
+const StyledSearchBar = styled(SearchBar)`
+  margin-bottom: ${space(2)};
+`;
+
+const LoadMoreWrapper = styled('div')`
+  display: grid;
+  gap: ${space(2)};
+  align-items: center;
+  justify-content: end;
+  grid-auto-flow: column;
+`;

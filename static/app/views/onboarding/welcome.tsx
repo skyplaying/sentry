@@ -1,29 +1,23 @@
-import {Component} from 'react';
+import {Fragment} from 'react';
 import styled from '@emotion/styled';
-import {motion, MotionProps} from 'framer-motion';
-import {preloadIcons} from 'platformicons';
+import type {MotionProps} from 'framer-motion';
+import {motion} from 'framer-motion';
 
-import Button from 'app/components/button';
-import {t, tct} from 'app/locale';
-import space from 'app/styles/space';
-import trackAdvancedAnalyticsEvent from 'app/utils/analytics/trackAdvancedAnalyticsEvent';
-import testableTransition from 'app/utils/testableTransition';
+import OnboardingInstall from 'sentry-images/spot/onboarding-install.svg';
 
-import FallingError from './components/fallingError';
-import WelcomeBackground from './components/welcomeBackground';
-import {StepProps} from './types';
+import {Button} from '@sentry/scraps/button';
+import {Text} from '@sentry/scraps/text';
 
-type Props = StepProps;
+import {t} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import testableTransition from 'sentry/utils/testableTransition';
+import FallingError from 'sentry/views/onboarding/components/fallingError';
+import WelcomeBackground from 'sentry/views/onboarding/components/welcomeBackground';
+import {WelcomeSkipButton} from 'sentry/views/onboarding/components/welcomeSkipButton';
+import {useWelcomeAnalyticsEffect} from 'sentry/views/onboarding/useWelcomeAnalyticsEffect';
+import {useWelcomeHandleComplete} from 'sentry/views/onboarding/useWelcomeHandleComplete';
 
-const easterEggText = [
-  t('Be careful. She’s barely hanging on as it is.'),
-  t("You know this error's not real, right?"),
-  t("It's that big button, right up there."),
-  t('You could do this all day. But you really shouldn’t.'),
-  tct("Ok, really, that's enough. Click [ready:I'm Ready].", {ready: <em />}),
-  tct("Next time you do that, [bold:we're starting].", {bold: <strong />}),
-  t("We weren't kidding, let's get going."),
-];
+import type {StepProps} from './types';
 
 const fadeAway: MotionProps = {
   variants: {
@@ -34,98 +28,155 @@ const fadeAway: MotionProps = {
   transition: testableTransition({duration: 0.8}),
 };
 
-class OnboardingWelcome extends Component<Props> {
-  componentDidMount() {
-    // Next step will render the platform picker (using both large and small
-    // icons). Keep things smooth by prefetching them. Preload a bit late to
-    // avoid jank on welcome animations.
-    setTimeout(preloadIcons, 1500);
-    trackAdvancedAnalyticsEvent('growth.onboarding_start_onboarding', {
-      organization: this.props.organization ?? null,
-    });
-  }
+type TextWrapperProps = {
+  cta: React.ReactNode;
+  src: string;
+  subText: React.ReactNode;
+  title: React.ReactNode;
+};
 
-  render() {
-    const {onComplete, active} = this.props;
-
-    return (
-      <FallingError
-        onFall={fallCount => fallCount >= easterEggText.length && onComplete({})}
-      >
-        {({fallingError, fallCount, triggerFall}) => (
-          <Wrapper>
-            <WelcomeBackground />
-            <motion.h1 {...fadeAway}>{t('Welcome to Sentry')}</motion.h1>
-            <motion.p {...fadeAway}>
-              {t(
-                'Find the errors and performance slowdowns that keep you up at night. In two steps.'
-              )}
-            </motion.p>
-            <CTAContainer {...fadeAway}>
-              <Button
-                data-test-id="welcome-next"
-                disabled={!active}
-                priority="primary"
-                onClick={() => {
-                  triggerFall();
-                  onComplete({});
-                }}
-              >
-                {t("I'm Ready")}
-              </Button>
-              <PositionedFallingError>{fallingError}</PositionedFallingError>
-            </CTAContainer>
-            <SecondaryAction {...fadeAway}>
-              {fallCount > 0 ? easterEggText[fallCount - 1] : <br />}
-            </SecondaryAction>
-          </Wrapper>
-        )}
-      </FallingError>
-    );
-  }
+function InnerAction({title, subText, cta, src}: TextWrapperProps) {
+  return (
+    <Fragment>
+      <ActionImage src={src} />
+      <TextWrapper>
+        <ActionTitle>{title}</ActionTitle>
+        <Text variant="muted">{subText}</Text>
+      </TextWrapper>
+      <ButtonWrapper>{cta}</ButtonWrapper>
+    </Fragment>
+  );
 }
 
-const CTAContainer = styled(motion.div)`
-  margin-bottom: ${space(2)};
-  position: relative;
+function TargetedOnboardingWelcome(props: StepProps) {
+  useWelcomeAnalyticsEffect();
 
-  button {
-    position: relative;
-    z-index: 2;
-  }
-`;
+  const handleComplete = useWelcomeHandleComplete(props.onComplete);
+
+  return (
+    <FallingError>
+      {({fallingError, fallCount, isFalling}) => (
+        <Wrapper>
+          <WelcomeBackground />
+          <motion.h1 {...fadeAway} style={{marginBottom: space(0.5)}}>
+            {t('Welcome to Sentry')}
+          </motion.h1>
+          <SubHeaderText style={{marginBottom: space(4)}} {...fadeAway}>
+            {t(
+              'Your code is probably broken. Maybe not. Find out for sure. Get started below.'
+            )}
+          </SubHeaderText>
+          <ActionItem {...fadeAway}>
+            <InnerAction
+              title={t('Install Sentry')}
+              subText={t(
+                'Select your languages or frameworks and install the SDKs to start tracking issues'
+              )}
+              src={OnboardingInstall}
+              cta={
+                <Fragment>
+                  <ButtonWithFill
+                    onClick={handleComplete}
+                    priority="primary"
+                    data-test-id="onboarding-welcome-start"
+                  >
+                    {t('Start')}
+                  </ButtonWithFill>
+                  {(fallCount === 0 || isFalling) && (
+                    <PositionedFallingError>{fallingError}</PositionedFallingError>
+                  )}
+                </Fragment>
+              }
+            />
+          </ActionItem>
+          <motion.p style={{margin: 0}} {...fadeAway}>
+            {t("Gee, I've used Sentry before.")}
+            <br />
+            <WelcomeSkipButton>{t('Skip onboarding.')}</WelcomeSkipButton>
+          </motion.p>
+        </Wrapper>
+      )}
+    </FallingError>
+  );
+}
+
+export default TargetedOnboardingWelcome;
 
 const PositionedFallingError = styled('span')`
   display: block;
   position: absolute;
+  right: 0px;
   top: 30px;
-  right: -5px;
-  z-index: 0;
-`;
-
-const SecondaryAction = styled(motion.small)`
-  color: ${p => p.theme.subText};
-  margin-top: 100px;
 `;
 
 const Wrapper = styled(motion.div)`
+  position: relative;
+  margin-top: auto;
+  margin-bottom: auto;
   max-width: 400px;
   display: flex;
   flex-direction: column;
   align-items: center;
   text-align: center;
-  padding-top: 100px;
+  margin-left: auto;
+  margin-right: auto;
 
   h1 {
     font-size: 42px;
   }
 `;
 
-Wrapper.defaultProps = {
-  variants: {exit: {x: 0}},
-  transition: testableTransition({
-    staggerChildren: 0.2,
-  }),
-};
+const ActionItem = styled(motion.div)`
+  min-height: 120px;
+  border-radius: ${space(0.5)};
+  padding: ${space(2)};
+  margin-bottom: ${space(2)};
+  justify-content: space-around;
+  border: 1px solid ${p => p.theme.tokens.border.primary};
+  @media (min-width: ${p => p.theme.breakpoints.sm}) {
+    display: grid;
+    grid-template-columns: 125px auto 125px;
+    width: 680px;
+    align-items: center;
+  }
+  @media (max-width: ${p => p.theme.breakpoints.sm}) {
+    display: flex;
+    flex-direction: column;
+  }
+`;
 
-export default OnboardingWelcome;
+const TextWrapper = styled('div')`
+  text-align: left;
+  margin: auto ${space(3)};
+  min-height: 70px;
+  @media (max-width: ${p => p.theme.breakpoints.sm}) {
+    text-align: center;
+    margin: ${space(1)} ${space(1)};
+    margin-top: ${space(3)};
+  }
+`;
+
+const ActionTitle = styled('h5')`
+  font-weight: ${p => p.theme.font.weight.sans.medium};
+  margin: 0 0 ${space(0.5)};
+  color: ${p => p.theme.tokens.content.primary};
+`;
+
+const SubHeaderText = styled(motion.h6)`
+  color: ${p => p.theme.tokens.content.secondary};
+`;
+
+const ButtonWrapper = styled('div')`
+  margin: ${space(1)};
+  position: relative;
+`;
+
+const ActionImage = styled('img')`
+  height: 100px;
+`;
+
+const ButtonWithFill = styled(Button)`
+  width: 100%;
+  position: relative;
+  z-index: 1;
+`;

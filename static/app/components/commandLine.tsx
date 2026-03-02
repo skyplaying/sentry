@@ -1,6 +1,6 @@
 import styled from '@emotion/styled';
 
-import space from 'app/styles/space';
+import {space} from 'sentry/styles/space';
 
 type Props = {
   /**
@@ -9,16 +9,18 @@ type Props = {
   children: string;
 };
 
-const CommandLine = ({children}: Props) => <Wrapper>{children}</Wrapper>;
+function CommandLine({children}: Props) {
+  return <Wrapper>{children}</Wrapper>;
+}
 
 export default CommandLine;
 
 const Wrapper = styled('code')`
   padding: ${space(0.5)} ${space(1)};
-  color: ${p => p.theme.pink300};
-  background: ${p => p.theme.pink100};
-  border: 1px solid ${p => p.theme.pink200};
-  font-family: ${p => p.theme.text.familyMono};
-  font-size: ${p => p.theme.fontSizeMedium};
+  color: ${p => p.theme.colors.pink500};
+  background: ${p => p.theme.colors.pink100};
+  border: 1px solid ${p => p.theme.colors.pink200};
+  font-family: ${p => p.theme.font.family.mono};
+  font-size: ${p => p.theme.font.size.md};
   white-space: nowrap;
 `;

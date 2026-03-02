@@ -1,10 +1,7 @@
-import {RouteComponentProps} from 'react-router';
+import {Link} from '@sentry/scraps/link';
 
-import Link from 'app/components/links/link';
-import ResultGrid from 'app/components/resultGrid';
-import {t} from 'app/locale';
-
-type Props = RouteComponentProps<{}, {}>;
+import ResultGrid from 'sentry/components/resultGrid';
+import {t} from 'sentry/locale';
 
 const getRow = (row: any) => [
   <td key={row.id}>
@@ -16,27 +13,26 @@ const getRow = (row: any) => [
   </td>,
 ];
 
-const AdminOrganizations = (props: Props) => (
-  <div>
-    <h3>{t('Organizations')}</h3>
-    <ResultGrid
-      path="/manage/organizations/"
-      endpoint="/organizations/?show=all"
-      method="GET"
-      columns={[<th key="column-org">Organization</th>]}
-      columnsForRow={getRow}
-      hasSearch
-      sortOptions={[
-        ['date', 'Date Joined'],
-        ['members', 'Members'],
-        ['events', 'Events'],
-        ['projects', 'Projects'],
-        ['employees', 'Employees'],
-      ]}
-      defaultSort="date"
-      {...props}
-    />
-  </div>
-);
-
-export default AdminOrganizations;
+export default function AdminOrganizations() {
+  return (
+    <div>
+      <h3>{t('Organizations')}</h3>
+      <ResultGrid
+        path="/manage/organizations/"
+        endpoint="/organizations/?show=all"
+        method="GET"
+        columns={[<th key="column-org">Organization</th>]}
+        columnsForRow={getRow}
+        hasSearch
+        sortOptions={[
+          ['date', 'Date Joined'],
+          ['members', 'Members'],
+          ['events', 'Events'],
+          ['projects', 'Projects'],
+          ['employees', 'Employees'],
+        ]}
+        defaultSort="date"
+      />
+    </div>
+  );
+}

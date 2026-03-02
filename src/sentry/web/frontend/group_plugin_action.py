@@ -1,20 +1,28 @@
-from django.http import Http404, HttpResponseRedirect
+from django.http import Http404, HttpRequest, HttpResponseRedirect
+from django.http.response import HttpResponseBase
 from django.shortcuts import get_object_or_404
-from django.utils.http import is_safe_url
+from django.utils.http import url_has_allowed_host_and_scheme
 
-from sentry.models import Group, GroupMeta
+from sentry.api.serializers.models.plugin import is_plugin_deprecated
+from sentry.models.group import Group
+from sentry.models.groupmeta import GroupMeta
 from sentry.plugins.base import plugins
-from sentry.web.frontend.base import ProjectView
+from sentry.web.frontend.base import ProjectView, region_silo_view
 
 
+@region_silo_view
 class GroupPluginActionView(ProjectView):
     required_scope = "event:read"
 
-    def handle(self, request, organization, project, group_id, slug):
+    def handle(
+        self, request: HttpRequest, organization, project, group_id, slug
+    ) -> HttpResponseBase:
         group = get_object_or_404(Group, pk=group_id, project=project)
 
         try:
             plugin = plugins.get(slug)
+            if is_plugin_deprecated(plugin, project):
+                raise Http404("Plugin not found")
         except KeyError:
             raise Http404("Plugin not found")
 
@@ -25,6 +33,6 @@ class GroupPluginActionView(ProjectView):
             return response
 
         redirect = request.META.get("HTTP_REFERER", "")
-        if not is_safe_url(redirect, allowed_hosts=(request.get_host(),)):
+        if not url_has_allowed_host_and_scheme(redirect, allowed_hosts=(request.get_host(),)):
             redirect = f"/{organization.slug}/{group.project.slug}/"
         return HttpResponseRedirect(redirect)

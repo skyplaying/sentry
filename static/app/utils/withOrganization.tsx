@@ -1,35 +1,31 @@
-import * as React from 'react';
+import type {Organization} from 'sentry/types/organization';
+import getDisplayName from 'sentry/utils/getDisplayName';
 
-import SentryTypes from 'app/sentryTypes';
-import {Organization} from 'app/types';
-import getDisplayName from 'app/utils/getDisplayName';
+import useOrganization from './useOrganization';
 
 type InjectedOrganizationProps = {
   organization?: Organization;
+  organizationAllowNull?: undefined | true;
 };
 
-const withOrganization = <P extends InjectedOrganizationProps>(
+function withOrganization<P extends InjectedOrganizationProps>(
   WrappedComponent: React.ComponentType<P>
-) =>
-  class extends React.Component<
-    Omit<P, keyof InjectedOrganizationProps> & InjectedOrganizationProps
-  > {
-    static displayName = `withOrganization(${getDisplayName(WrappedComponent)})`;
-    static contextTypes = {
-      organization: SentryTypes.Organization,
-    };
+) {
+  type Props = Omit<P, keyof InjectedOrganizationProps> &
+    Partial<InjectedOrganizationProps>;
 
-    render() {
-      const {organization, ...props} = this.props;
-      return (
-        <WrappedComponent
-          {...({
-            organization: organization ?? this.context.organization,
-            ...props,
-          } as P)}
-        />
-      );
-    }
-  };
+  function Wrapper(props: Props) {
+    const organization = useOrganization({allowNull: props.organizationAllowNull});
+
+    const allProps = {organization, ...props} as P;
+
+    // TODO(any): HoC prop types not working w/ emotion https://github.com/emotion-js/emotion/issues/3261
+    return <WrappedComponent {...(allProps as any)} />;
+  }
+
+  Wrapper.displayName = `withOrganization(${getDisplayName(WrappedComponent)})`;
+
+  return Wrapper;
+}
 
 export default withOrganization;

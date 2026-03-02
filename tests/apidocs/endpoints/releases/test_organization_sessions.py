@@ -1,12 +1,15 @@
+import pytest
 from django.test.client import RequestFactory
 from django.urls import reverse
 
-from sentry.testutils import SnubaTestCase
-from tests.apidocs.util import APIDocsTestCase
+from fixtures.apidocs_test_case import APIDocsTestCase
+from sentry.testutils.cases import SnubaTestCase
+
+pytestmark = pytest.mark.sentry_metrics
 
 
 class OrganizationSessionsDocsTest(APIDocsTestCase, SnubaTestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         super().setUp()
 
         self.organization = self.create_organization(owner=self.user, name="foo")
@@ -14,12 +17,12 @@ class OrganizationSessionsDocsTest(APIDocsTestCase, SnubaTestCase):
 
         self.url = reverse(
             "sentry-api-0-organization-sessions",
-            kwargs={"organization_slug": self.organization.slug},
+            kwargs={"organization_id_or_slug": self.organization.slug},
         )
 
         self.login_as(user=self.user)
 
-    def test_get(self):
+    def test_get(self) -> None:
         query = {
             "project": [self.project.id],
             "statsPeriod": "30d",

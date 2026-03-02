@@ -1,12 +1,30 @@
+from rest_framework import status
+
 from sentry import tagstore
-from sentry.integrations import FeatureDescription, IntegrationFeatures
-from sentry.integrations.slack.message_builder import LEVEL_TO_COLOR
+from sentry.integrations.base import FeatureDescription, IntegrationFeatures
+from sentry.integrations.messaging.types import LEVEL_TO_COLOR
+from sentry.plugins.base.structs import Notification
 from sentry.plugins.bases import notify
+from sentry.shared_integrations.exceptions import ApiError
 from sentry.utils import json
 from sentry.utils.http import absolute_uri
 from sentry_plugins.base import CorePluginMixin
 
 from .client import SlackApiClient
+
+IGNORABLE_SLACK_ERRORS = [
+    "channel_is_archived",
+    "invalid_channel",
+    "invalid_token",
+    "action_prohibited",
+]
+
+IGNORABLE_SLACK_ERROR_CODES = [
+    status.HTTP_404_NOT_FOUND,
+    status.HTTP_429_TOO_MANY_REQUESTS,
+]
+
+SLACK_PLUGIN_TITLE_LENGTH_LIMIT = 256
 
 
 class SlackPlugin(CorePluginMixin, notify.NotificationPlugin):
@@ -26,10 +44,10 @@ class SlackPlugin(CorePluginMixin, notify.NotificationPlugin):
         )
     ]
 
-    def is_configured(self, project):
+    def is_configured(self, project) -> bool:
         return bool(self.get_option("webhook", project))
 
-    def get_config(self, project, **kwargs):
+    def get_config(self, project, user=None, initial=None, add_additional_fields: bool = False):
         return [
             {
                 "name": "webhook",
@@ -88,7 +106,7 @@ class SlackPlugin(CorePluginMixin, notify.NotificationPlugin):
                 "type": "string",
                 "required": False,
                 "help": (
-                    "Only include these tags (comma separated list). " "Leave empty to include all."
+                    "Only include these tags (comma separated list). Leave empty to include all."
                 ),
             },
             {
@@ -132,7 +150,8 @@ class SlackPlugin(CorePluginMixin, notify.NotificationPlugin):
             return ()
 
         return (
-            (tagstore.get_tag_key_label(k), tagstore.get_tag_value_label(k, v)) for k, v in tag_list
+            (tagstore.backend.get_tag_key_label(k), tagstore.backend.get_tag_value_label(k, v))
+            for k, v in tag_list
         )
 
     def get_tag_list(self, name, project):
@@ -141,7 +160,7 @@ class SlackPlugin(CorePluginMixin, notify.NotificationPlugin):
             return None
         return {tag.strip().lower() for tag in option.split(",")}
 
-    def notify(self, notification, raise_exception=False):
+    def notify(self, notification: Notification, raise_exception: bool = False) -> None:
         event = notification.event
         group = event.group
         project = group.project
@@ -149,7 +168,7 @@ class SlackPlugin(CorePluginMixin, notify.NotificationPlugin):
         if not self.is_configured(project):
             return
 
-        title = event.title.encode("utf-8")
+        title = event.title[:SLACK_PLUGIN_TITLE_LENGTH_LIMIT].encode("utf-8")
         # TODO(dcramer): we'd like this to be the event culprit, but Sentry
         # does not currently retain it
         if group.culprit:
@@ -200,7 +219,7 @@ class SlackPlugin(CorePluginMixin, notify.NotificationPlugin):
             excluded_tags = set(self.get_tag_list("excluded_tag_keys", project) or [])
             for tag_key, tag_value in self._get_tags(event):
                 key = tag_key.lower()
-                std_key = tagstore.get_standardized_key(key)
+                std_key = tagstore.backend.get_standardized_key(key)
                 if included_tags and key not in included_tags and std_key not in included_tags:
                     continue
                 if excluded_tags and (key in excluded_tags or std_key in excluded_tags):
@@ -234,8 +253,14 @@ class SlackPlugin(CorePluginMixin, notify.NotificationPlugin):
         if client.icon_url:
             payload["icon_url"] = client.icon_url
 
-        values = {"payload": json.dumps(payload)}
-        client.request(values)
+        try:
+            client.request({"payload": json.dumps(payload)})
+        except ApiError as e:
+            # Ignore 404 and ignorable errors from slack webhooks.
+            if raise_exception or not (
+                e.text in IGNORABLE_SLACK_ERRORS or e.code in IGNORABLE_SLACK_ERROR_CODES
+            ):
+                raise
 
     def get_client(self, project):
         webhook = self.get_option("webhook", project).strip()

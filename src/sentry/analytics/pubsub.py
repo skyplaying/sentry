@@ -1,13 +1,17 @@
+from __future__ import annotations
+
+from sentry.analytics.event import EventEnvelope
+
 __all__ = ("PubSubAnalytics",)
 
 import logging
 
+import google.cloud.pubsub_v1 as pubsub_v1  # weird import for python/mypy#10360
 from google.auth.exceptions import GoogleAuthError
-from google.cloud import pubsub_v1
 
 from sentry.utils.json import dumps
 
-from .base import Analytics
+from . import Analytics
 
 logger = logging.getLogger(__name__)
 
@@ -15,12 +19,12 @@ logger = logging.getLogger(__name__)
 class PubSubAnalytics(Analytics):
     def __init__(
         self,
-        project,
-        topic,
-        batch_max_bytes=1024 * 1024 * 5,
-        batch_max_latency=0.05,
-        batch_max_messages=1000,
-    ):
+        project: str,
+        topic: str,
+        batch_max_bytes: int = 1024 * 1024 * 5,
+        batch_max_latency: float = 0.05,
+        batch_max_messages: int = 1000,
+    ) -> None:
         settings = pubsub_v1.types.BatchSettings(
             max_bytes=batch_max_bytes,
             max_latency=batch_max_latency,
@@ -34,6 +38,6 @@ class PubSubAnalytics(Analytics):
         else:
             self.topic = self.publisher.topic_path(project, topic)
 
-    def record_event(self, event):
+    def record_event_envelope(self, event: EventEnvelope) -> None:
         if self.publisher is not None:
             self.publisher.publish(self.topic, data=dumps(event.serialize()).encode("utf-8"))

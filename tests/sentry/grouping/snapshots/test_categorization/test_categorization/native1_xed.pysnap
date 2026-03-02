@@ -1,7 +1,5 @@
 ---
-created: '2021-03-26T18:19:11.494325Z'
-creator: sentry
-source: tests/sentry/grouping/test_categorization.py
+source: tests/sentry/grouping/test_categorization.py::test_categorization
 ---
 
 
@@ -12,7 +10,7 @@ EXC_BAD_INSTRUCTION / EXC_I386_INVOP:Fatal Error: EXC_BAD_INSTRUCTION / EXC_I386
            /usr/lib/system/libdispatch.dylib  _dispatch_worker_thread2 category=threadbase
            /usr/lib/system/libdispatch.dylib  _dispatch_root_queue_drain category=internals
            /usr/lib/system/libdispatch.dylib  _dispatch_queue_override_invoke category=internals
-           /usr/lib/system/libdispatch.dylib  _dispatch_client_callout category=threadbase
+           /usr/lib/system/libdispatch.dylib  _dispatch_client_callout category=internals
                                               stripped_application_code
                                               stripped_application_code
         abccore.framework/Versions/A/abccore  boost::function0<T>::operator() category=indirection

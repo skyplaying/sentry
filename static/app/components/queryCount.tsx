@@ -1,10 +1,10 @@
-import {defined} from 'app/utils';
+import {defined} from 'sentry/utils';
 
 type Props = {
   count?: number | null;
-  max?: number;
   hideIfEmpty?: boolean;
   hideParens?: boolean;
+  max?: number;
 };
 
 /**
@@ -14,7 +14,7 @@ type Props = {
  * Render nothing by default if `count` is falsy.
  */
 
-const QueryCount = ({count, max, hideIfEmpty = true, hideParens = false}: Props) => {
+function QueryCount({count, max, hideIfEmpty = true, hideParens = false}: Props) {
   const countOrMax = defined(count) && defined(max) && count >= max ? `${max}+` : count;
 
   if (hideIfEmpty && !count) {
@@ -28,6 +28,6 @@ const QueryCount = ({count, max, hideIfEmpty = true, hideParens = false}: Props)
       {!hideParens && <span>)</span>}
     </span>
   );
-};
+}
 
 export default QueryCount;

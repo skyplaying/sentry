@@ -1,10 +1,10 @@
 from django.urls import reverse
 
-from sentry.testutils import APITestCase
+from sentry.testutils.cases import APITestCase
 
 
 class SystemHealthTest(APITestCase):
-    def test_simple(self):
+    def test_simple(self) -> None:
         self.login_as(user=self.user, superuser=True)
         url = reverse("sentry-api-0-system-health")
         response = self.client.get(url)

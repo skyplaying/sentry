@@ -1,12 +1,17 @@
 from uuid import uuid4
 
 from sentry.api.serializers import serialize
-from sentry.models import Commit, CommitAuthor, CommitFileChange, Release, ReleaseCommit, Repository
-from sentry.testutils import TestCase
+from sentry.models.commit import Commit
+from sentry.models.commitauthor import CommitAuthor
+from sentry.models.commitfilechange import CommitFileChange
+from sentry.models.release import Release
+from sentry.models.releasecommit import ReleaseCommit
+from sentry.models.repository import Repository
+from sentry.testutils.cases import TestCase
 
 
 class CommitFileChangeSerializerTest(TestCase):
-    def test_simple(self):
+    def test_simple(self) -> None:
         user = self.create_user()
         project = self.create_project()
         release = Release.objects.create(
@@ -34,7 +39,10 @@ class CommitFileChangeSerializerTest(TestCase):
             order=1,
         )
         cfc = CommitFileChange.objects.create(
-            organization_id=project.organization_id, commit=commit, filename=".gitignore", type="M"
+            organization_id=project.organization_id,
+            commit_id=commit.id,
+            filename=".gitignore",
+            type="M",
         )
         result = serialize(cfc, user)
 
@@ -42,7 +50,7 @@ class CommitFileChangeSerializerTest(TestCase):
         assert result["commitMessage"] == "waddap"
         assert result["author"] == {"name": "stebe", "email": "stebe@sentry.io"}
 
-    def test_no_author(self):
+    def test_no_author(self) -> None:
         user = self.create_user()
         project = self.create_project()
         release = Release.objects.create(
@@ -66,7 +74,10 @@ class CommitFileChangeSerializerTest(TestCase):
             order=1,
         )
         cfc = CommitFileChange.objects.create(
-            organization_id=project.organization_id, commit=commit, filename=".gitignore", type="M"
+            organization_id=project.organization_id,
+            commit_id=commit.id,
+            filename=".gitignore",
+            type="M",
         )
 
         result = serialize(cfc, user)

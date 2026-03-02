@@ -1,51 +1,46 @@
-import {useEffect} from 'react';
-import DocumentTitle from 'react-document-title';
-import {RouteComponentProps} from 'react-router';
+import {useLayoutEffect} from 'react';
 import * as Sentry from '@sentry/react';
 
-import NotFound from 'app/components/errors/notFound';
-import Footer from 'app/components/footer';
-import Sidebar from 'app/components/sidebar';
-import {t} from 'app/locale';
+import NotFound from 'sentry/components/errors/notFound';
+import * as Layout from 'sentry/components/layouts/thirds';
+import SentryDocumentTitle from 'sentry/components/sentryDocumentTitle';
+import {t} from 'sentry/locale';
+import {useLocation} from 'sentry/utils/useLocation';
+import {useNavigate} from 'sentry/utils/useNavigate';
+import {useLastKnownRoute} from 'sentry/views/lastKnownRouteContextProvider';
 
-type Props = RouteComponentProps<{}, {}>;
-
-function RouteNotFound({router, location}: Props) {
-  const {pathname, search, hash} = location;
-
+function RouteNotFound() {
+  const navigate = useNavigate();
+  const {pathname, search, hash} = useLocation();
+  const lastKnownRoute = useLastKnownRoute();
   const isMissingSlash = pathname[pathname.length - 1] !== '/';
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     // Attempt to fix trailing slashes first
     if (isMissingSlash) {
-      router.replace(`${pathname}/${search}${hash}`);
+      navigate(`${pathname}/${search}${hash}`, {replace: true});
       return;
     }
 
     Sentry.withScope(scope => {
       scope.setFingerprint(['RouteNotFound']);
+      scope.setTag('isMissingSlash', isMissingSlash);
+      scope.setTag('pathname', pathname);
+      scope.setTag('lastKnownRoute', lastKnownRoute);
       Sentry.captureException(new Error('Route not found'));
     });
-  }, [pathname]);
+  }, [pathname, search, hash, isMissingSlash, lastKnownRoute, navigate]);
 
   if (isMissingSlash) {
     return null;
   }
 
   return (
-    <DocumentTitle title={t('Page Not Found')}>
-      <div className="app">
-        <Sidebar location={location} />
-        <div className="container">
-          <div className="content">
-            <section className="body">
-              <NotFound />
-            </section>
-          </div>
-        </div>
-        <Footer />
-      </div>
-    </DocumentTitle>
+    <SentryDocumentTitle title={t('Page Not Found')}>
+      <Layout.Page withPadding>
+        <NotFound />
+      </Layout.Page>
+    </SentryDocumentTitle>
   );
 }
 

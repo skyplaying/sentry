@@ -1,17 +1,16 @@
-from django.core.signals import request_finished
-from django.utils.deprecation import MiddlewareMixin
+from collections.abc import Callable
+
+from django.http.request import HttpRequest
+from django.http.response import HttpResponseBase
 
 from sentry.app import env
 
 
-class SentryEnvMiddleware(MiddlewareMixin):
-    def process_request(self, request):
-        # bind request to env
-        env.request = request
+def SentryEnvMiddleware(
+    get_response: Callable[[HttpRequest], HttpResponseBase],
+) -> Callable[[HttpRequest], HttpResponseBase]:
+    def SentryEnvMiddleware_impl(request: HttpRequest) -> HttpResponseBase:
+        with env.active_request(request):
+            return get_response(request)
 
-
-def clear_request(**kwargs):
-    env.request = None
-
-
-request_finished.connect(clear_request)
+    return SentryEnvMiddleware_impl

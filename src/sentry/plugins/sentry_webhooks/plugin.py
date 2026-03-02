@@ -1,33 +1,35 @@
+from __future__ import annotations
+
 import logging
 
 from django import forms
 from django.conf import settings
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from requests.exceptions import ConnectionError, ReadTimeout
 
 import sentry
 from sentry.exceptions import PluginError
-from sentry.http import is_valid_url, safe_urlopen
-from sentry.integrations import FeatureDescription, IntegrationFeatures
+from sentry.integrations.base import FeatureDescription, IntegrationFeatures
+from sentry.net.socket import is_valid_url
 from sentry.plugins.bases import notify
-from sentry.utils.compat import filter
-from sentry.utils.safe import safe_execute
+
+from .client import WebhookApiClient
 
 DESCRIPTION = """
 Trigger outgoing HTTP POST requests from Sentry.
 
 Note: To configure webhooks over multiple projects, we recommend setting up an
-[Internal Integration](https://docs.sentry.io/workflow/integrations/integration-platform/#internal-integrations).
+Internal Integration.
 """
 
 
-def split_urls(value):
+def split_urls(value: str) -> list[str]:
     if not value:
-        return ()
-    return filter(bool, (url.strip() for url in value.splitlines()))
+        return []
+    return list(filter(bool, (url.strip() for url in value.splitlines())))
 
 
-def validate_urls(value, **kwargs):
+def validate_urls(value: str, **kwargs: object) -> str:
     urls = split_urls(value)
     if any((not u.startswith(("http://", "https://")) or not is_valid_url(u)) for u in urls):
         raise PluginError("Not a valid URL.")
@@ -55,6 +57,10 @@ class WebHooksPlugin(notify.NotificationPlugin):
             "View Source",
             "https://github.com/getsentry/sentry/tree/master/src/sentry/plugins/sentry_webhooks",
         ),
+        (
+            "Internal Integrations",
+            "https://docs.sentry.io/workflow/integrations/integration-platform/#internal-integrations",
+        ),
     ]
 
     slug = "webhooks"
@@ -76,10 +82,10 @@ class WebHooksPlugin(notify.NotificationPlugin):
         )
     ]
 
-    def is_configured(self, project, **kwargs):
+    def is_configured(self, project) -> bool:
         return bool(self.get_option("urls", project))
 
-    def get_config(self, project, **kwargs):
+    def get_config(self, project, user=None, initial=None, add_additional_fields: bool = False):
         return [
             {
                 "name": "urls",
@@ -103,6 +109,7 @@ class WebHooksPlugin(notify.NotificationPlugin):
             "culprit": group.culprit,
             "message": event.message,
             "url": group.get_absolute_url(params={"referrer": "webhooks_plugin"}),
+            # TODO(ecosystem): We need to eventually change the key on this
             "triggering_rules": triggering_rules,
         }
         data["event"] = dict(event.data or {})
@@ -114,17 +121,14 @@ class WebHooksPlugin(notify.NotificationPlugin):
     def get_webhook_urls(self, project):
         return split_urls(self.get_option("urls", project))
 
-    def send_webhook(self, url, payload):
-        return safe_urlopen(url=url, json=payload, timeout=self.timeout, verify_ssl=False)
+    def get_client(self, payload):
+        return WebhookApiClient(payload)
 
-    def notify_users(self, group, event, triggering_rules, fail_silently=False, **kwargs):
+    def notify_users(self, group, event, triggering_rules) -> None:
         payload = self.get_group_data(group, event, triggering_rules)
+        client = self.get_client(payload)
         for url in self.get_webhook_urls(group.project):
-            # TODO: Use API client with raise_error
-            safe_execute(
-                self.send_webhook,
-                url,
-                payload,
-                _with_transaction=False,
-                expected_errors=(ReadTimeout, ConnectionError),
-            )
+            try:
+                client.request(url)
+            except (ReadTimeout, ConnectionError):
+                pass

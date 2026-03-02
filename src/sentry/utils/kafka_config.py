@@ -1,12 +1,17 @@
-from typing import Any, MutableMapping, Optional
+from collections.abc import MutableMapping
+from typing import Any
 
 from django.conf import settings
+
+from sentry.conf.types.kafka_definition import Topic
+from sentry.conf.types.topic_definition import TopicDefinition
 
 SUPPORTED_KAFKA_CONFIGURATION = (
     # Check https://github.com/edenhill/librdkafka/blob/master/CONFIGURATION.md
     # for the full list of available options
     "bootstrap.servers",
     "compression.type",
+    "max.poll.interval.ms",
     "message.max.bytes",
     "sasl.mechanism",
     "sasl.username",
@@ -35,7 +40,7 @@ ADMIN_SECTION = "admin"
 KNOWN_SECTIONS = (COMMON_SECTION, PRODUCERS_SECTION, CONSUMERS_SECTION, ADMIN_SECTION)
 
 
-def _get_legacy_kafka_cluster_options(cluster_name):
+def _get_legacy_kafka_cluster_options(cluster_name: str) -> dict[str, Any]:
     options = settings.KAFKA_CLUSTERS[cluster_name]
 
     options = {k: v for k, v in options.items() if k not in KNOWN_SECTIONS}
@@ -46,8 +51,11 @@ def _get_legacy_kafka_cluster_options(cluster_name):
 
 
 def _get_kafka_cluster_options(
-    cluster_name, config_section, only_bootstrap=False, override_params=None
-):
+    cluster_name: str,
+    config_section: str,
+    only_bootstrap: bool = False,
+    override_params: MutableMapping[str, Any] | None = None,
+) -> dict[str, Any]:
     options = {}
     custom_options = settings.KAFKA_CLUSTERS[cluster_name].get(config_section, {})
     common_options = settings.KAFKA_CLUSTERS[cluster_name].get(COMMON_SECTION, {})
@@ -73,21 +81,48 @@ def _get_kafka_cluster_options(
     return options
 
 
-def get_kafka_producer_cluster_options(cluster_name):
+def get_kafka_producer_cluster_options(cluster_name: str) -> dict[str, Any]:
     return _get_kafka_cluster_options(cluster_name, PRODUCERS_SECTION)
 
 
 def get_kafka_consumer_cluster_options(
-    cluster_name: str, override_params: Optional[MutableMapping[str, Any]] = None
-) -> MutableMapping[Any, Any]:
+    cluster_name: str, override_params: MutableMapping[str, Any] | None = None
+) -> dict[str, Any]:
     return _get_kafka_cluster_options(
         cluster_name, CONSUMERS_SECTION, only_bootstrap=True, override_params=override_params
     )
 
 
 def get_kafka_admin_cluster_options(
-    cluster_name: str, override_params: Optional[MutableMapping[str, Any]] = None
-) -> MutableMapping[Any, Any]:
+    cluster_name: str, override_params: MutableMapping[str, Any] | None = None
+) -> dict[str, Any]:
     return _get_kafka_cluster_options(
         cluster_name, ADMIN_SECTION, only_bootstrap=True, override_params=override_params
     )
+
+
+def get_topic_definition(topic: Topic, kafka_slice_id: int | None = None) -> TopicDefinition:
+    if kafka_slice_id is not None:
+        sliced_topics = settings.SLICED_KAFKA_TOPICS
+        key = (topic.value, kafka_slice_id)
+        if key not in sliced_topics:
+            raise KeyError(
+                f"No configuration found for topic '{topic.value}' with slice ID {kafka_slice_id}"
+            )
+        defn = sliced_topics[key]
+        return {
+            "cluster": defn["cluster"],
+            "real_topic_name": defn["topic"],
+        }
+
+    return {
+        "cluster": settings.KAFKA_TOPIC_TO_CLUSTER[topic.value],
+        "real_topic_name": settings.KAFKA_TOPIC_OVERRIDES.get(topic.value, topic.value),
+    }
+
+
+def get_topic_definition_from_name(topic_name: str) -> TopicDefinition:
+    return {
+        "cluster": settings.KAFKA_TOPIC_TO_CLUSTER.get(topic_name, "default"),
+        "real_topic_name": settings.KAFKA_TOPIC_OVERRIDES.get(topic_name, topic_name),
+    }

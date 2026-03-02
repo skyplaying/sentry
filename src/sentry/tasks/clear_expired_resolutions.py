@@ -1,17 +1,27 @@
 from django.db.models import Q
 
-from sentry.models import Activity, GroupResolution, Release
+from sentry.models.activity import Activity
+from sentry.models.groupresolution import GroupResolution
+from sentry.models.release import Release
+from sentry.silo.base import SiloMode
 from sentry.tasks.base import instrumented_task
+from sentry.taskworker.namespaces import issues_tasks
+from sentry.types.activity import ActivityType
 
 
-@instrumented_task(name="sentry.tasks.clear_expired_resolutions", time_limit=15, soft_time_limit=10)
+@instrumented_task(
+    name="sentry.tasks.clear_expired_resolutions",
+    namespace=issues_tasks,
+    processing_deadline_duration=15,
+    silo_mode=SiloMode.REGION,
+)
 def clear_expired_resolutions(release_id):
     """
     This should be fired when ``release_id`` is created, and will indicate to
     the system that any pending resolutions older than the given release can now
     be safely transitioned to resolved.
 
-    This is currently only used for ``in_next_release`` resolutions.
+    This is currently only used for ``in_next_release`` resolution.
     """
     try:
         release = Release.objects.get(id=release_id)
@@ -40,10 +50,11 @@ def clear_expired_resolutions(release_id):
         try:
             activity = Activity.objects.filter(
                 group=resolution.group_id,
-                type=Activity.SET_RESOLVED_IN_RELEASE,
+                type=ActivityType.SET_RESOLVED_IN_RELEASE.value,
                 ident=resolution.id,
             ).order_by("-datetime")[0]
         except IndexError:
             continue
 
+        # TODO: Do we need to write a `GroupHistory` row here?
         activity.update(data={"version": release.version})

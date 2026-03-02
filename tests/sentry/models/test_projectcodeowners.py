@@ -1,21 +1,18 @@
-from sentry.models import Integration, ProjectCodeOwners
-from sentry.ownership.grammar import Matcher, Owner, Rule, dump_schema
-from sentry.testutils import TestCase
+from sentry.issues.ownership.grammar import Matcher, Owner, Rule, dump_schema
+from sentry.models.groupowner import PROJECT_OWNERSHIP_VERSION_KEY, GroupOwner
+from sentry.models.projectcodeowners import ProjectCodeOwners
+from sentry.testutils.cases import TestCase
 from sentry.utils.cache import cache
 
 
 class ProjectCodeOwnersTestCase(TestCase):
-    def tearDown(self):
+    def tearDown(self) -> None:
         cache.delete(ProjectCodeOwners.get_cache_key(self.project.id))
 
         super().tearDown()
 
-    def setUp(self):
+    def setUp(self) -> None:
         self.login_as(user=self.user)
-        self.integration = Integration.objects.create(
-            provider="github", name="GitHub", external_id="github:1"
-        )
-        self.oi = self.integration.add_organization(self.organization, self.user)
 
         self.team = self.create_team(
             organization=self.organization, slug="tiger-team", members=[self.user]
@@ -26,7 +23,6 @@ class ProjectCodeOwnersTestCase(TestCase):
         )
         self.code_mapping = self.create_code_mapping(
             project=self.project,
-            organization_integration=self.oi,
         )
 
         self.external_team = self.create_external_team(integration=self.integration)
@@ -41,10 +37,9 @@ class ProjectCodeOwnersTestCase(TestCase):
             "raw": "docs/*    @NisanthanNanthakumar   @getsentry/ecosystem\n",
         }
 
-    def test_merge_codeowners(self):
+    def test_merge_codeowners(self) -> None:
         self.code_mapping_2 = self.create_code_mapping(
             project=self.project,
-            organization_integration=self.oi,
             stack_root="stack/root/",
         )
 
@@ -73,6 +68,7 @@ class ProjectCodeOwnersTestCase(TestCase):
 
         code_owners = ProjectCodeOwners.objects.filter(project=self.project)
         merged = ProjectCodeOwners.merge_code_owners_list(code_owners_list=code_owners)
+        assert merged is not None
 
         assert merged.schema == {
             "$version": 1,
@@ -93,3 +89,33 @@ class ProjectCodeOwnersTestCase(TestCase):
                 },
             ],
         }
+
+    def test_post_save_sets_ownership_version(self) -> None:
+        cache.delete(PROJECT_OWNERSHIP_VERSION_KEY(self.project.id))
+        assert GroupOwner.get_project_ownership_version(self.project.id) is None
+
+        self.create_codeowners(
+            self.project,
+            self.code_mapping,
+            raw=self.data["raw"],
+        )
+
+        version = GroupOwner.get_project_ownership_version(self.project.id)
+        assert version is not None
+        assert isinstance(version, float)
+
+    def test_post_delete_sets_ownership_version(self) -> None:
+        codeowners = self.create_codeowners(
+            self.project,
+            self.code_mapping,
+            raw=self.data["raw"],
+        )
+
+        cache.delete(PROJECT_OWNERSHIP_VERSION_KEY(self.project.id))
+        assert GroupOwner.get_project_ownership_version(self.project.id) is None
+
+        codeowners.delete()
+
+        version = GroupOwner.get_project_ownership_version(self.project.id)
+        assert version is not None
+        assert isinstance(version, float)

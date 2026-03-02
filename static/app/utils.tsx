@@ -1,140 +1,34 @@
-import {Query} from 'history';
-import isArray from 'lodash/isArray';
-import isObject from 'lodash/isObject';
-import isString from 'lodash/isString';
-import isUndefined from 'lodash/isUndefined';
+import type {Query} from 'history';
 
-import {Project} from 'app/types';
-import {EventTag} from 'app/types/event';
-import {appendTagCondition} from 'app/utils/queryString';
-
-function arrayIsEqual(arr?: any[], other?: any[], deep?: boolean): boolean {
-  // if the other array is a falsy value, return
-  if (!arr && !other) {
-    return true;
-  }
-
-  if (!arr || !other) {
-    return false;
-  }
-
-  // compare lengths - can save a lot of time
-  if (arr.length !== other.length) {
-    return false;
-  }
-
-  return arr.every((val, idx) => valueIsEqual(val, other[idx], deep));
-}
-
-export function valueIsEqual(value?: any, other?: any, deep?: boolean): boolean {
-  if (value === other) {
-    return true;
-  } else if (isArray(value) || isArray(other)) {
-    if (arrayIsEqual(value, other, deep)) {
-      return true;
-    }
-  } else if (isObject(value) || isObject(other)) {
-    if (objectMatchesSubset(value, other, deep)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function objectMatchesSubset(obj?: object, other?: object, deep?: boolean): boolean {
-  let k: string;
-
-  if (obj === other) {
-    return true;
-  }
-
-  if (!obj || !other) {
-    return false;
-  }
-
-  if (deep !== true) {
-    for (k in other) {
-      if (obj[k] !== other[k]) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  for (k in other) {
-    if (!valueIsEqual(obj[k], other[k], deep)) {
-      return false;
-    }
-  }
-  return true;
-}
-
-export function intcomma(x: number): string {
-  return x.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-}
-
-export function sortArray<T>(arr: Array<T>, score_fn: (entry: T) => string): Array<T> {
-  arr.sort((a, b) => {
-    const a_score = score_fn(a),
-      b_score = score_fn(b);
-
-    for (let i = 0; i < a_score.length; i++) {
-      if (a_score[i] > b_score[i]) {
-        return 1;
-      }
-      if (a_score[i] < b_score[i]) {
-        return -1;
-      }
-    }
-    return 0;
-  });
-
-  return arr;
-}
-
-export function objectIsEmpty(obj = {}): boolean {
-  for (const prop in obj) {
-    if (obj.hasOwnProperty(prop)) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-export function trim(str: string): string {
-  return str.replace(/^\s+|\s+$/g, '');
-}
+import type {EventTag} from 'sentry/types/event';
+import {
+  ISSUE_EVENT_FIELDS_THAT_MAY_CONFLICT_WITH_TAGS,
+  type FieldKey,
+} from 'sentry/utils/fields';
+import {appendTagCondition} from 'sentry/utils/queryString';
 
 /**
  * Replaces slug special chars with a space
  */
 export function explodeSlug(slug: string): string {
-  return trim(slug.replace(/[-_]+/g, ' '));
+  return slug.replace(/[-_]+/g, ' ').trim();
 }
 
 export function defined<T>(item: T): item is Exclude<T, null | undefined> {
-  return !isUndefined(item) && item !== null;
+  return item !== undefined && item !== null;
 }
 
 export function nl2br(str: string): string {
   return str.replace(/(?:\r\n|\r|\n)/g, '<br />');
 }
 
-/**
- * This function has a critical security impact, make sure to check all usages before changing this function.
- * In some parts of our code we rely on that this only really is a string starting with http(s).
- */
-export function isUrl(str: any): boolean {
-  return (
-    !!str &&
-    isString(str) &&
-    (str.indexOf('http://') === 0 || str.indexOf('https://') === 0)
-  );
-}
-
 export function escape(str: string): string {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 export function percent(value: number, totalValue: number): number {
@@ -146,119 +40,38 @@ export function percent(value: number, totalValue: number): number {
   return (value / totalValue) * 100;
 }
 
-export function toTitleCase(str: string): string {
-  return str.replace(
-    /\w\S*/g,
-    txt => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase()
-  );
+/**
+ * Converts a multi-line textarea input value into an array, eliminating empty lines.
+ * Safely handles unknown input types for form field getValue callbacks.
+ */
+export function extractMultilineFields(value: unknown): string[] {
+  // User input
+  if (typeof value === 'string') {
+    return value
+      .split('\n')
+      .map(f => f.trim())
+      .filter(f => f !== '');
+  }
+  // API response / undo form save action
+  if (Array.isArray(value) && value.every(item => typeof item === 'string')) {
+    return value;
+  }
+
+  return [];
 }
 
 /**
- * Note the difference between *a-bytes (base 10) vs *i-bytes (base 2), which
- * means that:
- * - 1000 megabytes is equal to 1 gigabyte
- * - 1024 mebibytes is equal to 1 gibibytes
- *
- * We will use base 10 throughout billing for attachments. This function formats
- * quota/usage values for display.
- *
- * For storage/memory/file sizes, please take a look at formatBytesBase2
+ * Converts a value to a multi-line string for display in textarea.
+ * Safely handles unknown input types for form field setValue callbacks.
  */
-export function formatBytesBase10(bytes: number, u: number = 0) {
-  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
-  const threshold = 1000;
-
-  while (bytes >= threshold) {
-    bytes /= threshold;
-    u += 1;
+export function convertMultilineFieldValue(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
   }
-
-  return bytes.toLocaleString(undefined, {maximumFractionDigits: 2}) + ' ' + units[u];
-}
-
-/**
- * Note the difference between *a-bytes (base 10) vs *i-bytes (base 2), which
- * means that:
- * - 1000 megabytes is equal to 1 gigabyte
- * - 1024 mebibytes is equal to 1 gibibytes
- *
- * We will use base 2 to display storage/memory/file sizes as that is commonly
- * used by Windows or RAM or CPU cache sizes, and it is more familiar to the user
- *
- * For billing-related code around attachments. please take a look at
- * formatBytesBase10
- */
-export function formatBytesBase2(bytes: number): string {
-  const units = ['KiB', 'MiB', 'GiB', 'TiB', 'PiB', 'EiB', 'ZiB', 'YiB'];
-  const thresh = 1024;
-  if (bytes < thresh) {
-    return bytes + ' B';
-  }
-
-  let u = -1;
-  do {
-    bytes /= thresh;
-    ++u;
-  } while (bytes >= thresh);
-  return bytes.toFixed(1) + ' ' + units[u];
-}
-
-export function getShortCommitHash(hash: string): string {
-  if (hash.match(/^[a-f0-9]{40}$/)) {
-    hash = hash.substr(0, 7);
-  }
-  return hash;
-}
-
-export function parseRepo<T>(repo: T): T {
-  if (typeof repo === 'string') {
-    const re = /(?:github\.com|bitbucket\.org)\/([^\/]+\/[^\/]+)/i;
-    const match = repo.match(re);
-    const parsedRepo = match ? match[1] : repo;
-    return parsedRepo as any;
-  }
-
-  return repo;
-}
-
-/**
- * Converts a multi-line textarea input value into an array,
- * eliminating empty lines
- */
-export function extractMultilineFields(value: string): Array<string> {
-  return value
-    .split('\n')
-    .map(f => trim(f))
-    .filter(f => f !== '');
-}
-
-/**
- * If the value is of type Array, converts it to type string, keeping the line breaks, if there is any
- */
-export function convertMultilineFieldValue<T extends string | Array<string>>(
-  value: T
-): string {
-  if (Array.isArray(value)) {
+  if (Array.isArray(value) && value.every(item => typeof item === 'string')) {
     return value.join('\n');
   }
-
-  if (typeof value === 'string') {
-    return value.split('\n').join('\n');
-  }
-
   return '';
-}
-
-function projectDisplayCompare(a: Project, b: Project): number {
-  if (a.isBookmarked !== b.isBookmarked) {
-    return a.isBookmarked ? -1 : 1;
-  }
-  return a.slug.localeCompare(b.slug);
-}
-
-// Sort a list of projects by bookmarkedness, then by id
-export function sortProjects(projects: Array<Project>): Array<Project> {
-  return projects.sort(projectDisplayCompare);
 }
 
 // build actorIds
@@ -290,24 +103,30 @@ export function isWebpackChunkLoadingError(error: Error): boolean {
   );
 }
 
-export function deepFreeze<T>(object: T) {
-  // Retrieve the property names defined on object
-  const propNames = Object.getOwnPropertyNames(object);
-  // Freeze properties before freezing self
-  for (const name of propNames) {
-    const value = object[name];
-
-    object[name] = value && typeof value === 'object' ? deepFreeze(value) : value;
+/**
+ * If a tag conflicts with a reserved keyword, change it to `tags[key]:value`
+ */
+export function escapeIssueTagKey(key: string) {
+  if (key === '') {
+    return '""';
   }
 
-  return Object.freeze(object);
-}
+  // Environment and project should be handled by the page filter
+  if (key === 'environment' || key === 'project') {
+    return key;
+  }
 
-export type OmitHtmlDivProps<P extends object> = Omit<
-  React.HTMLProps<HTMLDivElement>,
-  keyof P
-> &
-  P;
+  // Reserved keywords that conflict with issue search query
+  if (['project.name', 'project_id'].includes(key)) {
+    return `tags[${key}]`;
+  }
+
+  if (ISSUE_EVENT_FIELDS_THAT_MAY_CONFLICT_WITH_TAGS.has(key as FieldKey)) {
+    return `tags[${key}]`;
+  }
+
+  return key;
+}
 
 export function generateQueryWithTag(prevQuery: Query, tag: EventTag): Query {
   const query = {...prevQuery};
@@ -325,12 +144,39 @@ export function generateQueryWithTag(prevQuery: Query, tag: EventTag): Query {
       query.query = appendTagCondition(query.query, tag.key, tag.value);
   }
 
+  // Checking for the absence of a tag value.
+  if (tag.value === '') {
+    query.query = `!has:${tag.key}`;
+  }
+
   return query;
 }
-
-export const isFunction = (value: any): value is Function => typeof value === 'function';
 
 // NOTE: only escapes a " if it's not already escaped
 export function escapeDoubleQuotes(str: string) {
   return str.replace(/\\([\s\S])|(")/g, '\\$1$2');
+}
+
+export function generateOrgSlugUrl(orgSlug: any) {
+  const sentryDomain = window.__initialData.links.sentryUrl.split('/')[2];
+  return `${window.location.protocol}//${orgSlug}.${sentryDomain}${window.location.pathname}`;
+}
+
+/**
+ * Encodes given object into url-friendly format
+ */
+export function urlEncode(object: Record<string, any>): string {
+  return Object.keys(object)
+    .map(key => `${encodeURIComponent(key)}=${encodeURIComponent(object[key])}`)
+    .join('&');
+}
+
+export function isNumericString(value: string): boolean {
+  const s = value.trim();
+
+  if (!s) {
+    return false;
+  }
+
+  return /^-?(?:\d+|\d*\.\d+)(?:[eE][+-]?\d+)?$/.test(s);
 }

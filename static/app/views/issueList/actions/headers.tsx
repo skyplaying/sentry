@@ -1,18 +1,21 @@
 import {Fragment} from 'react';
 import styled from '@emotion/styled';
 
-import ToolbarHeader from 'app/components/toolbarHeader';
-import {t} from 'app/locale';
-import overflowEllipsis from 'app/styles/overflowEllipsis';
-import space from 'app/styles/space';
-import {GlobalSelection} from 'app/types';
+import {Flex} from '@sentry/scraps/layout';
+
+import IssueStreamHeaderLabel from 'sentry/components/IssueStreamHeaderLabel';
+import ToolbarHeader from 'sentry/components/toolbarHeader';
+import {t} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {PageFilters} from 'sentry/types/core';
+import {COLUMN_BREAKPOINTS} from 'sentry/views/issueList/actions/utils';
 
 type Props = {
-  selection: GlobalSelection;
-  statsPeriod: string;
-  onSelectStatsPeriod: (statsPeriod: string) => void;
   isReprocessingQuery: boolean;
-  anySelected?: boolean;
+  onSelectStatsPeriod: (statsPeriod: string) => void;
+  selection: PageFilters;
+  statsPeriod: string;
+  isSavedSearchesOpen?: boolean;
 };
 
 function Headers({
@@ -31,30 +34,45 @@ function Headers({
         </Fragment>
       ) : (
         <Fragment>
-          <GraphHeaderWrapper className="hidden-xs hidden-sm hidden-md">
-            <GraphHeader>
-              <StyledToolbarHeader>{t('Graph:')}</StyledToolbarHeader>
-              {selection.datetime.period !== '24h' && (
+          <LastSeenLabel breakpoint={COLUMN_BREAKPOINTS.LAST_SEEN} align="right">
+            {t('Last Seen')}
+          </LastSeenLabel>
+          <FirstSeenLabel breakpoint={COLUMN_BREAKPOINTS.FIRST_SEEN} align="right">
+            {t('Age')}
+          </FirstSeenLabel>
+          <GraphLabel breakpoint={COLUMN_BREAKPOINTS.TREND}>
+            <Flex flex="1" justify="between">
+              {t('Trend')}
+              <GraphToggles>
+                {selection.datetime.period !== '24h' && (
+                  <GraphToggle
+                    active={statsPeriod === '24h'}
+                    onClick={() => onSelectStatsPeriod('24h')}
+                  >
+                    {t('24h')}
+                  </GraphToggle>
+                )}
                 <GraphToggle
-                  active={statsPeriod === '24h'}
-                  onClick={() => onSelectStatsPeriod('24h')}
+                  active={statsPeriod === 'auto'}
+                  onClick={() => onSelectStatsPeriod('auto')}
                 >
-                  {t('24h')}
+                  {selection.datetime.period || t('Custom')}
                 </GraphToggle>
-              )}
-              <GraphToggle
-                active={statsPeriod === 'auto'}
-                onClick={() => onSelectStatsPeriod('auto')}
-              >
-                {selection.datetime.period || t('Custom')}
-              </GraphToggle>
-            </GraphHeader>
-          </GraphHeaderWrapper>
-          <EventsOrUsersLabel>{t('Events')}</EventsOrUsersLabel>
-          <EventsOrUsersLabel>{t('Users')}</EventsOrUsersLabel>
-          <AssigneesLabel className="hidden-xs hidden-sm">
-            <ToolbarHeader>{t('Assignee')}</ToolbarHeader>
-          </AssigneesLabel>
+              </GraphToggles>
+            </Flex>
+          </GraphLabel>
+          <EventsOrUsersLabel breakpoint={COLUMN_BREAKPOINTS.EVENTS} align="right">
+            {t('Events')}
+          </EventsOrUsersLabel>
+          <EventsOrUsersLabel breakpoint={COLUMN_BREAKPOINTS.USERS} align="right">
+            {t('Users')}
+          </EventsOrUsersLabel>
+          <PriorityLabel breakpoint={COLUMN_BREAKPOINTS.PRIORITY} align="left">
+            {t('Priority')}
+          </PriorityLabel>
+          <AssigneeLabel breakpoint={COLUMN_BREAKPOINTS.ASSIGNEE} align="right">
+            {t('Assignee')}
+          </AssigneeLabel>
         </Fragment>
       )}
     </Fragment>
@@ -63,28 +81,17 @@ function Headers({
 
 export default Headers;
 
-const GraphHeaderWrapper = styled('div')`
-  width: 160px;
-  margin-left: ${space(2)};
-  margin-right: ${space(2)};
-  animation: 0.25s FadeIn linear forwards;
-
-  @keyframes FadeIn {
-    0% {
-      opacity: 0;
-    }
-    100% {
-      opacity: 1;
-    }
-  }
-`;
-
-const GraphHeader = styled('div')`
-  display: flex;
-`;
-
-const StyledToolbarHeader = styled(ToolbarHeader)`
+const GraphLabel = styled(IssueStreamHeaderLabel)`
+  width: 175px;
   flex: 1;
+  display: flex;
+  justify-content: space-between;
+  padding: 0;
+`;
+
+const GraphToggles = styled('div')`
+  font-weight: ${p => p.theme.font.weight.sans.regular};
+  margin-right: ${space(2)};
 `;
 
 const GraphToggle = styled('a')<{active: boolean}>`
@@ -95,48 +102,54 @@ const GraphToggle = styled('a')<{active: boolean}>`
   &:hover,
   &:focus,
   &:active {
-    color: ${p => (p.active ? p.theme.textColor : p.theme.disabled)};
+    color: ${p =>
+      p.active ? p.theme.tokens.content.primary : p.theme.tokens.content.disabled};
   }
 `;
 
-const EventsOrUsersLabel = styled(ToolbarHeader)`
-  display: inline-grid;
-  align-items: center;
-  justify-content: flex-end;
-  text-align: right;
+const LastSeenLabel = styled(IssueStreamHeaderLabel)`
+  width: 86px;
+`;
+
+const FirstSeenLabel = styled(IssueStreamHeaderLabel)`
+  width: 50px;
+`;
+
+const EventsOrUsersLabel = styled(IssueStreamHeaderLabel)`
   width: 60px;
-  margin: 0 ${space(2)};
-
-  @media (min-width: ${p => p.theme.breakpoints[3]}) {
-    width: 80px;
-  }
 `;
 
-const AssigneesLabel = styled('div')`
-  justify-content: flex-end;
-  text-align: right;
-  width: 80px;
-  margin-left: ${space(2)};
-  margin-right: ${space(2)};
+const PriorityLabel = styled(IssueStreamHeaderLabel)`
+  width: 64px;
+`;
+
+const AssigneeLabel = styled(IssueStreamHeaderLabel)`
+  width: 66px;
 `;
 
 // Reprocessing
 const StartedColumn = styled(ToolbarHeader)`
   margin: 0 ${space(2)};
-  ${overflowEllipsis};
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   width: 85px;
 
-  @media (min-width: ${p => p.theme.breakpoints[0]}) {
+  @media (min-width: ${p => p.theme.breakpoints.sm}) {
     width: 140px;
   }
 `;
 
 const EventsReprocessedColumn = styled(ToolbarHeader)`
   margin: 0 ${space(2)};
-  ${overflowEllipsis};
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   width: 75px;
 
-  @media (min-width: ${p => p.theme.breakpoints[0]}) {
+  @media (min-width: ${p => p.theme.breakpoints.sm}) {
     width: 140px;
   }
 `;
@@ -146,7 +159,7 @@ const ProgressColumn = styled(ToolbarHeader)`
 
   display: none;
 
-  @media (min-width: ${p => p.theme.breakpoints[0]}) {
+  @media (min-width: ${p => p.theme.breakpoints.sm}) {
     display: block;
     width: 160px;
   }

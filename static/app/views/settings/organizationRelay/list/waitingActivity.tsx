@@ -1,33 +1,35 @@
-import Button from 'app/components/button';
-import CommandLine from 'app/components/commandLine';
-import {Panel} from 'app/components/panels';
-import {IconRefresh} from 'app/icons';
-import {t, tct} from 'app/locale';
-import EmptyMessage from 'app/views/settings/components/emptyMessage';
+import {Button} from '@sentry/scraps/button';
+
+import CommandLine from 'sentry/components/commandLine';
+import EmptyMessage from 'sentry/components/emptyMessage';
+import Panel from 'sentry/components/panels/panel';
+import {IconRefresh} from 'sentry/icons';
+import {t, tct} from 'sentry/locale';
 
 type Props = {
-  onRefresh: () => void;
   disabled: boolean;
+  onRefresh: () => void;
 };
 
-const WaitingActivity = ({onRefresh, disabled}: Props) => (
-  <Panel>
-    <EmptyMessage
-      title={t('Waiting on Activity!')}
-      description={
-        disabled
+function WaitingActivity({onRefresh, disabled}: Props) {
+  return (
+    <Panel>
+      <EmptyMessage
+        title={t('Waiting on Activity!')}
+        action={
+          <Button icon={<IconRefresh />} onClick={onRefresh}>
+            {t('Refresh')}
+          </Button>
+        }
+      >
+        {disabled
           ? undefined
           : tct('Run relay in your terminal with [commandLine]', {
               commandLine: <CommandLine>{'relay run'}</CommandLine>,
-            })
-      }
-      action={
-        <Button icon={<IconRefresh />} onClick={onRefresh}>
-          {t('Refresh')}
-        </Button>
-      }
-    />
-  </Panel>
-);
+            })}
+      </EmptyMessage>
+    </Panel>
+  );
+}
 
 export default WaitingActivity;

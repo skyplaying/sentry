@@ -1,14 +1,17 @@
-import BasePlugin from 'app/plugins/basePlugin';
-import IssueActions from 'app/plugins/components/issueActions';
-import {Group, Organization, Plugin, Project} from 'app/types';
+import BasePlugin from 'sentry/plugins/basePlugin';
+import IssueActions from 'sentry/plugins/components/issueActions';
+import type {Group} from 'sentry/types/group';
+import type {Plugin} from 'sentry/types/integrations';
+import type {Organization} from 'sentry/types/organization';
+import type {Project} from 'sentry/types/project';
 
 type Props = {
-  plugin: Plugin;
-  group: Group;
-  project: Project;
-  organization: Organization;
   actionType: 'create' | 'link';
+  group: Group;
   onSuccess: (data: any) => void;
+  organization: Organization;
+  plugin: Plugin;
+  project: Project;
 };
 
 export class DefaultIssuePlugin extends BasePlugin {
@@ -16,5 +19,3 @@ export class DefaultIssuePlugin extends BasePlugin {
     return <IssueActions {...props} />;
   }
 }
-
-export default DefaultIssuePlugin;

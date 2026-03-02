@@ -1,35 +1,35 @@
 import logging
+from smtplib import SMTPDataError
+from typing import Any
 
 from sentry.auth import access
-from sentry.tasks.base import instrumented_task
+from sentry.models.group import Group
+from sentry.silo.base import SiloMode
+from sentry.tasks.base import instrumented_task, retry
+from sentry.taskworker.namespaces import notifications_control_tasks, notifications_tasks
+from sentry.taskworker.retry import Retry
+from sentry.users.services.user.model import RpcUser
+from sentry.users.services.user.service import user_service
 from sentry.utils.email import send_messages
+from sentry.utils.email.message_builder import message_from_dict
 
 logger = logging.getLogger(__name__)
 
 
-def _get_user_from_email(group, email):
-    from sentry.models import User
-
-    # TODO(dcramer): we should encode the userid in emails so we can avoid this
-    for user in User.objects.filter(email__iexact=email):
+def _get_user_from_email(group: Group, email: str) -> RpcUser | None:
+    for user in user_service.get_many_by_email(emails=[email]):
         # Make sure that the user actually has access to this project
         context = access.from_user(user=user, organization=group.organization)
-        if not any(context.has_team(t) for t in group.project.teams.all()):
+        if not any(context.has_team_access(t) for t in group.project.teams.all()):
             logger.warning("User %r does not have access to group %r", user, group)
             continue
 
         return user
+    return None
 
 
-@instrumented_task(
-    name="sentry.tasks.email.process_inbound_email",
-    queue="email",
-    default_retry_delay=60 * 5,
-    max_retries=None,
-)
-def process_inbound_email(mailfrom, group_id, payload):
-    """ """
-    from sentry.models import Group
+def process_inbound_email(mailfrom: str, group_id: int, payload: str) -> None:
+    from sentry.models.group import Group
     from sentry.web.forms import NewNoteForm
 
     try:
@@ -43,31 +43,51 @@ def process_inbound_email(mailfrom, group_id, payload):
         logger.warning("Inbound email from unknown address: %s", mailfrom)
         return
 
-    event = group.get_latest_event()
-
-    if event:
-        event.group = group
-        event.project = group.project
-
     form = NewNoteForm({"text": payload})
     if form.is_valid():
-        form.save(group, user, event=event)
+        form.save(group, user)
+
+
+class TemporaryEmailError(Exception):
+    """
+    SMTPDataError with a 4xx code, and thus is temporary and retriable.
+    """
+
+    def __init__(self, code: int, msg: str | bytes) -> None:
+        self.smtp_code = code
+        self.smtp_error = msg
+        self.args = (code, msg)
+
+
+def _send_email(message: dict[str, Any]) -> None:
+    try:
+        send_messages([message_from_dict(message)])
+    except SMTPDataError as e:
+        # 4xx means temporary and retriable; See RFC 5321, §4.2.1
+        if 400 <= e.smtp_code < 500:
+            raise TemporaryEmailError(e.smtp_code, e.smtp_error)
+        raise
 
 
 @instrumented_task(
     name="sentry.tasks.email.send_email",
-    queue="email",
-    default_retry_delay=60 * 5,
-    max_retries=None,
+    namespace=notifications_tasks,
+    processing_deadline_duration=90,
+    retry=Retry(times=2, delay=60 * 5),
+    silo_mode=SiloMode.REGION,
 )
-def send_email(message):
-    # HACK(django18) Django 1.8 assumes that message objects have a reply_to attribute
-    # When a message is enqueued by django 1.6 we need to patch that property on
-    # so that the message can be converted to a stdlib one.
-    #
-    # See
-    # https://github.com/django/django/blob/c686dd8e6bb3817bcf04b8f13c025b4d3c3dc6dc/django/core/mail/message.py#L273-L274
-    if not hasattr(message, "reply_to"):
-        message.reply_to = []
+@retry(on=(TemporaryEmailError,))
+def send_email(message: dict[str, Any]) -> None:
+    _send_email(message)
 
-    send_messages([message])
+
+@instrumented_task(
+    name="sentry.tasks.email.send_email_control",
+    namespace=notifications_control_tasks,
+    processing_deadline_duration=90,
+    retry=Retry(times=2, delay=60 * 5),
+    silo_mode=SiloMode.CONTROL,
+)
+@retry(on=(TemporaryEmailError,))
+def send_email_control(message: dict[str, Any]) -> None:
+    _send_email(message)

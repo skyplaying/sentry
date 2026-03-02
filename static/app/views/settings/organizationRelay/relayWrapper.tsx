@@ -1,20 +1,28 @@
-import {Fragment} from 'react';
-import {RouteComponentProps} from 'react-router';
-import isEqual from 'lodash/isEqual';
+import {useCallback, useState} from 'react';
 import omit from 'lodash/omit';
+import {z} from 'zod';
 
-import {addErrorMessage, addSuccessMessage} from 'app/actionCreators/indicator';
-import {openModal} from 'app/actionCreators/modal';
-import {updateOrganization} from 'app/actionCreators/organizations';
-import Button from 'app/components/button';
-import ExternalLink from 'app/components/links/externalLink';
-import {IconAdd} from 'app/icons';
-import {t, tct} from 'app/locale';
-import {Organization, Relay, RelayActivity} from 'app/types';
-import AsyncView from 'app/views/asyncView';
-import SettingsPageHeader from 'app/views/settings/components/settingsPageHeader';
-import TextBlock from 'app/views/settings/components/text/textBlock';
-import PermissionAlert from 'app/views/settings/organization/permissionAlert';
+import {Button} from '@sentry/scraps/button';
+import {AutoSaveField, FieldGroup} from '@sentry/scraps/form';
+import {ExternalLink} from '@sentry/scraps/link';
+
+import {addErrorMessage, addSuccessMessage} from 'sentry/actionCreators/indicator';
+import {openModal} from 'sentry/actionCreators/modal';
+import LoadingError from 'sentry/components/loadingError';
+import LoadingIndicator from 'sentry/components/loadingIndicator';
+import SentryDocumentTitle from 'sentry/components/sentryDocumentTitle';
+import {IconAdd} from 'sentry/icons';
+import {t, tct} from 'sentry/locale';
+import OrganizationStore from 'sentry/stores/organizationStore';
+import type {Organization} from 'sentry/types/organization';
+import type {Relay, RelayActivity} from 'sentry/types/relay';
+import getApiUrl from 'sentry/utils/api/getApiUrl';
+import {fetchMutation, useApiQuery} from 'sentry/utils/queryClient';
+import useApi from 'sentry/utils/useApi';
+import useOrganization from 'sentry/utils/useOrganization';
+import SettingsPageHeader from 'sentry/views/settings/components/settingsPageHeader';
+import TextBlock from 'sentry/views/settings/components/text/textBlock';
+import {OrganizationPermissionAlert} from 'sentry/views/settings/organization/organizationPermissionAlert';
 
 import Add from './modals/add';
 import Edit from './modals/edit';
@@ -23,169 +31,208 @@ import List from './list';
 
 const RELAY_DOCS_LINK = 'https://getsentry.github.io/relay/';
 
-type Props = {
-  organization: Organization;
-} & RouteComponentProps<{orgId: string}, {}>;
+const relaySchema = z.object({
+  ingestThroughTrustedRelaysOnly: z.boolean(),
+});
 
-type State = {
-  relays: Array<Relay>;
-  relayActivities: Array<RelayActivity>;
-} & AsyncView['state'];
+export function RelayWrapper() {
+  const organization = useOrganization();
+  const api = useApi();
+  const [relays, setRelays] = useState<Relay[]>(organization.trustedRelays);
 
-class RelayWrapper extends AsyncView<Props, State> {
-  componentDidUpdate(prevProps: Props, prevState: State) {
-    if (!isEqual(prevState.relays, this.state.relays)) {
-      // Fetch fresh activities
-      this.fetchData();
-      updateOrganization({...prevProps.organization, trustedRelays: this.state.relays});
-    }
+  const disabled = !organization.access.includes('org:write');
 
-    super.componentDidUpdate(prevProps, prevState);
-  }
-
-  getTitle() {
-    return t('Relay');
-  }
-
-  getDefaultState() {
-    return {
-      ...super.getDefaultState(),
-      relays: this.props.organization.trustedRelays,
-    };
-  }
-
-  getEndpoints(): ReturnType<AsyncView['getEndpoints']> {
-    const {organization} = this.props;
-    return [['relayActivities', `/organizations/${organization.slug}/relay_usage/`]];
-  }
-
-  setRelays(trustedRelays: Array<Relay>) {
-    this.setState({relays: trustedRelays});
-  }
-
-  handleDelete = (publicKey: Relay['publicKey']) => async () => {
-    const {relays} = this.state;
-
-    const trustedRelays = relays
-      .filter(relay => relay.publicKey !== publicKey)
-      .map(relay => omit(relay, ['created', 'lastModified']));
-
-    try {
-      const response = await this.api.requestPromise(
-        `/organizations/${this.props.organization.slug}/`,
-        {
-          method: 'PUT',
-          data: {trustedRelays},
-        }
-      );
-      addSuccessMessage(t('Successfully deleted Relay public key'));
-      this.setRelays(response.trustedRelays);
-    } catch {
-      addErrorMessage(t('An unknown error occurred while deleting Relay public key'));
-    }
-  };
-
-  successfullySaved(response: Organization, successMessage: string) {
-    addSuccessMessage(successMessage);
-    this.setRelays(response.trustedRelays);
-  }
-
-  handleOpenEditDialog = (publicKey: Relay['publicKey']) => () => {
-    const editRelay = this.state.relays.find(relay => relay.publicKey === publicKey);
-
-    if (!editRelay) {
-      return;
-    }
-
-    openModal(modalProps => (
-      <Edit
-        {...modalProps}
-        savedRelays={this.state.relays}
-        api={this.api}
-        orgSlug={this.props.organization.slug}
-        relay={editRelay}
-        onSubmitSuccess={response => {
-          this.successfullySaved(response, t('Successfully updated Relay public key'));
-        }}
-      />
-    ));
-  };
-
-  handleOpenAddDialog = () => {
+  const handleOpenAddDialog = useCallback(() => {
     openModal(modalProps => (
       <Add
         {...modalProps}
-        savedRelays={this.state.relays}
-        api={this.api}
-        orgSlug={this.props.organization.slug}
+        savedRelays={relays}
+        api={api}
+        orgSlug={organization.slug}
         onSubmitSuccess={response => {
-          this.successfullySaved(response, t('Successfully added Relay public key'));
+          addSuccessMessage(t('Successfully added Relay public key'));
+          setRelays(response.trustedRelays);
         }}
       />
     ));
-  };
+  }, [relays, api, organization.slug]);
 
-  handleRefresh = () => {
-    // Fetch fresh activities
-    this.fetchData();
-  };
-
-  renderContent(disabled: boolean) {
-    const {relays, relayActivities, loading} = this.state;
-
-    if (loading) {
-      return this.renderLoading();
-    }
-
-    if (!relays.length) {
-      return <EmptyState />;
-    }
-
-    return (
-      <List
-        relays={relays}
-        relayActivities={relayActivities}
-        onEdit={this.handleOpenEditDialog}
-        onRefresh={this.handleRefresh}
-        onDelete={this.handleDelete}
-        disabled={disabled}
+  return (
+    <SentryDocumentTitle title={t('Relay')} orgSlug={organization.slug}>
+      <SettingsPageHeader
+        title={t('Relay')}
+        action={
+          <Button
+            tooltipProps={{
+              title: disabled
+                ? t('You do not have permission to register keys')
+                : undefined,
+            }}
+            priority="primary"
+            size="sm"
+            icon={<IconAdd />}
+            onClick={handleOpenAddDialog}
+            disabled={disabled}
+          >
+            {t('Register Key')}
+          </Button>
+        }
       />
-    );
-  }
-
-  renderBody() {
-    const {organization} = this.props;
-    const disabled = !organization.access.includes('org:write');
-    return (
-      <Fragment>
-        <SettingsPageHeader
-          title={t('Relay')}
-          action={
-            <Button
-              title={
-                disabled ? t('You do not have permission to register keys') : undefined
-              }
-              priority="primary"
-              size="small"
-              icon={<IconAdd size="xs" isCircled />}
-              onClick={this.handleOpenAddDialog}
-              disabled={disabled}
-            >
-              {t('Register Key')}
-            </Button>
-          }
+      <OrganizationPermissionAlert />
+      {organization.features.includes('ingest-through-trusted-relays-only') && (
+        <FieldGroup title={t('Data Authenticity')}>
+          <AutoSaveField
+            name="ingestThroughTrustedRelaysOnly"
+            schema={relaySchema}
+            initialValue={organization.ingestThroughTrustedRelaysOnly === 'enabled'}
+            confirm={value =>
+              value
+                ? t(
+                    'Enabling this can lead to data being rejected for ALL projects, are you sure you want to continue?'
+                  )
+                : undefined
+            }
+            mutationOptions={{
+              mutationFn: data =>
+                fetchMutation<Organization>({
+                  url: `/organizations/${organization.slug}/`,
+                  method: 'PUT',
+                  data: {
+                    ingestThroughTrustedRelaysOnly: data.ingestThroughTrustedRelaysOnly
+                      ? 'enabled'
+                      : 'disabled',
+                  },
+                }),
+              onSuccess: updatedOrg => {
+                OrganizationStore.onUpdate(updatedOrg);
+              },
+            }}
+          >
+            {field => (
+              <field.Layout.Row
+                label={t('Ingest Through Trusted Relays Only')}
+                hintText={t(
+                  'Require events to be ingested only through trusted relays. Direct submissions from SDKs or other sources will be rejected unless signed by a registered relay.'
+                )}
+              >
+                <field.Switch
+                  checked={field.state.value}
+                  onChange={field.handleChange}
+                  disabled={disabled}
+                />
+              </field.Layout.Row>
+            )}
+          </AutoSaveField>
+        </FieldGroup>
+      )}
+      <TextBlock>
+        {tct(
+          'Sentry Relay offers enterprise-grade data security by providing a standalone service that acts as a middle layer between your application and sentry.io. Go to [link:Relay Documentation] for setup and details.',
+          {link: <ExternalLink href={RELAY_DOCS_LINK} />}
+        )}
+      </TextBlock>
+      {relays.length === 0 ? (
+        <EmptyState />
+      ) : (
+        <RelayUsageList
+          orgSlug={organization.slug}
+          disabled={disabled}
+          relays={relays}
+          api={api}
+          onRelaysChange={setRelays}
         />
-        <PermissionAlert />
-        <TextBlock>
-          {tct(
-            'Sentry Relay offers enterprise-grade data security by providing a standalone service that acts as a middle layer between your application and sentry.io. Go to [link:Relay Documentation] for setup and details.',
-            {link: <ExternalLink href={RELAY_DOCS_LINK} />}
-          )}
-        </TextBlock>
-        {this.renderContent(disabled)}
-      </Fragment>
-    );
-  }
+      )}
+    </SentryDocumentTitle>
+  );
 }
 
-export default RelayWrapper;
+function RelayUsageList({
+  relays,
+  orgSlug,
+  disabled,
+  api,
+  onRelaysChange,
+}: {
+  api: ReturnType<typeof useApi>;
+  disabled: boolean;
+  onRelaysChange: (relays: Relay[]) => void;
+  orgSlug: Organization['slug'];
+  relays: Relay[];
+}) {
+  const {isPending, isError, refetch, data} = useApiQuery<RelayActivity[]>(
+    [
+      getApiUrl(`/organizations/$organizationIdOrSlug/relay_usage/`, {
+        path: {organizationIdOrSlug: orgSlug},
+      }),
+    ],
+    {
+      staleTime: 0,
+      retry: false,
+      enabled: relays.length > 0,
+    }
+  );
+
+  const handleOpenEditDialog = useCallback(
+    (publicKey: string) => {
+      const editRelay = relays.find(relay => relay.publicKey === publicKey);
+
+      if (!editRelay) {
+        return;
+      }
+
+      openModal(modalProps => (
+        <Edit
+          {...modalProps}
+          savedRelays={relays}
+          api={api}
+          orgSlug={orgSlug}
+          relay={editRelay}
+          onSubmitSuccess={response => {
+            addSuccessMessage(t('Successfully updated Relay public key'));
+            onRelaysChange(response.trustedRelays);
+          }}
+        />
+      ));
+    },
+    [orgSlug, relays, api, onRelaysChange]
+  );
+
+  const handleDeleteRelay = useCallback(
+    async (publicKey: string) => {
+      const trustedRelays = relays
+        .filter(relay => relay.publicKey !== publicKey)
+        .map(relay => omit(relay, ['created', 'lastModified']));
+
+      try {
+        const response = await api.requestPromise(`/organizations/${orgSlug}/`, {
+          method: 'PUT',
+          data: {trustedRelays},
+        });
+        addSuccessMessage(t('Successfully deleted Relay public key'));
+        onRelaysChange(response.trustedRelays);
+      } catch {
+        addErrorMessage(t('An unknown error occurred while deleting Relay public key'));
+      }
+    },
+    [relays, api, orgSlug, onRelaysChange]
+  );
+
+  if (isPending) {
+    return <LoadingIndicator />;
+  }
+
+  if (isError) {
+    return <LoadingError onRetry={refetch} />;
+  }
+
+  return (
+    <List
+      relays={relays}
+      relayActivities={data}
+      disabled={disabled}
+      onEdit={publicKey => () => handleOpenEditDialog(publicKey)}
+      onRefresh={() => refetch()}
+      onDelete={publicKey => () => handleDeleteRelay(publicKey)}
+    />
+  );
+}

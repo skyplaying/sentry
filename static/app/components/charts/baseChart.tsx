@@ -1,35 +1,70 @@
+import 'echarts/lib/component/grid';
+import 'echarts/lib/component/graphic';
+import 'echarts/lib/component/toolbox';
+import 'echarts/lib/component/brush';
+import 'echarts/theme/v5.js';
 import 'zrender/lib/svg/svg';
 
-import * as React from 'react';
-import {withTheme} from '@emotion/react';
+import {useId, useMemo} from 'react';
+import type {Theme} from '@emotion/react';
+import {css, Global, useTheme} from '@emotion/react';
 import styled from '@emotion/styled';
-import echarts, {EChartOption, ECharts} from 'echarts/lib/echarts';
+import type {
+  AxisPointerComponentOption,
+  ECharts,
+  EChartsOption,
+  GridComponentOption,
+  LegendComponentOption,
+  LineSeriesOption,
+  SeriesOption,
+  TooltipComponentFormatterCallbackParams,
+  TooltipComponentOption,
+  VisualMapComponentOption,
+  XAXisComponentOption,
+  YAXisComponentOption,
+} from 'echarts';
 import ReactEchartsCore from 'echarts-for-react/lib/core';
+import {AriaComponent} from 'echarts/components';
+import * as echarts from 'echarts/core';
+import type {CallbackDataParams} from 'echarts/types/dist/shared';
 
-import {IS_ACCEPTANCE_TEST} from 'app/constants';
-import space from 'app/styles/space';
-import {
+import MarkLine from 'sentry/components/charts/components/markLine';
+import {space} from 'sentry/styles/space';
+import type {
+  EChartBrushEndHandler,
+  EChartBrushSelectedHandler,
+  EChartBrushStartHandler,
   EChartChartReadyHandler,
   EChartClickHandler,
   EChartDataZoomHandler,
-  EChartEventHandler,
+  EChartDownplayHandler,
   EChartFinishedHandler,
   EChartHighlightHandler,
+  EChartLegendSelectChangeHandler,
+  EChartMouseOutHandler,
   EChartMouseOverHandler,
   EChartRenderedHandler,
   EChartRestoreHandler,
-  ReactEchartsRef,
   Series,
-} from 'app/types/echarts';
-import {Theme} from 'app/utils/theme';
+} from 'sentry/types/echarts';
+import {defined} from 'sentry/utils';
 
 import Grid from './components/grid';
 import Legend from './components/legend';
-import Tooltip from './components/tooltip';
+import {
+  CHART_TOOLTIP_VIEWPORT_OFFSET,
+  computeChartTooltip,
+  type TooltipSubLabel,
+} from './components/tooltip';
 import XAxis from './components/xAxis';
 import YAxis from './components/yAxis';
 import LineSeries from './series/lineSeries';
-import {getDimensionValue} from './utils';
+import {
+  computeEchartsAriaLabels,
+  getDiffInMinutes,
+  getDimensionValue,
+  lightenHexToRgb,
+} from './utils';
 
 // TODO(ts): What is the series type? EChartOption.Series's data cannot have
 // `onClick` since it's typically an array.
@@ -46,6 +81,8 @@ const handleClick = (clickSeries: any, instance: ECharts) => {
   }
 };
 
+echarts.use(AriaComponent);
+
 type ReactEchartProps = React.ComponentProps<typeof ReactEchartsCore>;
 type ReactEChartOpts = NonNullable<ReactEchartProps['opts']>;
 
@@ -60,97 +97,77 @@ type Truncateable = {
   truncate?: number | boolean;
 };
 
-type Props = {
-  theme: Theme;
-
-  options?: EChartOption;
+export interface TooltipOption
+  extends Omit<TooltipComponentOption, 'valueFormatter'>, Truncateable {
+  filter?: (value: number, seriesParam: TooltipComponentOption['formatter']) => boolean;
+  formatAxisLabel?: (
+    value: number,
+    isTimestamp: boolean,
+    utc: boolean,
+    showTimeInTooltip: boolean,
+    addSecondsToTimeFormat: boolean,
+    bucketSize: number | undefined,
+    seriesParamsOrParam: TooltipComponentFormatterCallbackParams
+  ) => string;
+  formatter?: TooltipComponentOption['formatter'];
+  markerFormatter?: (marker: string, label?: string) => string;
+  nameFormatter?: (name: string, seriesParams?: CallbackDataParams) => string;
   /**
-   * Chart Series
-   * This is different than the interface to higher level charts, these need to
-   * be an array of ECharts "Series" components.
+   * If true does not display sublabels with a value of 0.
    */
-  series?: EChartOption.Series[];
+  skipZeroValuedSubLabels?: boolean;
+  /**
+   * Array containing data that is used to display indented sublabels.
+   */
+  subLabels?: TooltipSubLabel[];
+  valueFormatter?: (
+    value: number,
+    label?: string,
+    seriesParams?: CallbackDataParams
+  ) => string;
+}
+
+export interface BaseChartProps {
+  /**
+   * Additional Chart Series
+   * This is to pass series to BaseChart bypassing the wrappers like LineChart, AreaChart etc.
+   */
+  additionalSeries?: SeriesOption[];
+  /**
+   * Whether animations are enabled for the entire chart. If animations are enabled overall, this will cause ZRender to occasionally attempt to run animations and call `requestAnimationFrame` which might cause UI stutter.
+   */
+  animation?: boolean;
+  /**
+   * If true, ignores height value and auto-scales chart to fit container height.
+   */
+  autoHeightResize?: boolean;
+  /**
+   * Axis pointer options
+   */
+  axisPointer?: AxisPointerComponentOption;
+  /**
+   * ECharts Brush options
+   */
+  brush?: EChartsOption['brush'];
+  /**
+   * Bucket size to display time range in chart tooltip
+   */
+  bucketSize?: number;
   /**
    * Array of color codes to use in charts. May also take a function which is
    * provided with the current theme
    */
-  colors?: string[] | ((theme: Theme) => string[]);
-  /**
-   * Must be explicitly `null` to disable xAxis
-   *
-   * Additionally a `truncate` option
-   */
-  xAxis?: (EChartOption.XAxis & Truncateable) | null;
-  /**
-   * Must be explicitly `null` to disable yAxis
-   */
-  yAxis?: EChartOption.YAxis | null;
-  /**
-   * Pass `true` to have 2 y-axes with default properties. Can pass an array of
-   * objects to customize yAxis properties
-   */
-  yAxes?: true | Props['yAxis'][];
-  /**
-   * Pass `true` to have 2 x-axes with default properties.  Can pass an array
-   * of multiple objects to customize xAxis properties
-   */
-  xAxes?: true | Props['xAxis'][];
-  /**
-   * Tooltip options
-   */
-  tooltip?: EChartOption.Tooltip &
-    Truncateable & {
-      filter?: (value: number, seriesParam: EChartOption.Tooltip.Format) => boolean;
-      formatAxisLabel?: (
-        value: number,
-        isTimestamp: boolean,
-        utc: boolean,
-        showTimeInTooltip: boolean
-      ) => string;
-      valueFormatter?: (value: number, label?: string) => string | number;
-      nameFormatter?: (name: string) => string;
-    };
+  colors?:
+    | string[]
+    | readonly string[]
+    | ((
+        theme: Theme
+      ) => string[] | ReturnType<Theme['chart']['getColorPalette']> | undefined);
+  'data-test-id'?: string;
   /**
    * DataZoom (allows for zooming of chart)
    */
-  dataZoom?: EChartOption['dataZoom'];
-  /**
-   * Axis pointer options
-   */
-  axisPointer?: EChartOption.AxisPointer;
-  /**
-   * Toolbox options
-   */
-  toolBox?: EChartOption['toolbox'];
-  /**
-   * Graphic options
-   */
-  graphic?: EChartOption['graphic'];
-  /**
-   * ECharts Grid options. multiple grids allow multiple sub-graphs.
-   */
-  grid?: EChartOption.Grid | EChartOption.Grid[];
-  /**
-   * ECharts Visual Map Options.
-   */
-  visualMap?: EChartOption.VisualMap | EChartOption.VisualMap[];
-  /**
-   * Chart legend
-   */
-  legend?: EChartOption.Legend & Truncateable;
-  /**
-   * Chart height
-   */
-  height?: ReactEChartOpts['height'];
-  /**
-   * Chart width
-   */
-  width?: ReactEChartOpts['width'];
-  /**
-   * Use `canvas` when dealing with large datasets
-   * See: https://ecomfe.github.io/echarts-doc/public/en/tutorial.html#Render%20by%20Canvas%20or%20SVG
-   */
-  renderer?: ReactEChartOpts['renderer'];
+  dataZoom?: EChartsOption['dataZoom'];
   devicePixelRatio?: ReactEChartOpts['devicePixelRatio'];
   /**
    * theme name
@@ -158,86 +175,167 @@ type Props = {
    */
   echartsTheme?: ReactEchartProps['theme'];
   /**
-   * states whether or not to merge with previous `option`
+   * optional, used to determine how xAxis is formatted if `isGroupedByDate == true`
    */
-  notMerge?: boolean;
+  end?: Date;
   /**
-   * states whether not to update chart immediately
+   * Graphic options
    */
-  lazyUpdate?: boolean;
-  onChartReady?: EChartChartReadyHandler;
-  onHighlight?: EChartHighlightHandler;
-  onMouseOver?: EChartMouseOverHandler;
-  onClick?: EChartClickHandler;
-  onDataZoom?: EChartDataZoomHandler;
+  graphic?: EChartsOption['graphic'];
   /**
-   * One example of when this is called is restoring chart from zoom levels
+   * ECharts Grid options. multiple grids allow multiple sub-graphs.
    */
-  onRestore?: EChartRestoreHandler;
-  onFinished?: EChartFinishedHandler;
-  onRendered?: EChartRenderedHandler;
-  onLegendSelectChanged?: EChartEventHandler<{
-    name: string;
-    selected: Record<string, boolean>;
-    type: 'legendselectchanged';
-  }>;
+  grid?: GridComponentOption | GridComponentOption[];
   /**
-   * Forwarded Ref
+   * Chart height
    */
-  forwardedRef?: React.Ref<ReactEchartsCore>;
-  /**
-   * Custom chart props that are implemented by us (and not a feature of eCharts)
-   *
-   * Display previous period as a LineSeries
-   */
-  previousPeriod?: Series[];
+  height?: ReactEChartOpts['height'];
+
   /**
    * If data is grouped by date; then apply default date formatting to x-axis
    * and tooltips.
    */
   isGroupedByDate?: boolean;
   /**
+   * states whether not to update chart immediately
+   */
+  lazyUpdate?: boolean;
+  /**
+   * Chart legend
+   */
+  legend?: LegendComponentOption & Truncateable;
+  /**
+   * optional, threshold in minutes used to add seconds to the xAxis datetime format if `isGroupedByDate == true`
+   */
+  minutesThresholdToDisplaySeconds?: number;
+  /**
+   * states whether or not to merge with previous `option`
+   */
+  notMerge?: boolean;
+  onBrushEnd?: EChartBrushEndHandler;
+  onBrushSelected?: EChartBrushSelectedHandler;
+  onBrushStart?: EChartBrushStartHandler;
+  onChartReady?: EChartChartReadyHandler;
+  onClick?: EChartClickHandler;
+  onDataZoom?: EChartDataZoomHandler;
+  onDownplay?: EChartDownplayHandler;
+  onFinished?: EChartFinishedHandler;
+  onHighlight?: EChartHighlightHandler;
+  onLegendSelectChanged?: EChartLegendSelectChangeHandler;
+  onMouseOut?: EChartMouseOutHandler;
+  onMouseOver?: EChartMouseOverHandler;
+  onRendered?: EChartRenderedHandler;
+  /**
+   * One example of when this is called is restoring chart from zoom levels
+   */
+  onRestore?: EChartRestoreHandler;
+  options?: EChartsOption;
+  /**
+   * optional, used to determine how xAxis is formatted if `isGroupedByDate == true`
+   */
+  period?: string | null;
+  /**
+   * Custom chart props that are implemented by us (and not a feature of eCharts)
+   *
+   * Display previous period as a LineSeries
+   */
+  previousPeriod?: Series[];
+  ref?: React.Ref<ReactEchartsCore>;
+  /**
+   * Use `canvas` when dealing with large datasets
+   * See: https://ecomfe.github.io/echarts-doc/public/en/tutorial.html#Render%20by%20Canvas%20or%20SVG
+   */
+  renderer?: ReactEChartOpts['renderer'];
+  /**
+   * Chart Series
+   * This is different than the interface to higher level charts, these need to
+   * be an array of ECharts "Series" components.
+   */
+  series?: SeriesOption[];
+  /**
    * Format timestamp with date AND time
    */
   showTimeInTooltip?: boolean;
-  /**
-   * Use short date formatting for xAxis
-   */
-  useShortDate?: boolean;
   /**
    * optional, used to determine how xAxis is formatted if `isGroupedByDate == true`
    */
   start?: Date;
   /**
-   * optional, used to determine how xAxis is formatted if `isGroupedByDate == true`
+   * Inline styles
    */
-  end?: Date;
+  style?: React.CSSProperties;
   /**
-   * optional, used to determine how xAxis is formatted if `isGroupedByDate == true`
+   * Toolbox options
    */
-  period?: string;
+  toolBox?: EChartsOption['toolbox'];
   /**
-   * Formats dates as UTC?
+   * Tooltip options. Pass `null` to disable tooltip.
    */
-  utc?: boolean;
-  /**
-   * Bucket size to display time range in chart tooltip
-   */
-  bucketSize?: number;
+  tooltip?: TooltipOption | null;
   /**
    * If true and there's only one datapoint in series.data, we show a bar chart to increase the visibility.
    * Especially useful with line / area charts, because you can't draw line with single data point and one alone point is hard to spot.
    */
   transformSinglePointToBar?: boolean;
   /**
-   * Inline styles
+   * If true and there's only one datapoint in series.data, we show a horizontal line to increase the visibility
+   * Similarly to single point bar in area charts a flat line for line charts makes it easy to spot the single data point.
    */
-  style?: React.CSSProperties;
-};
+  transformSinglePointToLine?: boolean;
+  /**
+   * Use multiline date formatting for xAxis if grouped by date
+   */
+  useMultilineDate?: boolean;
+  /**
+   * Use short date formatting for xAxis
+   */
+  useShortDate?: boolean;
+  /**
+   * Formats dates as UTC?
+   */
+  utc?: boolean;
+  /**
+   * ECharts Visual Map Options.
+   */
+  visualMap?: VisualMapComponentOption | VisualMapComponentOption[];
+  /**
+   * Chart width
+   */
+  width?: ReactEChartOpts['width'];
+  /**
+   * Pass `true` to have 2 x-axes with default properties.  Can pass an array
+   * of multiple objects to customize xAxis properties
+   */
+  xAxes?: true | Array<BaseChartProps['xAxis']>;
+  /**
+   * Must be explicitly `null` to disable xAxis
+   *
+   * Additionally a `truncate` option
+   */
+  xAxis?: (XAXisComponentOption & Truncateable) | null;
 
-function BaseChartUnwrapped({
-  theme,
+  /**
+   * Pass `true` to have 2 y-axes with default properties. Can pass an array of
+   * objects to customize yAxis properties
+   */
+  yAxes?: true | Array<BaseChartProps['yAxis']>;
 
+  /**
+   * Must be explicitly `null` to disable yAxis
+   */
+  yAxis?: YAXisComponentOption | null;
+}
+
+const DEFAULT_CHART_READY = () => {};
+const DEFAULT_OPTIONS = {};
+const DEFAULT_SERIES: SeriesOption[] = [];
+const DEFAULT_ADDITIONAL_SERIES: LineSeriesOption[] = [];
+const DEFAULT_Y_AXIS = {};
+const DEFAULT_X_AXIS = {};
+
+function BaseChart({
+  animation,
+  brush,
   colors,
   grid,
   tooltip,
@@ -250,8 +348,10 @@ function BaseChartUnwrapped({
   echartsTheme,
   devicePixelRatio,
 
+  minutesThresholdToDisplaySeconds,
   showTimeInTooltip,
   useShortDate,
+  useMultilineDate,
   start,
   end,
   period,
@@ -260,135 +360,256 @@ function BaseChartUnwrapped({
   xAxes,
 
   style,
-  forwardedRef,
+  ref,
 
   onClick,
   onLegendSelectChanged,
   onHighlight,
+  onDownplay,
+  onMouseOut,
   onMouseOver,
   onDataZoom,
   onRestore,
   onFinished,
   onRendered,
+  onBrushStart,
+  onBrushEnd,
+  onBrushSelected,
 
-  options = {},
-  series = [],
-  yAxis = {},
-  xAxis = {},
+  options = DEFAULT_OPTIONS,
+  series = DEFAULT_SERIES,
+  additionalSeries = DEFAULT_ADDITIONAL_SERIES,
+  yAxis = DEFAULT_Y_AXIS,
+  xAxis = DEFAULT_X_AXIS,
 
+  autoHeightResize = false,
   height = 200,
-  width = 'auto',
+  width,
   renderer = 'svg',
   notMerge = true,
   lazyUpdate = false,
   isGroupedByDate = false,
   transformSinglePointToBar = false,
-  onChartReady = () => {},
-}: Props) {
-  const hasSinglePoints = (series as EChartOption.SeriesLine[] | undefined)?.every(
-    s => Array.isArray(s.data) && s.data.length <= 1
-  );
-
-  const transformedSeries =
-    (hasSinglePoints && transformSinglePointToBar
-      ? (series as EChartOption.SeriesLine[] | undefined)?.map(s => ({
-          ...s,
-          type: 'bar',
-          barWidth: 40,
-          barGap: 0,
-          itemStyle: {...(s.areaStyle ?? {})},
-        }))
-      : series) ?? [];
-
-  const transformedPreviousPeriod =
-    previousPeriod?.map(previous =>
-      LineSeries({
-        name: previous.seriesName,
-        data: previous.data.map(({name, value}) => [name, value]),
-        lineStyle: {color: theme.gray200, type: 'dotted'},
-        itemStyle: {color: theme.gray200},
-      })
-    ) ?? [];
-
-  const resolvedSeries = !previousPeriod
-    ? transformedSeries
-    : [...transformedSeries, ...transformedPreviousPeriod];
-
-  const defaultAxesProps = {theme};
-
-  const yAxisOrCustom = !yAxes
-    ? yAxis !== null
-      ? YAxis({theme, ...yAxis})
-      : undefined
-    : Array.isArray(yAxes)
-    ? yAxes.map(axis => YAxis({...axis, theme}))
-    : [YAxis(defaultAxesProps), YAxis(defaultAxesProps)];
-
-  const xAxisOrCustom = !xAxes
-    ? xAxis !== null
-      ? XAxis({
-          ...xAxis,
-          theme,
-          useShortDate,
-          start,
-          end,
-          period,
-          isGroupedByDate,
-          utc,
-        })
-      : undefined
-    : Array.isArray(xAxes)
-    ? xAxes.map(axis =>
-        XAxis({...axis, theme, useShortDate, start, end, period, isGroupedByDate, utc})
-      )
-    : [XAxis(defaultAxesProps), XAxis(defaultAxesProps)];
-
-  // Maybe changing the series type to types/echarts Series[] would be a better
-  // solution and can't use ignore for multiline blocks
-  const seriesValid = series && series[0]?.data && series[0].data.length > 1;
-  const seriesData = seriesValid ? series[0].data : undefined;
-  const bucketSize = seriesData ? seriesData[1][0] - seriesData[0][0] : undefined;
-
-  const tooltipOrNone =
-    tooltip !== null
-      ? Tooltip({
-          showTimeInTooltip,
-          isGroupedByDate,
-          utc,
-          bucketSize,
-          ...tooltip,
-        })
-      : undefined;
+  transformSinglePointToLine = false,
+  onChartReady = DEFAULT_CHART_READY,
+  'data-test-id': dataTestId,
+}: BaseChartProps) {
+  const theme = useTheme();
 
   const resolveColors =
-    colors !== undefined ? (Array.isArray(colors) ? colors : colors(theme)) : null;
+    colors === undefined ? null : typeof colors === 'function' ? colors(theme) : colors;
 
   const color =
     resolveColors ||
-    (series.length ? theme.charts.getColorPalette(series.length) : theme.charts.colors);
+    (series.length
+      ? theme.chart.getColorPalette(series.length)
+      : theme.chart.getColorPalette('all'));
 
-  const chartOption = {
-    ...options,
-    animation: IS_ACCEPTANCE_TEST ? false : options.animation ?? true,
-    useUTC: utc,
+  const resolvedSeries = useMemo(() => {
+    const previousPeriodColors =
+      (previousPeriod?.length ?? 0) > 1 ? lightenHexToRgb(color) : undefined;
+
+    const hasSinglePoints = (series as LineSeriesOption[] | undefined)?.every(
+      s => Array.isArray(s.data) && s.data.length <= 1
+    );
+
+    const transformedSeries =
+      (hasSinglePoints && transformSinglePointToBar
+        ? (series as LineSeriesOption[] | undefined)?.map(s => ({
+            ...s,
+            type: 'bar' as const,
+            barWidth: 40,
+            barGap: 0,
+            itemStyle: {...s.areaStyle},
+          }))
+        : hasSinglePoints && transformSinglePointToLine
+          ? (series as LineSeriesOption[] | undefined)?.map(s => ({
+              ...s,
+              type: 'line' as const,
+              itemStyle: {...s.lineStyle},
+              markLine:
+                (s?.data?.[0] as any)?.[1] === undefined
+                  ? undefined
+                  : MarkLine({
+                      silent: true,
+                      lineStyle: {
+                        type: 'solid',
+                        width: 1.5,
+                      },
+                      data: [{yAxis: (s?.data?.[0] as any)?.[1]}],
+                      label: {
+                        show: false,
+                      },
+                    }),
+            }))
+          : series) ?? [];
+
+    const transformedPreviousPeriod =
+      previousPeriod?.map((previous, seriesIndex) =>
+        LineSeries({
+          name: previous.seriesName,
+          data: previous.data.map(({name, value}) => [name, value]),
+          lineStyle: {
+            color: previousPeriodColors
+              ? previousPeriodColors[seriesIndex]
+              : theme.tokens.dataviz.semantic.neutral,
+            type: 'dotted',
+          },
+          itemStyle: {
+            color: previousPeriodColors
+              ? previousPeriodColors[seriesIndex]
+              : theme.tokens.dataviz.semantic.neutral,
+          },
+          stack: 'previous',
+          animation: false,
+        })
+      ) ?? [];
+
+    return previousPeriod
+      ? transformedSeries.concat(transformedPreviousPeriod, additionalSeries)
+      : transformedSeries.concat(additionalSeries);
+  }, [
+    series,
     color,
-    grid: Array.isArray(grid) ? grid.map(Grid) : Grid(grid),
-    tooltip: tooltipOrNone,
-    legend: legend ? Legend({theme, ...legend}) : undefined,
-    yAxis: yAxisOrCustom,
-    xAxis: xAxisOrCustom,
-    series: resolvedSeries,
-    toolbox: toolBox,
+    transformSinglePointToBar,
+    transformSinglePointToLine,
+    previousPeriod,
+    additionalSeries,
+    theme,
+  ]);
+
+  /**
+   * If true seconds will be added to the time format in the tooltips and chart xAxis
+   */
+  const addSecondsToTimeFormat =
+    isGroupedByDate && defined(minutesThresholdToDisplaySeconds)
+      ? getDiffInMinutes({start, end, period}) <= minutesThresholdToDisplaySeconds
+      : false;
+
+  const isTooltipPortalled = tooltip?.appendToBody;
+  const chartId = useId();
+
+  const chartOption = useMemo(() => {
+    const seriesData =
+      Array.isArray(series?.[0]?.data) && series[0].data.length > 1
+        ? series[0].data
+        : undefined;
+
+    const bucketSize = seriesData ? seriesData[1][0] - seriesData[0][0] : undefined;
+    const tooltipOrNone =
+      tooltip === null
+        ? undefined
+        : computeChartTooltip(
+            {
+              showTimeInTooltip,
+              isGroupedByDate,
+              addSecondsToTimeFormat,
+              utc,
+              bucketSize,
+              chartId: isTooltipPortalled ? chartId : undefined,
+              ...tooltip,
+              className: isTooltipPortalled
+                ? `${tooltip?.className ?? ''} chart-tooltip-portal`
+                : tooltip?.className,
+            },
+            theme
+          );
+
+    const aria = computeEchartsAriaLabels(
+      {series: resolvedSeries, useUTC: utc},
+      isGroupedByDate
+    );
+    const defaultAxesProps = {theme};
+
+    const yAxisOrCustom = yAxes
+      ? Array.isArray(yAxes)
+        ? yAxes.map(axis => YAxis({...axis, theme}))
+        : [YAxis(defaultAxesProps), YAxis(defaultAxesProps)]
+      : yAxis === null
+        ? undefined
+        : YAxis({theme, ...yAxis});
+
+    const xAxisOrCustom = xAxes
+      ? Array.isArray(xAxes)
+        ? xAxes.map(axis =>
+            XAxis({
+              ...axis,
+              theme,
+              useShortDate,
+              useMultilineDate,
+              start,
+              end,
+              period,
+              isGroupedByDate,
+              addSecondsToTimeFormat,
+              utc,
+            })
+          )
+        : [XAxis(defaultAxesProps), XAxis(defaultAxesProps)]
+      : xAxis === null
+        ? undefined
+        : XAxis({
+            ...xAxis,
+            theme,
+            useShortDate,
+            useMultilineDate,
+            start,
+            end,
+            period,
+            isGroupedByDate,
+            addSecondsToTimeFormat,
+            utc,
+          });
+
+    return {
+      ...options,
+      animation,
+      useUTC: utc,
+      color: color as string[],
+      grid: Array.isArray(grid) ? grid.map(Grid) : Grid(grid),
+      tooltip: tooltipOrNone,
+      legend: legend ? Legend({theme, ...legend}) : undefined,
+      yAxis: yAxisOrCustom,
+      xAxis: xAxisOrCustom,
+      series: resolvedSeries,
+      toolbox: toolBox,
+      axisPointer,
+      dataZoom,
+      graphic,
+      aria,
+      brush,
+    };
+  }, [
+    animation,
+    chartId,
+    color,
+    resolvedSeries,
+    isTooltipPortalled,
+    theme,
+    series,
+    tooltip,
+    showTimeInTooltip,
+    addSecondsToTimeFormat,
+    options,
+    utc,
+    grid,
+    legend,
+    toolBox,
+    brush,
     axisPointer,
     dataZoom,
     graphic,
-  };
-
-  const chartStyles = {
-    height: getDimensionValue(height),
-    width: getDimensionValue(width),
-    ...style,
-  };
+    isGroupedByDate,
+    useShortDate,
+    useMultilineDate,
+    start,
+    end,
+    period,
+    xAxis,
+    xAxes,
+    yAxes,
+    yAxis,
+  ]);
 
   // XXX(epurkhiser): Echarts can become unhappy if one of these event handlers
   // causes the chart to re-render and be passed a whole different instance of
@@ -396,112 +617,218 @@ function BaseChartUnwrapped({
   //
   // We use React.useMemo to keep the value across renders
   //
-  const eventsMap = React.useMemo(
+  const eventsMap = useMemo(
     () =>
       ({
-        click: (props, instance) => {
+        click: (props: any, instance: ECharts) => {
           handleClick(props, instance);
           onClick?.(props, instance);
         },
-        highlight: (props, instance) => onHighlight?.(props, instance),
-        mouseover: (props, instance) => onMouseOver?.(props, instance),
-        datazoom: (props, instance) => onDataZoom?.(props, instance),
-        restore: (props, instance) => onRestore?.(props, instance),
-        finished: (props, instance) => onFinished?.(props, instance),
-        rendered: (props, instance) => onRendered?.(props, instance),
-        legendselectchanged: (props, instance) =>
+
+        highlight: (props: any, instance: ECharts) => onHighlight?.(props, instance),
+        downplay: (props: any, instance: ECharts) => onDownplay?.(props, instance),
+        mouseout: (props: any, instance: ECharts) => onMouseOut?.(props, instance),
+        mouseover: (props: any, instance: ECharts) => onMouseOver?.(props, instance),
+        datazoom: (props: any, instance: ECharts) => onDataZoom?.(props, instance),
+        restore: (props: any, instance: ECharts) => onRestore?.(props, instance),
+        finished: (props: any, instance: ECharts) => onFinished?.(props, instance),
+        rendered: (props: any, instance: ECharts) => onRendered?.(props, instance),
+
+        legendselectchanged: (props: any, instance: ECharts) =>
           onLegendSelectChanged?.(props, instance),
-      } as ReactEchartProps['onEvents']),
-    [onclick, onHighlight, onMouseOver, onDataZoom, onRestore, onFinished, onRendered]
+
+        brush: (props: any, instance: ECharts) => onBrushStart?.(props, instance),
+        brushend: (props: any, instance: ECharts) => onBrushEnd?.(props, instance),
+
+        brushselected: (props: any, instance: ECharts) =>
+          onBrushSelected?.(props, instance),
+      }) as ReactEchartProps['onEvents'],
+    [
+      onClick,
+      onHighlight,
+      onDownplay,
+      onLegendSelectChanged,
+      onMouseOut,
+      onMouseOver,
+      onDataZoom,
+      onRestore,
+      onFinished,
+      onRendered,
+      onBrushStart,
+      onBrushEnd,
+      onBrushSelected,
+    ]
   );
 
+  const coreOptions = useMemo(() => {
+    return {
+      height: autoHeightResize ? undefined : height,
+      width,
+      renderer,
+      devicePixelRatio,
+    };
+  }, [autoHeightResize, height, width, renderer, devicePixelRatio]);
+
+  const chartStyles = useMemo(() => {
+    return {
+      height: autoHeightResize ? '100%' : getDimensionValue(height),
+      width: getDimensionValue(width),
+      ...style,
+    };
+  }, [style, autoHeightResize, height, width]);
+
   return (
-    <ChartContainer>
+    <ChartContainer
+      id={isTooltipPortalled ? chartId : undefined}
+      autoHeightResize={autoHeightResize}
+      data-test-id={dataTestId}
+    >
+      {isTooltipPortalled && <Global styles={getPortalledTooltipStyles({theme})} />}
       <ReactEchartsCore
-        ref={forwardedRef}
+        ref={ref}
         echarts={echarts}
         notMerge={notMerge}
         lazyUpdate={lazyUpdate}
-        theme={echartsTheme}
+        theme={echartsTheme ?? 'v5'}
         onChartReady={onChartReady}
         onEvents={eventsMap}
         style={chartStyles}
-        opts={{height, width, renderer, devicePixelRatio}}
+        opts={coreOptions}
         option={chartOption}
       />
     </ChartContainer>
   );
 }
 
-// Contains styling for chart elements as we can't easily style those
-// elements directly
-const ChartContainer = styled('div')`
+// Tooltip styles shared for regular and portalled tooltips
+const getTooltipStyles = (p: {theme: Theme}) => css`
   /* Tooltip styling */
   .tooltip-series,
-  .tooltip-date {
-    color: ${p => p.theme.gray300};
-    font-family: ${p => p.theme.text.family};
+  .tooltip-footer {
+    color: ${p.theme.tokens.content.secondary};
+    font-family: ${p.theme.font.family.sans};
     font-variant-numeric: tabular-nums;
-    background: ${p => p.theme.gray500};
     padding: ${space(1)} ${space(2)};
-    border-radius: ${p => p.theme.borderRadius} ${p => p.theme.borderRadius} 0 0;
+    border-radius: ${p.theme.radius.md} ${p.theme.radius.md} 0 0;
+    cursor: pointer;
+    font-size: ${p.theme.font.size.sm};
+  }
+  .tooltip-release.tooltip-series > div,
+  .tooltip-release.tooltip-footer {
+    justify-content: center;
+  }
+  .tooltip-release.tooltip-series {
+    color: ${p.theme.tokens.content.primary};
+  }
+  .tooltip-release-timerange {
+    font-size: ${p.theme.font.size.xs};
+    color: ${p.theme.tokens.content.primary};
+  }
+  .tooltip-series {
+    border-bottom: none;
+    max-width: calc(100vw - 2 * ${CHART_TOOLTIP_VIEWPORT_OFFSET}px);
   }
   .tooltip-series-solo {
-    border-radius: ${p => p.theme.borderRadius};
+    border-radius: ${p.theme.radius.md};
   }
   .tooltip-label {
     margin-right: ${space(1)};
+    display: block;
+    width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .tooltip-label strong {
-    font-weight: normal;
-    color: ${p => p.theme.white};
+    font-weight: ${p.theme.font.weight.sans.regular};
+    color: ${p.theme.tokens.content.primary};
+  }
+  .tooltip-label-value {
+    color: ${p.theme.tokens.content.primary};
+  }
+  .tooltip-label-indent {
+    margin-left: 18px;
   }
   .tooltip-series > div {
     display: flex;
     justify-content: space-between;
     align-items: baseline;
   }
-  .tooltip-date {
-    border-top: 1px solid ${p => p.theme.gray400};
+  .tooltip-label-align-start {
+    display: flex;
+    justify-content: flex-start;
+    align-items: baseline;
+  }
+  .tooltip-code-no-margin {
+    padding-left: 0;
+    margin-left: 0;
+    color: ${p.theme.tokens.content.secondary};
+  }
+  .tooltip-footer {
+    border-top: solid 1px ${p.theme.tokens.border.secondary};
     text-align: center;
     position: relative;
     width: auto;
-    border-radius: ${p => p.theme.borderRadiusBottom};
+    border-radius: 0 0 ${p.theme.radius.md} ${p.theme.radius.md};
+    display: flex;
+    justify-content: space-between;
+    gap: ${space(3)};
   }
+
+  .tooltip-footer-centered {
+    justify-content: center;
+    gap: 0;
+  }
+
   .tooltip-arrow {
+    &.arrow-top {
+      bottom: 100%;
+      top: auto;
+      /* eslint-disable-next-line @sentry/scraps/use-semantic-token */
+      border-bottom: 8px solid ${p.theme.tokens.background.primary};
+      border-top: none;
+      &:before {
+        border-top: none;
+        border-bottom: 8px solid ${p.theme.tokens.border.transparent.neutral.muted};
+        bottom: -7px;
+        top: auto;
+      }
+    }
+
     top: 100%;
     left: 50%;
-    border: 0px solid transparent;
-    content: ' ';
-    height: 0;
-    width: 0;
     position: absolute;
     pointer-events: none;
-    border-top-color: ${p => p.theme.gray500};
-    border-width: 8px;
+    border-left: 8px solid transparent;
+    border-right: 8px solid transparent;
+    /* eslint-disable-next-line @sentry/scraps/use-semantic-token */
+    border-top: 8px solid ${p.theme.tokens.background.primary};
     margin-left: -8px;
-  }
-
-  .echarts-for-react div:first-of-type {
-    width: 100% !important;
-  }
-
-  .echarts-for-react tspan {
-    font-variant-numeric: tabular-nums;
+    &:before {
+      border-left: 8px solid transparent;
+      border-right: 8px solid transparent;
+      border-top: 8px solid ${p.theme.tokens.border.transparent.neutral.muted};
+      content: '';
+      display: block;
+      position: absolute;
+      top: -7px;
+      left: -8px;
+      z-index: -1;
+    }
   }
 
   /* Tooltip description styling */
   .tooltip-description {
-    color: ${p => p.theme.white};
-    border-radius: ${p => p.theme.borderRadius};
+    color: ${p.theme.colors.white};
+    border-radius: ${p.theme.radius.md};
     background: #000;
     opacity: 0.9;
     padding: 5px 10px;
     position: relative;
-    font-weight: bold;
-    font-size: ${p => p.theme.fontSizeSmall};
+    font-weight: ${p.theme.font.weight.sans.medium};
+    font-size: ${p.theme.font.size.sm};
     line-height: 1.4;
-    font-family: ${p => p.theme.text.family};
+    font-family: ${p.theme.font.family.sans};
     max-width: 230px;
     min-width: 230px;
     white-space: normal;
@@ -521,11 +848,26 @@ const ChartContainer = styled('div')`
   }
 `;
 
-const BaseChartWithTheme = withTheme(BaseChartUnwrapped);
+// Contains styling for chart elements as we can't easily style those
+// elements directly
+const ChartContainer = styled('div')<{autoHeightResize: boolean}>`
+  ${p => p.autoHeightResize && 'height: 100%;'}
 
-const BaseChart = React.forwardRef<ReactEchartsRef, Omit<Props, 'theme'>>(
-  (props, ref) => <BaseChartWithTheme forwardedRef={ref} {...props} />
-);
-BaseChart.displayName = 'forwardRef(BaseChart)';
+  .echarts-for-react div:first-of-type {
+    width: 100% !important;
+  }
+
+  .echarts-for-react text {
+    font-variant-numeric: tabular-nums !important;
+  }
+
+  ${p => getTooltipStyles(p)}
+`;
+
+const getPortalledTooltipStyles = (p: {theme: Theme}) => css`
+  .chart-tooltip-portal {
+    ${getTooltipStyles(p)};
+  }
+`;
 
 export default BaseChart;

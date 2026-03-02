@@ -1,18 +1,37 @@
+import isPropValid from '@emotion/is-prop-valid';
 import styled from '@emotion/styled';
 
-import space from 'app/styles/space';
+import {space} from 'sentry/styles/space';
+import PanelProvider from 'sentry/utils/panelProvider';
 
-type Props = {
+interface PanelProps extends React.HTMLAttributes<HTMLDivElement> {
   dashedBorder?: boolean;
-};
+  'data-test-id'?: string;
+  hideBorder?: boolean;
+  ref?: React.Ref<HTMLDivElement>;
+}
 
-const Panel = styled('div')<Props>`
-  background: ${p => (p.dashedBorder ? p.theme.backgroundSecondary : p.theme.background)};
-  border-radius: ${p => p.theme.borderRadius};
+const Panel = styled(
+  ({children, ...props}: PanelProps) => (
+    <div {...props}>
+      <PanelProvider>{children}</PanelProvider>
+    </div>
+  ),
+  {shouldForwardProp: prop => typeof prop === 'string' && isPropValid(prop)}
+)`
+  background: ${p =>
+    p.dashedBorder
+      ? p.theme.tokens.background.secondary
+      : p.theme.tokens.background.primary};
+  border-radius: ${p => p.theme.radius.md};
   border: 1px
-    ${p => (p.dashedBorder ? 'dashed' + p.theme.gray300 : 'solid ' + p.theme.border)};
-  box-shadow: ${p => (p.dashedBorder ? 'none' : p.theme.dropShadowLight)};
-  margin-bottom: ${space(3)};
+    ${p =>
+      p.hideBorder
+        ? 'transparent'
+        : p.dashedBorder
+          ? 'dashed' + p.theme.colors.gray400
+          : 'solid ' + p.theme.tokens.border.primary};
+  margin-bottom: ${space(2)};
   position: relative;
 `;
 

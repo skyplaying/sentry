@@ -1,55 +1,67 @@
-import {Fragment} from 'react';
-import {browserHistory, RouteComponentProps} from 'react-router';
+import {Fragment, useContext} from 'react';
 import styled from '@emotion/styled';
-import {Location, LocationDescriptor, Query} from 'history';
-import moment from 'moment';
+import type {Location, LocationDescriptor} from 'history';
+import moment from 'moment-timezone';
 
-import {restoreRelease} from 'app/actionCreators/release';
-import {Client} from 'app/api';
-import Feature from 'app/components/acl/feature';
-import {DateTimeObject} from 'app/components/charts/utils';
-import DateTime from 'app/components/dateTime';
-import TransactionsList, {DropdownOption} from 'app/components/discover/transactionsList';
-import {Body, Main, Side} from 'app/components/layouts/thirds';
-import {getParams} from 'app/components/organizations/globalSelectionHeader/getParams';
-import {ChangeData} from 'app/components/organizations/timeRangeSelector';
-import PageTimeRangeSelector from 'app/components/pageTimeRangeSelector';
-import {DEFAULT_RELATIVE_PERIODS} from 'app/constants';
-import {t} from 'app/locale';
-import space from 'app/styles/space';
-import {GlobalSelection, NewQuery, Organization, ReleaseProject} from 'app/types';
-import {trackAnalyticsEvent} from 'app/utils/analytics';
-import {getUtcDateString} from 'app/utils/dates';
-import {TableDataRow} from 'app/utils/discover/discoverQuery';
-import EventView from 'app/utils/discover/eventView';
-import {WebVital} from 'app/utils/discover/fields';
-import {formatVersion} from 'app/utils/formatters';
-import {decodeScalar} from 'app/utils/queryString';
-import routeTitleGen from 'app/utils/routeTitle';
-import withApi from 'app/utils/withApi';
-import withGlobalSelection from 'app/utils/withGlobalSelection';
-import withOrganization from 'app/utils/withOrganization';
-import AsyncView from 'app/views/asyncView';
-import {DisplayModes} from 'app/views/performance/transactionSummary/transactionOverview/charts';
-import {transactionSummaryRouteWithQuery} from 'app/views/performance/transactionSummary/utils';
-import {TrendChangeType, TrendView} from 'app/views/performance/trends/types';
+import {restoreRelease} from 'sentry/actionCreators/release';
+import {Client} from 'sentry/api';
+import Feature from 'sentry/components/acl/feature';
+import {useSessionsRequest} from 'sentry/components/charts/useSessionsRequest';
+import type {DateTimeObject} from 'sentry/components/charts/utils';
+import {DateTime} from 'sentry/components/dateTime';
+import type {DropdownOption} from 'sentry/components/discover/transactionsList';
+import TransactionsList from 'sentry/components/discover/transactionsList';
+import * as Layout from 'sentry/components/layouts/thirds';
+import {EnvironmentPageFilter} from 'sentry/components/pageFilters/environment/environmentPageFilter';
+import {normalizeDateTimeParams} from 'sentry/components/pageFilters/parse';
+import usePageFilters from 'sentry/components/pageFilters/usePageFilters';
+import SentryDocumentTitle from 'sentry/components/sentryDocumentTitle';
+import {
+  TimeRangeSelector,
+  TimeRangeSelectTrigger,
+  type ChangeData,
+} from 'sentry/components/timeRangeSelector';
+import {t} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {PageFilters} from 'sentry/types/core';
+import type {NewQuery, Organization} from 'sentry/types/organization';
+import {SessionFieldWithOperation} from 'sentry/types/organization';
+import {browserHistory} from 'sentry/utils/browserHistory';
+import {getUtcDateString} from 'sentry/utils/dates';
+import {DemoTourElement, DemoTourStep} from 'sentry/utils/demoMode/demoTours';
+import type {TableDataRow} from 'sentry/utils/discover/discoverQuery';
+import EventView from 'sentry/utils/discover/eventView';
+import {decodeScalar} from 'sentry/utils/queryString';
+import useApi from 'sentry/utils/useApi';
+import {useLocation} from 'sentry/utils/useLocation';
+import useOrganization from 'sentry/utils/useOrganization';
+import {useParams} from 'sentry/utils/useParams';
+import useRouter from 'sentry/utils/useRouter';
+import {formatVersion} from 'sentry/utils/versions/formatVersion';
+import {
+  DisplayModes,
+  transactionSummaryRouteWithQuery,
+} from 'sentry/views/performance/transactionSummary/utils';
+import type {TrendView} from 'sentry/views/performance/trends/types';
+import {TrendChangeType} from 'sentry/views/performance/trends/types';
+import {
+  getReleaseParams,
+  isReleaseArchived,
+  searchReleaseVersion,
+} from 'sentry/views/releases/utils';
 
-import {getReleaseParams, isReleaseArchived, ReleaseBounds} from '../../utils';
 import {ReleaseContext} from '..';
 
-import ReleaseChart from './chart/';
-import {EventType, YAxis} from './chart/releaseChartControls';
-import CommitAuthorBreakdown from './commitAuthorBreakdown';
-import Deploys from './deploys';
-import Issues from './issues';
-import OtherProjects from './otherProjects';
-import ProjectReleaseDetails from './projectReleaseDetails';
-import ReleaseAdoption from './releaseAdoption';
+import CommitAuthorBreakdown from './sidebar/commitAuthorBreakdown';
+import Deploys from './sidebar/deploys';
+import OtherProjects from './sidebar/otherProjects';
+import ProjectReleaseDetails from './sidebar/projectReleaseDetails';
+import ReleaseAdoption from './sidebar/releaseAdoption';
+import ReleaseStats from './sidebar/releaseStats';
+import TotalCrashFreeUsers from './sidebar/totalCrashFreeUsers';
 import ReleaseArchivedNotice from './releaseArchivedNotice';
 import ReleaseComparisonChart from './releaseComparisonChart';
-import ReleaseDetailsRequest from './releaseDetailsRequest';
-import ReleaseStats from './releaseStats';
-import TotalCrashFreeUsers from './totalCrashFreeUsers';
+import ReleaseIssues from './releaseIssues';
 
 const RELEASE_PERIOD_KEY = 'release';
 
@@ -67,81 +79,76 @@ type RouteParams = {
   release: string;
 };
 
-type Props = RouteComponentProps<RouteParams, {}> & {
-  organization: Organization;
-  selection: GlobalSelection;
-  api: Client;
-};
+function ReleaseOverview() {
+  const {
+    release,
+    project,
+    deploys,
+    releaseMeta,
+    refetchData,
+    hasHealthData,
+    releaseBounds,
+  } = useContext(ReleaseContext);
+  const params = useParams<RouteParams>();
+  const organization = useOrganization();
+  const {selection} = usePageFilters();
+  const location = useLocation();
+  const router = useRouter();
+  const api = useApi();
 
-class ReleaseOverview extends AsyncView<Props> {
-  getTitle() {
-    const {params, organization} = this.props;
-    return routeTitleGen(
-      t('Release %s', formatVersion(params.release)),
-      organization.slug,
-      false
-    );
-  }
-
-  handleYAxisChange = (yAxis: YAxis, project: ReleaseProject) => {
-    const {location, router, organization} = this.props;
-    const {eventType, vitalType, ...query} = location.query;
-
-    trackAnalyticsEvent({
-      eventKey: `release_detail.change_chart`,
-      eventName: `Release Detail: Change Chart`,
-      organization_id: parseInt(organization.id, 10),
-      display: yAxis,
-      eventType,
-      vitalType,
-      platform: project.platform,
-    });
-
-    router.push({
-      ...location,
-      query: {...query, yAxis},
-    });
+  const {commitCount, version} = release;
+  const sessionsRequestProps = {
+    field: [
+      SessionFieldWithOperation.USERS,
+      SessionFieldWithOperation.SESSIONS,
+      SessionFieldWithOperation.DURATION,
+    ],
+    groupBy: ['session.status'],
+    ...getReleaseParams({location, releaseBounds}),
+    shouldFilterSessionsInTimeWindow: true,
   };
 
-  handleEventTypeChange = (eventType: EventType, project: ReleaseProject) => {
-    const {location, router, organization} = this.props;
+  const {
+    isPending: allReleasesLoading,
+    isLoading: allReleasesReloading,
+    isError: allReleasesErrored,
+    data: allReleases,
+  } = useSessionsRequest(sessionsRequestProps);
 
-    trackAnalyticsEvent({
-      eventKey: `release_detail.change_chart`,
-      eventName: `Release Detail: Change Chart`,
-      organization_id: parseInt(organization.id, 10),
-      display: YAxis.EVENTS,
-      eventType,
-      platform: project.platform,
+  const {
+    isPending: thisReleaseLoading,
+    isLoading: thisReleaseReloading,
+    isError: thisReleaseErrored,
+    data: thisRelease,
+  } = useSessionsRequest({
+    ...sessionsRequestProps,
+    query: searchReleaseVersion(version),
+  });
+
+  const getPageDateTime = (): DateTimeObject => {
+    const query = location.query;
+
+    const {start, end, statsPeriod} = normalizeDateTimeParams(query, {
+      allowEmptyPeriod: true,
+      allowAbsoluteDatetime: true,
+      allowAbsolutePageDatetime: true,
     });
 
-    router.push({
-      ...location,
-      query: {...location.query, eventType},
-    });
+    if (statsPeriod) {
+      return {period: statsPeriod};
+    }
+
+    if (start && end) {
+      return {
+        start: moment.utc(start).format(),
+        end: moment.utc(end).format(),
+      };
+    }
+
+    return {};
   };
 
-  handleVitalTypeChange = (vitalType: WebVital, project: ReleaseProject) => {
-    const {location, router, organization} = this.props;
-
-    trackAnalyticsEvent({
-      eventKey: `release_detail.change_chart`,
-      eventName: `Release Detail: Change Chart`,
-      organization_id: parseInt(organization.id, 10),
-      display: YAxis.COUNT_VITAL,
-      vitalType,
-      platform: project.platform,
-    });
-
-    router.push({
-      ...location,
-      query: {...location.query, vitalType},
-    });
-  };
-
-  handleRestore = async (project: ReleaseProject, successCallback: () => void) => {
-    const {params, organization} = this.props;
-
+  const handleRestore = async (successCallback: () => void) => {
     try {
       await restoreRelease(new Client(), {
         orgSlug: organization.slug,
@@ -154,76 +161,22 @@ class ReleaseOverview extends AsyncView<Props> {
     }
   };
 
-  getYAxis(hasHealthData: boolean, hasPerformance: boolean): YAxis {
-    const {yAxis} = this.props.location.query;
-
-    if (typeof yAxis === 'string') {
-      if (Object.values(YAxis).includes(yAxis as YAxis)) {
-        return yAxis as YAxis;
-      }
-    }
-
-    if (hasHealthData) {
-      return YAxis.SESSIONS;
-    }
-
-    if (hasPerformance) {
-      return YAxis.FAILED_TRANSACTIONS;
-    }
-
-    return YAxis.EVENTS;
-  }
-
-  getEventType(yAxis: YAxis): EventType {
-    if (yAxis === YAxis.EVENTS) {
-      const {eventType} = this.props.location.query;
-
-      if (typeof eventType === 'string') {
-        if (Object.values(EventType).includes(eventType as EventType)) {
-          return eventType as EventType;
-        }
-      }
-    }
-
-    return EventType.ALL;
-  }
-
-  getVitalType(yAxis: YAxis): WebVital {
-    if (yAxis === YAxis.COUNT_VITAL) {
-      const {vitalType} = this.props.location.query;
-
-      if (typeof vitalType === 'string') {
-        if (Object.values(WebVital).includes(vitalType as WebVital)) {
-          return vitalType as WebVital;
-        }
-      }
-    }
-
-    return WebVital.LCP;
-  }
-
-  getReleaseEventView(
-    version: string,
+  const getReleaseEventView = (
     projectId: number,
-    selectedSort: DropdownOption,
-    releaseBounds: ReleaseBounds,
-    defaultStatsPeriod: string
-  ): EventView {
-    const {selection, location, organization} = this.props;
+    selectedSort: DropdownOption
+  ): EventView => {
     const {environments} = selection;
 
     const {start, end, statsPeriod} = getReleaseParams({
       location,
       releaseBounds,
-      defaultStatsPeriod,
-      allowEmptyPeriod: organization.features.includes('release-comparison'),
     });
 
     const baseQuery: NewQuery = {
       id: undefined,
       version: 2,
       name: `Release ${formatVersion(version)}`,
-      query: `event.type:transaction release:${version}`,
+      query: `event.type:transaction ${searchReleaseVersion(version)}`,
       fields: ['transaction', 'failure_count()', 'epm()', 'p50()'],
       orderby: '-failure_count',
       range: statsPeriod || undefined,
@@ -254,23 +207,14 @@ class ReleaseOverview extends AsyncView<Props> {
       default:
         return EventView.fromSavedQuery(baseQuery);
     }
-  }
+  };
 
-  getReleaseTrendView(
-    version: string,
-    projectId: number,
-    versionDate: string,
-    releaseBounds: ReleaseBounds,
-    defaultStatsPeriod: string
-  ): EventView {
-    const {selection, location, organization} = this.props;
+  const getReleaseTrendView = (projectId: number, versionDate: string): EventView => {
     const {environments} = selection;
 
     const {start, end, statsPeriod} = getReleaseParams({
       location,
       releaseBounds,
-      defaultStatsPeriod,
-      allowEmptyPeriod: organization.features.includes('release-comparison'),
     });
 
     const trendView = EventView.fromSavedQuery({
@@ -287,33 +231,9 @@ class ReleaseOverview extends AsyncView<Props> {
     }) as TrendView;
     trendView.middle = versionDate;
     return trendView;
-  }
+  };
 
-  get pageDateTime(): DateTimeObject {
-    const query = this.props.location.query;
-
-    const {start, end, statsPeriod} = getParams(query, {
-      allowEmptyPeriod: true,
-      allowAbsoluteDatetime: true,
-      allowAbsolutePageDatetime: true,
-    });
-
-    if (statsPeriod) {
-      return {period: statsPeriod};
-    }
-
-    if (start && end) {
-      return {
-        start: moment.utc(start).format(),
-        end: moment.utc(end).format(),
-      };
-    }
-
-    return {};
-  }
-
-  handleTransactionsListSortChange = (value: string) => {
-    const {location} = this.props;
+  const handleTransactionsListSortChange = (value: string) => {
     const target = {
       pathname: location.pathname,
       query: {...location.query, showTransactions: value, transactionCursor: undefined},
@@ -321,8 +241,7 @@ class ReleaseOverview extends AsyncView<Props> {
     browserHistory.push(target);
   };
 
-  handleDateChange = (datetime: ChangeData) => {
-    const {router, location} = this.props;
+  const handleDateChange = (datetime: ChangeData) => {
     const {start, end, relative, utc} = datetime;
 
     if (start && end) {
@@ -353,268 +272,223 @@ class ReleaseOverview extends AsyncView<Props> {
     });
   };
 
-  render() {
-    const {organization, selection, location, api, router} = this.props;
-    const {start, end, period, utc} = this.pageDateTime;
+  const {start, end, period, utc} = getPageDateTime();
+  const hasDiscover = organization.features.includes('discover-basic');
+  const hasPerformance = organization.features.includes('performance-view');
+  const {environments} = selection;
+  const {selectedSort, sortOptions} = getTransactionsListSort(location);
+  const releaseEventView = getReleaseEventView(project.id, selectedSort);
+  const titles =
+    selectedSort.value === TransactionsListOption.SLOW_LCP
+      ? [t('transaction'), t('failure_count()'), t('tpm()'), t('p75(lcp)')]
+      : [t('transaction'), t('failure_count()'), t('tpm()'), t('p50()')];
+  const releaseTrendView = getReleaseTrendView(project.id, releaseMeta.released);
 
-    return (
-      <ReleaseContext.Consumer>
-        {({
-          release,
-          project,
-          deploys,
-          releaseMeta,
-          refetchData,
-          defaultStatsPeriod,
-          isHealthLoading,
-          getHealthData,
-          hasHealthData,
-          releaseBounds,
-        }) => {
-          const {commitCount, version} = release;
-          const hasDiscover = organization.features.includes('discover-basic');
-          const hasPerformance = organization.features.includes('performance-view');
-          const yAxis = this.getYAxis(hasHealthData, hasPerformance);
-          const eventType = this.getEventType(yAxis);
-          const vitalType = this.getVitalType(yAxis);
-          const {environments} = selection;
+  const generateLink = {
+    transaction: generateTransactionLink(
+      version,
+      project.id,
+      selection,
+      // technically our query params can be an array
+      (location.query.showTransactions as string | undefined) ?? ''
+    ),
+  };
 
-          const {selectedSort, sortOptions} = getTransactionsListSort(location);
-          const releaseEventView = this.getReleaseEventView(
-            version,
-            project.id,
-            selectedSort,
-            releaseBounds,
-            defaultStatsPeriod
-          );
-          const titles =
-            selectedSort.value !== TransactionsListOption.SLOW_LCP
-              ? [t('transaction'), t('failure_count()'), t('tpm()'), t('p50()')]
-              : [t('transaction'), t('failure_count()'), t('tpm()'), t('p75(lcp)')];
-          const releaseTrendView = this.getReleaseTrendView(
-            version,
-            project.id,
-            releaseMeta.released,
-            releaseBounds,
-            defaultStatsPeriod
-          );
+  const defaultDateTimeSelected = !period && !start && !end;
 
-          const generateLink = {
-            transaction: generateTransactionLink(
-              version,
-              project.id,
-              selection,
-              location.query.showTransactions
-            ),
-          };
+  const releaseBoundsLabel =
+    releaseBounds.type === 'clamped'
+      ? t('Clamped Release Period')
+      : t('Entire Release Period');
 
-          return (
-            <ReleaseDetailsRequest
-              organization={organization}
-              location={location}
-              disable={!organization.features.includes('release-comparison')}
-              version={version}
-              releaseBounds={releaseBounds}
-            >
-              {({thisRelease, allReleases, loading, reloading, errored}) => (
-                <Body>
-                  <Main>
-                    {isReleaseArchived(release) && (
-                      <ReleaseArchivedNotice
-                        onRestore={() => this.handleRestore(project, refetchData)}
-                      />
-                    )}
-                    <Feature features={['release-comparison']}>
-                      {({hasFeature}) =>
-                        hasFeature ? (
-                          <Fragment>
-                            <StyledPageTimeRangeSelector
-                              organization={organization}
-                              relative={period ?? ''}
-                              start={start ?? null}
-                              end={end ?? null}
-                              utc={utc ?? null}
-                              onUpdate={this.handleDateChange}
-                              relativeOptions={{
-                                [RELEASE_PERIOD_KEY]: (
-                                  <Fragment>
-                                    {t('Entire Release Period')} (
-                                    <DateTime
-                                      date={releaseBounds.releaseStart}
-                                      timeAndDate
-                                    />{' '}
-                                    -{' '}
-                                    <DateTime
-                                      date={releaseBounds.releaseEnd}
-                                      timeAndDate
-                                    />
-                                    )
-                                  </Fragment>
-                                ),
-                                ...DEFAULT_RELATIVE_PERIODS,
-                              }}
-                              defaultPeriod={RELEASE_PERIOD_KEY}
-                            />
-                            {(hasDiscover || hasPerformance || hasHealthData) && (
-                              <ReleaseComparisonChart
-                                release={release}
-                                releaseSessions={thisRelease}
-                                allSessions={allReleases}
-                                platform={project.platform}
-                                location={location}
-                                loading={loading}
-                                reloading={reloading}
-                                errored={errored}
-                                project={project}
-                                organization={organization}
-                                api={api}
-                                hasHealthData={hasHealthData}
-                              />
-                            )}
-                          </Fragment>
-                        ) : (
-                          (hasDiscover || hasPerformance || hasHealthData) && (
-                            <ReleaseChart
-                              releaseMeta={releaseMeta}
-                              selection={selection}
-                              yAxis={yAxis}
-                              onYAxisChange={display =>
-                                this.handleYAxisChange(display, project)
-                              }
-                              eventType={eventType}
-                              onEventTypeChange={type =>
-                                this.handleEventTypeChange(type, project)
-                              }
-                              vitalType={vitalType}
-                              onVitalTypeChange={type =>
-                                this.handleVitalTypeChange(type, project)
-                              }
-                              router={router}
-                              organization={organization}
-                              hasHealthData={hasHealthData}
-                              location={location}
-                              api={api}
-                              version={version}
-                              hasDiscover={hasDiscover}
-                              hasPerformance={hasPerformance}
-                              platform={project.platform}
-                              defaultStatsPeriod={defaultStatsPeriod}
-                              projectSlug={project.slug}
-                            />
-                          )
-                        )
-                      }
-                    </Feature>
+  const loading = allReleasesLoading || thisReleaseLoading;
+  const reloading = allReleasesReloading || thisReleaseReloading;
+  const errored = allReleasesErrored || thisReleaseErrored;
 
-                    <Issues
-                      organization={organization}
-                      selection={selection}
-                      version={version}
-                      location={location}
-                      defaultStatsPeriod={defaultStatsPeriod}
-                      releaseBounds={releaseBounds}
-                      queryFilterDescription={t('In this release')}
-                      withChart
-                    />
-                    <Feature features={['performance-view']}>
-                      <TransactionsList
-                        location={location}
-                        organization={organization}
-                        eventView={releaseEventView}
-                        trendView={releaseTrendView}
-                        selected={selectedSort}
-                        options={sortOptions}
-                        handleDropdownChange={this.handleTransactionsListSortChange}
-                        titles={titles}
-                        generateLink={generateLink}
-                      />
-                    </Feature>
-                  </Main>
-                  <Side>
-                    <ReleaseStats
-                      organization={organization}
-                      release={release}
-                      project={project}
-                      location={location}
-                      selection={selection}
-                      hasHealthData={hasHealthData}
-                      getHealthData={getHealthData}
-                      isHealthLoading={isHealthLoading}
-                    />
-                    <Feature features={['release-comparison']}>
-                      {hasHealthData && (
-                        <ReleaseAdoption
-                          releaseSessions={thisRelease}
-                          allSessions={allReleases}
-                          loading={loading}
-                          reloading={reloading}
-                          errored={errored}
-                          release={release}
-                          project={project}
-                          environment={environments}
-                        />
-                      )}
-                    </Feature>
-                    <ProjectReleaseDetails
-                      release={release}
-                      releaseMeta={releaseMeta}
-                      orgSlug={organization.slug}
-                      projectSlug={project.slug}
-                    />
-                    {commitCount > 0 && (
-                      <CommitAuthorBreakdown
-                        version={version}
-                        orgId={organization.slug}
-                        projectSlug={project.slug}
-                      />
-                    )}
-                    {releaseMeta.projects.length > 1 && (
-                      <OtherProjects
-                        projects={releaseMeta.projects.filter(
-                          p => p.slug !== project.slug
-                        )}
-                        location={location}
-                        version={version}
-                        organization={organization}
-                      />
-                    )}
-                    {hasHealthData && (
-                      <TotalCrashFreeUsers
-                        organization={organization}
-                        version={version}
-                        projectSlug={project.slug}
-                        location={location}
-                      />
-                    )}
-                    {deploys.length > 0 && (
-                      <Deploys
-                        version={version}
-                        orgSlug={organization.slug}
-                        deploys={deploys}
-                        projectId={project.id}
-                      />
-                    )}
-                  </Side>
-                </Body>
+  return (
+    <Fragment>
+      <SentryDocumentTitle
+        title={t('Release %s', formatVersion(params.release))}
+        orgSlug={organization.slug}
+      />
+      <Layout.Body>
+        <Layout.Main>
+          {isReleaseArchived(release) && (
+            <ReleaseArchivedNotice onRestore={() => handleRestore(refetchData)} />
+          )}
+          <ReleaseDetailsPageFilters>
+            <EnvironmentPageFilter />
+            <TimeRangeSelector
+              relative={period ?? (defaultDateTimeSelected ? RELEASE_PERIOD_KEY : null)}
+              start={start ?? null}
+              end={end ?? null}
+              utc={utc ?? null}
+              onChange={handleDateChange}
+              menuTitle={t('Filter Time Range')}
+              trigger={triggerProps => (
+                <TimeRangeSelectTrigger {...triggerProps}>
+                  {defaultDateTimeSelected ? releaseBoundsLabel : triggerProps.children}
+                </TimeRangeSelectTrigger>
               )}
-            </ReleaseDetailsRequest>
-          );
-        }}
-      </ReleaseContext.Consumer>
-    );
-  }
+              relativeOptions={({defaultOptions, arbitraryOptions}) =>
+                releaseBounds.type === 'ancient'
+                  ? {...defaultOptions, ...arbitraryOptions}
+                  : {
+                      [RELEASE_PERIOD_KEY]: (
+                        <Fragment>
+                          {releaseBoundsLabel}
+                          <br />
+                          <ReleaseBoundsDescription primary={defaultDateTimeSelected}>
+                            <DateTime date={releaseBounds.releaseStart} />
+                            –<DateTime date={releaseBounds.releaseEnd} />
+                          </ReleaseBoundsDescription>
+                        </Fragment>
+                      ),
+                      ...defaultOptions,
+                      ...arbitraryOptions,
+                    }
+              }
+              defaultPeriod={
+                releaseBounds.type === 'ancient' ? '90d' : RELEASE_PERIOD_KEY
+              }
+              defaultAbsolute={{
+                start: moment(releaseBounds.releaseStart).subtract(1, 'hour').toDate(),
+                end: releaseBounds.releaseEnd
+                  ? moment(releaseBounds.releaseEnd).add(1, 'hour').toDate()
+                  : undefined,
+              }}
+            />
+          </ReleaseDetailsPageFilters>
+          {(hasDiscover || hasPerformance || hasHealthData) && (
+            <DemoTourElement
+              id={DemoTourStep.RELEASES_CHART}
+              title={t('Release-specific trends')}
+              description={t(
+                'Track key metrics like crash free session rate, failure rate and more.'
+              )}
+              position="top-end"
+            >
+              {tourProps => (
+                <div {...tourProps}>
+                  <ReleaseComparisonChart
+                    release={release}
+                    releaseSessions={thisRelease}
+                    allSessions={allReleases}
+                    platform={project.platform}
+                    loading={loading}
+                    reloading={reloading}
+                    errored={errored}
+                    project={project}
+                    api={api}
+                    hasHealthData={hasHealthData}
+                  />
+                </div>
+              )}
+            </DemoTourElement>
+          )}
+          <ReleaseIssues
+            organization={organization}
+            version={version}
+            location={location}
+            releaseBounds={releaseBounds}
+            queryFilterDescription={t('In this release')}
+            withChart
+          />
+          <Feature features="performance-view">
+            <TransactionsList
+              location={location}
+              organization={organization}
+              eventView={releaseEventView}
+              trendView={releaseTrendView}
+              selected={selectedSort}
+              options={sortOptions}
+              handleDropdownChange={handleTransactionsListSortChange}
+              titles={titles}
+              generateLink={generateLink}
+            />
+          </Feature>
+        </Layout.Main>
+        <DemoTourElement
+          id={DemoTourStep.RELEASES_STATS}
+          title={t('Release stats')}
+          description={t('Track release adoption, commit stats, and more.')}
+          position="left-start"
+        >
+          {tourProps => (
+            <div {...tourProps}>
+              <Layout.Side>
+                <ReleaseStats
+                  organization={organization}
+                  release={release}
+                  project={project}
+                />
+                {hasHealthData && (
+                  <ReleaseAdoption
+                    releaseSessions={thisRelease}
+                    allSessions={allReleases}
+                    loading={loading}
+                    reloading={reloading}
+                    errored={errored}
+                    release={release}
+                    project={project}
+                    environment={environments}
+                  />
+                )}
+                <ProjectReleaseDetails
+                  release={release}
+                  releaseMeta={releaseMeta}
+                  project={project}
+                />
+                {commitCount > 0 && (
+                  <CommitAuthorBreakdown
+                    version={version}
+                    orgId={organization.slug}
+                    projectSlug={project.slug}
+                  />
+                )}
+                {releaseMeta.projects.length > 1 && (
+                  <OtherProjects
+                    projects={releaseMeta.projects.filter(p => p.slug !== project.slug)}
+                    location={location}
+                    version={version}
+                    organization={organization}
+                  />
+                )}
+                {hasHealthData && (
+                  <TotalCrashFreeUsers
+                    organization={organization}
+                    version={version}
+                    projectSlug={project.slug}
+                    location={location}
+                  />
+                )}
+                {deploys.length > 0 && (
+                  <Deploys
+                    version={version}
+                    orgSlug={organization.slug}
+                    deploys={deploys}
+                    projectId={project.id}
+                  />
+                )}
+              </Layout.Side>
+            </div>
+          )}
+        </DemoTourElement>
+      </Layout.Body>
+    </Fragment>
+  );
 }
 
 function generateTransactionLink(
   version: string,
   projectId: number,
-  selection: GlobalSelection,
+  selection: PageFilters,
   value: string
 ) {
   return (
     organization: Organization,
     tableRow: TableDataRow,
-    _query: Query
+    _location: Location
   ): LocationDescriptor => {
     const {transaction} = tableRow;
     const trendTransaction = ['regression', 'improved'].includes(value);
@@ -622,7 +496,7 @@ function generateTransactionLink(
     const {start, end, period} = datetime;
 
     return transactionSummaryRouteWithQuery({
-      orgSlug: organization.slug,
+      organization,
       transaction: transaction! as string,
       query: {
         query: trendTransaction ? '' : `release:${version}`,
@@ -685,12 +559,27 @@ function getTransactionsListSort(location: Location): {
     location.query.showTransactions,
     TransactionsListOption.FAILURE_COUNT
   );
-  const selectedSort = sortOptions.find(opt => opt.value === urlParam) || sortOptions[0];
+  const selectedSort = sortOptions.find(opt => opt.value === urlParam) || sortOptions[0]!;
   return {selectedSort, sortOptions};
 }
 
-const StyledPageTimeRangeSelector = styled(PageTimeRangeSelector)`
-  margin-bottom: ${space(1.5)};
+const ReleaseDetailsPageFilters = styled('div')`
+  display: grid;
+  grid-template-columns: minmax(0, max-content) 1fr;
+  gap: ${space(2)};
+  margin-bottom: ${space(2)};
+
+  @media (max-width: ${p => p.theme.breakpoints.sm}) {
+    grid-template-columns: auto;
+  }
 `;
 
-export default withApi(withGlobalSelection(withOrganization(ReleaseOverview)));
+const ReleaseBoundsDescription = styled('span')<{primary: boolean}>`
+  font-size: ${p => p.theme.font.size.sm};
+  color: ${p =>
+    p.primary
+      ? p.theme.tokens.interactive.link.accent.rest
+      : p.theme.tokens.content.secondary};
+`;
+
+export default ReleaseOverview;

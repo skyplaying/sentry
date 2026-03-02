@@ -1,22 +1,29 @@
-import pytest
+import types
 
-from sentry.runner.importer import ConfigurationError
-from sentry.runner.initializer import apply_legacy_settings, bootstrap_options
+import pytest
+from django.core.cache import caches
+from django.test import override_settings
+
+from sentry.options import default_store
+from sentry.runner.initializer import (
+    ConfigurationError,
+    apply_legacy_settings,
+    bind_cache_to_option_store,
+    bootstrap_options,
+)
+from sentry.utils.warnings import DeprecatedSettingWarning
 
 
 @pytest.fixture
 def settings():
-    class Settings:
-        pass
-
-    s = Settings()
-    s.TIME_ZONE = "UTC"
-    s.ALLOWED_HOSTS = []
-    s.SENTRY_FEATURES = {}
-    s.SENTRY_OPTIONS = {}
-    s.SENTRY_DEFAULT_OPTIONS = {}
-    s.SENTRY_EMAIL_BACKEND_ALIASES = {"dummy": "alias-for-dummy"}
-    return s
+    return types.SimpleNamespace(
+        TIME_ZONE="UTC",
+        ALLOWED_HOSTS=[],
+        SENTRY_FEATURES={},
+        SENTRY_OPTIONS={},
+        SENTRY_DEFAULT_OPTIONS={},
+        SENTRY_EMAIL_BACKEND_ALIASES={"dummy": "alias-for-dummy"},
+    )
 
 
 @pytest.fixture
@@ -24,7 +31,12 @@ def config_yml(tmpdir):
     return tmpdir.join("config.yml")
 
 
-def test_bootstrap_options_simple(settings, config_yml):
+def _assert_settings_warnings(warninfo, expected):
+    actual = {(w.message.setting, w.message.replacement) for w in warninfo}
+    assert actual == expected
+
+
+def test_bootstrap_options_simple(settings, config_yml) -> None:
     "Config options are specified in both places, but config.yml should prevail"
     settings.SECRET_KEY = "xxx"
     settings.EMAIL_BACKEND = "xxx"
@@ -81,7 +93,7 @@ mail.subject-prefix: my-mail-subject-prefix
     assert settings.EMAIL_SUBJECT_PREFIX == "my-mail-subject-prefix"
 
 
-def test_bootstrap_options_malformed_yml(settings, config_yml):
+def test_bootstrap_options_malformed_yml(settings, config_yml) -> None:
     config_yml.write("1")
     with pytest.raises(ConfigurationError):
         bootstrap_options(settings, str(config_yml))
@@ -91,7 +103,7 @@ def test_bootstrap_options_malformed_yml(settings, config_yml):
         bootstrap_options(settings, str(config_yml))
 
 
-def test_bootstrap_options_no_config(settings):
+def test_bootstrap_options_no_config(settings) -> None:
     "No config file should gracefully extract values out of settings"
     settings.SECRET_KEY = "my-system-secret-key"
     settings.EMAIL_BACKEND = "my-mail-backend"
@@ -105,7 +117,23 @@ def test_bootstrap_options_no_config(settings):
     settings.EMAIL_SUBJECT_PREFIX = "my-mail-subject-prefix"
     settings.FOO_BAR = "lol"
 
-    bootstrap_options(settings)
+    with pytest.warns(DeprecatedSettingWarning) as warninfo:
+        bootstrap_options(settings)
+    _assert_settings_warnings(
+        warninfo,
+        {
+            ("EMAIL_BACKEND", "SENTRY_OPTIONS['mail.backend']"),
+            ("EMAIL_HOST", "SENTRY_OPTIONS['mail.host']"),
+            ("EMAIL_HOST_PASSWORD", "SENTRY_OPTIONS['mail.password']"),
+            ("EMAIL_HOST_USER", "SENTRY_OPTIONS['mail.username']"),
+            ("EMAIL_PORT", "SENTRY_OPTIONS['mail.port']"),
+            ("EMAIL_SUBJECT_PREFIX", "SENTRY_OPTIONS['mail.subject-prefix']"),
+            ("EMAIL_USE_SSL", "SENTRY_OPTIONS['mail.use-ssl']"),
+            ("EMAIL_USE_TLS", "SENTRY_OPTIONS['mail.use-tls']"),
+            ("SECRET_KEY", "SENTRY_OPTIONS['system.secret-key']"),
+            ("SERVER_EMAIL", "SENTRY_OPTIONS['mail.from']"),
+        },
+    )
     assert settings.SENTRY_OPTIONS == {
         "system.secret-key": "my-system-secret-key",
         "mail.backend": "my-mail-backend",
@@ -120,7 +148,7 @@ def test_bootstrap_options_no_config(settings):
     }
 
 
-def test_bootstrap_options_no_config_only_sentry_options(settings):
+def test_bootstrap_options_no_config_only_sentry_options(settings) -> None:
     "SENTRY_OPTIONS is only declared, but should be promoted into settings"
     settings.SENTRY_OPTIONS = {
         "system.secret-key": "my-system-secret-key",
@@ -148,30 +176,28 @@ def test_bootstrap_options_no_config_only_sentry_options(settings):
     assert settings.EMAIL_SUBJECT_PREFIX == "my-mail-subject-prefix"
 
 
-def test_bootstrap_options_mail_aliases(settings):
+def test_bootstrap_options_mail_aliases(settings) -> None:
     settings.SENTRY_OPTIONS = {"mail.backend": "dummy"}
     bootstrap_options(settings)
     assert settings.EMAIL_BACKEND == "alias-for-dummy"
 
 
-def test_bootstrap_options_missing_file(settings):
+def test_bootstrap_options_missing_file(settings) -> None:
     bootstrap_options(settings, "this-file-does-not-exist-xxxxxxxxxxxxxx.yml")
     assert settings.SENTRY_OPTIONS == {}
 
 
-def test_bootstrap_options_empty_file(settings, config_yml):
+def test_bootstrap_options_empty_file(settings, config_yml) -> None:
     config_yml.write("")
     bootstrap_options(settings, str(config_yml))
     assert settings.SENTRY_OPTIONS == {}
 
 
-def test_apply_legacy_settings(settings):
+def test_apply_legacy_settings(settings) -> None:
     settings.ALLOWED_HOSTS = []
     settings.SENTRY_USE_QUEUE = True
     settings.SENTRY_ALLOW_REGISTRATION = True
     settings.SENTRY_ADMIN_EMAIL = "admin-email"
-    settings.SENTRY_URL_PREFIX = "http://url-prefix"
-    settings.SENTRY_SYSTEM_MAX_EVENTS_PER_MINUTE = 10
     settings.SENTRY_REDIS_OPTIONS = {"foo": "bar"}
     settings.SENTRY_ENABLE_EMAIL_REPLIES = True
     settings.SENTRY_SMTP_HOSTNAME = "reply-hostname"
@@ -179,13 +205,14 @@ def test_apply_legacy_settings(settings):
     settings.SENTRY_OPTIONS = {"system.secret-key": "secret-key", "mail.from": "mail-from"}
     settings.SENTRY_FILESTORE = "some-filestore"
     settings.SENTRY_FILESTORE_OPTIONS = {"filestore-foo": "filestore-bar"}
-    apply_legacy_settings(settings)
-    assert settings.CELERY_ALWAYS_EAGER is False
+    settings.SENTRY_FILESTORE_RELOCATION = {"relocation-baz": "relocation-qux"}
+    settings.SENTRY_RELOCATION_BACKEND = "some-other-filestore"
+    settings.SENTRY_RELOCATION_OPTIONS = {"relocation-baz": "relocation-qux"}
+    with pytest.warns(DeprecatedSettingWarning) as warninfo:
+        apply_legacy_settings(settings)
     assert settings.SENTRY_FEATURES["auth:register"] is True
     assert settings.SENTRY_OPTIONS == {
         "system.admin-email": "admin-email",
-        "system.url-prefix": "http://url-prefix",
-        "system.rate-limit": 10,
         "system.secret-key": "secret-key",
         "redis.clusters": {"default": {"foo": "bar"}},
         "mail.from": "mail-from",
@@ -194,19 +221,68 @@ def test_apply_legacy_settings(settings):
         "mail.mailgun-api-key": "mailgun-api-key",
         "filestore.backend": "some-filestore",
         "filestore.options": {"filestore-foo": "filestore-bar"},
+        "filestore.relocation-backend": "some-other-filestore",
+        "filestore.relocation-options": {"relocation-baz": "relocation-qux"},
     }
     assert settings.DEFAULT_FROM_EMAIL == "mail-from"
     assert settings.ALLOWED_HOSTS == ["*"]
 
+    _assert_settings_warnings(
+        warninfo,
+        {
+            ("MAILGUN_API_KEY", "SENTRY_OPTIONS['mail.mailgun-api-key']"),
+            ("SENTRY_ADMIN_EMAIL", "SENTRY_OPTIONS['system.admin-email']"),
+            ("SENTRY_ALLOW_REGISTRATION", 'SENTRY_FEATURES["auth:register"]'),
+            ("SENTRY_ENABLE_EMAIL_REPLIES", "SENTRY_OPTIONS['mail.enable-replies']"),
+            ("SENTRY_FILESTORE", "SENTRY_OPTIONS['filestore.backend']"),
+            ("SENTRY_FILESTORE_OPTIONS", "SENTRY_OPTIONS['filestore.options']"),
+            ("SENTRY_RELOCATION_BACKEND", "SENTRY_OPTIONS['filestore.relocation-backend']"),
+            (
+                "SENTRY_RELOCATION_OPTIONS",
+                "SENTRY_OPTIONS['filestore.relocation-options']",
+            ),
+            ("SENTRY_REDIS_OPTIONS", 'SENTRY_OPTIONS["redis.clusters"]'),
+            ("SENTRY_SMTP_HOSTNAME", "SENTRY_OPTIONS['mail.reply-hostname']"),
+        },
+    )
 
-def test_initialize_app(settings):
+
+def test_initialize_app(settings) -> None:
     "Just a sanity check of the full initialization process"
     settings.SENTRY_OPTIONS = {"system.secret-key": "secret-key"}
     bootstrap_options(settings)
     apply_legacy_settings(settings)
 
 
-def test_require_secret_key(settings):
+def test_require_secret_key(settings) -> None:
     assert "system.secret-key" not in settings.SENTRY_OPTIONS
     with pytest.raises(ConfigurationError):
         apply_legacy_settings(settings)
+
+
+def test_bind_cache_to_option_store_with_options_cache() -> None:
+    from django.conf import settings
+
+    cache_config = settings.CACHES.copy()
+    cache_config["options"] = {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+    }
+
+    with override_settings(CACHES=cache_config):
+        bind_cache_to_option_store()
+
+        # Should use 'options' cache, not 'default'
+        assert default_store.cache == caches["options"]
+
+
+def test_bind_cache_to_option_store_without_options_cache() -> None:
+    from django.conf import settings
+
+    cache_config = settings.CACHES.copy()
+    cache_config.pop("options", None)
+
+    with override_settings(CACHES=cache_config):
+        bind_cache_to_option_store()
+
+        # Should use 'default' cache when 'options' doesn't exist
+        assert default_store.cache == caches["default"]

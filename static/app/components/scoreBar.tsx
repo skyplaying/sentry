@@ -1,27 +1,29 @@
+import {css} from '@emotion/react';
 import styled from '@emotion/styled';
 
-import theme from 'app/utils/theme';
+import {SIMILARITY_SCORE_COLORS} from './similarScoreCard';
 
 type Props = {
   score: number;
+  className?: string;
+  palette?: readonly string[];
+  paletteClassNames?: string[];
+  radius?: number;
   size?: number;
   thickness?: number;
-  radius?: number;
-  palette?: Readonly<string[]>;
-  className?: string;
-  paletteClassNames?: string[];
   vertical?: boolean;
 };
 
-const BaseScoreBar = ({
+function BaseScoreBar({
   score,
   className,
   vertical,
   size = 40,
   thickness = 4,
   radius = 3,
-  palette = theme.similarity.colors,
-}: Props) => {
+  palette = SIMILARITY_SCORE_COLORS,
+  ...props
+}: Props) {
   const maxScore = palette.length;
 
   // Make sure score is between 0 and maxScore
@@ -38,25 +40,29 @@ const BaseScoreBar = ({
   };
 
   return (
-    <div className={className}>
-      {[...Array(scoreInBounds)].map((_j, i) => (
+    <div className={className} {...props}>
+      {[...new Array(scoreInBounds)].map((_j, i) => (
         <Bar {...barProps} key={i} color={palette[paletteIndex]} />
       ))}
-      {[...Array(maxScore - scoreInBounds)].map((_j, i) => (
+      {[...new Array(maxScore - scoreInBounds)].map((_j, i) => (
         <Bar key={`empty-${i}`} {...barProps} empty />
       ))}
     </div>
   );
-};
+}
 
 const ScoreBar = styled(BaseScoreBar)`
   display: flex;
 
   ${p =>
     p.vertical
-      ? `flex-direction: column-reverse;
-    justify-content: flex-end;`
-      : 'min-width: 80px;'};
+      ? css`
+          flex-direction: column-reverse;
+          justify-content: flex-end;
+        `
+      : css`
+          min-width: 80px;
+        `};
 `;
 
 type BarProps = {
@@ -71,11 +77,11 @@ type BarProps = {
 const Bar = styled('div')<BarProps>`
   border-radius: ${p => p.radius}px;
   margin: 2px;
-  ${p => p.empty && `background-color: ${p.theme.similarity.empty};`};
-  ${p => p.color && `background-color: ${p.color};`};
+  /* @TODO(jonasbadalic) This used to be defined on the theme, but is component specific and had no dark mode color. */
+  background-color: ${p => (p.empty ? p.theme.colors.gray200 : p.color)};
 
-  width: ${p => (!p.vertical ? p.thickness : p.size)}px;
-  height: ${p => (!p.vertical ? p.size : p.thickness)}px;
+  width: ${p => (p.vertical ? p.size : p.thickness)}px;
+  height: ${p => (p.vertical ? p.thickness : p.size)}px;
 `;
 
 export default ScoreBar;

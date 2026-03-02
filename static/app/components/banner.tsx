@@ -1,12 +1,13 @@
-import * as React from 'react';
+import {useState} from 'react';
 import {css} from '@emotion/react';
 import styled from '@emotion/styled';
 
-import Button from 'app/components/button';
-import ButtonBar from 'app/components/buttonBar';
-import {IconClose} from 'app/icons';
-import {t} from 'app/locale';
-import space from 'app/styles/space';
+import {Button} from '@sentry/scraps/button';
+import {Grid, type GridProps} from '@sentry/scraps/layout';
+
+import {IconClose} from 'sentry/icons';
+import {t} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
 
 const makeKey = (prefix: string) => `${prefix}-banner-dismissed`;
 
@@ -14,9 +15,9 @@ function dismissBanner(bannerKey: string) {
   localStorage.setItem(makeKey(bannerKey), 'true');
 }
 
-function useDismissable(bannerKey: string) {
+export function useDismissable(bannerKey: string) {
   const key = makeKey(bannerKey);
-  const [value, setValue] = React.useState(localStorage.getItem(key));
+  const [value, setValue] = useState(localStorage.getItem(key));
 
   const dismiss = () => {
     setValue('true');
@@ -27,26 +28,20 @@ function useDismissable(bannerKey: string) {
 }
 
 type BannerWrapperProps = {
-  backgroundImg?: string;
   backgroundComponent?: React.ReactNode;
+  backgroundImg?: string;
 };
 
 type Props = BannerWrapperProps & {
-  title?: string;
-  subtitle?: string;
-  isDismissable?: boolean;
-  dismissKey?: string;
+  children?: React.ReactNode;
   className?: string;
+  dismissKey?: string;
+  isDismissable?: boolean;
+  subtitle?: string;
+  title?: string;
 };
 
-type BannerType = React.FC<Props> & {
-  /**
-   * Helper function to hide banners outside of their usage
-   */
-  dismiss: typeof dismissBanner;
-};
-
-const Banner: BannerType = ({
+function Banner({
   title,
   subtitle,
   isDismissable = true,
@@ -55,7 +50,7 @@ const Banner: BannerType = ({
   backgroundImg,
   backgroundComponent,
   children,
-}) => {
+}: Props) {
   const [dismissed, dismiss] = useDismissable(dismissKey);
 
   if (dismissed) {
@@ -65,15 +60,24 @@ const Banner: BannerType = ({
   return (
     <BannerWrapper backgroundImg={backgroundImg} className={className}>
       {backgroundComponent}
-      {isDismissable ? <CloseButton onClick={dismiss} aria-label={t('Close')} /> : null}
+      {isDismissable ? (
+        <CloseButton
+          type="button"
+          size="xs"
+          priority="link"
+          icon={<IconClose />}
+          onClick={dismiss}
+          aria-label={t('Close')}
+        />
+      ) : null}
       <BannerContent>
         <BannerTitle>{title}</BannerTitle>
         <BannerSubtitle>{subtitle}</BannerSubtitle>
-        <StyledButtonBar gap={1}>{children}</StyledButtonBar>
+        <StyledButtonBar>{children}</StyledButtonBar>
       </BannerContent>
     </BannerWrapper>
   );
-};
+}
 
 Banner.dismiss = dismissBanner;
 
@@ -87,7 +91,7 @@ const BannerWrapper = styled('div')<BannerWrapperProps>`
           background-position: center center;
         `
       : css`
-          background-color: ${p.theme.gray500};
+          background-color: ${p.theme.colors.gray800};
         `}
   display: flex;
   overflow: hidden;
@@ -95,12 +99,12 @@ const BannerWrapper = styled('div')<BannerWrapperProps>`
   justify-content: center;
   position: relative;
   margin-bottom: ${space(2)};
-  box-shadow: ${p => p.theme.dropShadowLight};
-  border-radius: ${p => p.theme.borderRadius};
+  box-shadow: ${p => p.theme.dropShadowMedium};
+  border-radius: ${p => p.theme.radius.md};
   height: 180px;
-  color: ${p => p.theme.white};
+  color: ${p => p.theme.colors.white};
 
-  @media (min-width: ${p => p.theme.breakpoints[0]}) {
+  @media (min-width: ${p => p.theme.breakpoints.sm}) {
     height: 220px;
   }
 `;
@@ -117,7 +121,7 @@ const BannerContent = styled('div')`
 const BannerTitle = styled('h1')`
   margin: 0;
 
-  @media (min-width: ${p => p.theme.breakpoints[0]}) {
+  @media (min-width: ${p => p.theme.breakpoints.sm}) {
     font-size: 40px;
   }
 `;
@@ -125,12 +129,14 @@ const BannerTitle = styled('h1')`
 const BannerSubtitle = styled('div')`
   margin: 0;
 
-  @media (min-width: ${p => p.theme.breakpoints[0]}) {
-    font-size: ${p => p.theme.fontSizeExtraLarge};
+  @media (min-width: ${p => p.theme.breakpoints.sm}) {
+    font-size: ${p => p.theme.font.size.xl};
   }
 `;
 
-const StyledButtonBar = styled(ButtonBar)`
+const StyledButtonBar = styled((props: GridProps) => (
+  <Grid flow="column" align="center" gap="md" {...props} />
+))`
   margin-top: ${space(2)};
   width: fit-content;
 `;
@@ -140,17 +146,9 @@ const CloseButton = styled(Button)`
   display: block;
   top: ${space(2)};
   right: ${space(2)};
-  color: ${p => p.theme.white};
+  color: ${p => p.theme.colors.white};
   cursor: pointer;
   z-index: 1;
 `;
-
-CloseButton.defaultProps = {
-  icon: <IconClose />,
-  label: t('Close'),
-  priority: 'link',
-  borderless: true,
-  size: 'xsmall',
-};
 
 export default Banner;

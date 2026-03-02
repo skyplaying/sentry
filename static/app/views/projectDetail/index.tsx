@@ -1,16 +1,27 @@
-import * as React from 'react';
-
-import withOrganization from 'app/utils/withOrganization';
+import {PageAlertProvider} from 'sentry/utils/performance/contexts/pageAlert';
+import useRouteAnalyticsParams from 'sentry/utils/routeAnalytics/useRouteAnalyticsParams';
+import {useParams} from 'sentry/utils/useParams';
+import useProjects from 'sentry/utils/useProjects';
 
 import ProjectDetail from './projectDetail';
 
-function ProjectDetailContainer(
-  props: Omit<
-    React.ComponentProps<typeof ProjectDetail>,
-    'projects' | 'loadingProjects' | 'selection'
-  >
-) {
-  return <ProjectDetail {...props} />;
-}
+export default function ProjectDetailContainer() {
+  const params = useParams<{projectId: string}>();
+  const {projects} = useProjects();
+  const project = projects.find(p => p.slug === params.projectId);
 
-export default withOrganization(ProjectDetailContainer);
+  useRouteAnalyticsParams(
+    project
+      ? {
+          project_id: project.id,
+          project_platform: project.platform,
+        }
+      : {}
+  );
+
+  return (
+    <PageAlertProvider>
+      <ProjectDetail />
+    </PageAlertProvider>
+  );
+}

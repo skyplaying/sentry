@@ -1,148 +1,242 @@
-import * as React from 'react';
+import {useCallback, useMemo} from 'react';
+import orderBy from 'lodash/orderBy';
 
-import {fetchRecentSearches} from 'app/actionCreators/savedSearches';
-import {Client} from 'app/api';
-import SmartSearchBar from 'app/components/smartSearchBar';
+import {fetchFeatureFlagValues, fetchTagValues} from 'sentry/actionCreators/tags';
+import usePageFilters from 'sentry/components/pageFilters/usePageFilters';
 import {
-  makePinSearchAction,
-  makeSaveSearchAction,
-  makeSearchBuilderAction,
-} from 'app/components/smartSearchBar/actions';
-import {ItemType, SearchItem} from 'app/components/smartSearchBar/types';
-import {t} from 'app/locale';
-import {Organization, SavedSearch, SavedSearchType, Tag} from 'app/types';
-import withApi from 'app/utils/withApi';
-import withOrganization from 'app/utils/withOrganization';
+  SearchQueryBuilder,
+  type SearchQueryBuilderProps,
+} from 'sentry/components/searchQueryBuilder';
+import type {FilterKeySection} from 'sentry/components/searchQueryBuilder/types';
+import {t} from 'sentry/locale';
+import {
+  SavedSearchType,
+  type Tag,
+  type TagCollection,
+  type TagValue,
+} from 'sentry/types/group';
+import type {Organization} from 'sentry/types/organization';
+import {getUtcDateString} from 'sentry/utils/dates';
+import {FieldKey, FieldKind} from 'sentry/utils/fields';
+import useApi from 'sentry/utils/useApi';
+import useOrganization from 'sentry/utils/useOrganization';
+import {Dataset} from 'sentry/views/alerts/rules/metric/types';
+import type {
+  SearchBarData,
+  SearchBarDataProviderProps,
+} from 'sentry/views/dashboards/datasetConfig/base';
+import {mergeAndSortTagValues} from 'sentry/views/issueDetails/utils';
+import {makeGetIssueTagValues} from 'sentry/views/issueList/utils/getIssueTagValues';
+import {useIssueListFilterKeys} from 'sentry/views/issueList/utils/useIssueListFilterKeys';
 
-import {TagValueLoader} from './types';
-
-const SEARCH_ITEMS: SearchItem[] = [
-  {
-    title: t('Tag'),
-    desc: 'browser:"Chrome 34", has:browser',
-    value: 'browser:',
-    type: ItemType.DEFAULT,
-  },
-  {
-    title: t('Status'),
-    desc: 'is:resolved, unresolved, ignored, assigned, unassigned',
-    value: 'is:',
-    type: ItemType.DEFAULT,
-  },
-  {
-    title: t('Time or Count'),
-    desc: 'firstSeen, lastSeen, event.timestamp, timesSeen',
-    value: 'firstSeen:',
-    type: ItemType.DEFAULT,
-  },
-  {
-    title: t('Assigned'),
-    desc: 'assigned, assigned_or_suggested:[me|[me, none]|user@example.com|#team-example]',
-    value: 'assigned:',
-    type: ItemType.DEFAULT,
-  },
-  {
-    title: t('Bookmarked By'),
-    desc: 'bookmarks:[me|user@example.com]',
-    value: 'bookmarks:',
-    type: ItemType.DEFAULT,
-  },
-];
-
-type Props = React.ComponentProps<typeof SmartSearchBar> & {
-  api: Client;
+interface Props extends Partial<SearchQueryBuilderProps> {
   organization: Organization;
-  tagValueLoader: TagValueLoader;
-  projectIds?: string[];
-  savedSearch?: SavedSearch;
-  onSidebarToggle: (e: React.MouseEvent) => void;
-  sort: string;
-};
-
-type State = {
-  defaultSearchItems: [SearchItem[], SearchItem[]];
-  recentSearches: string[];
-};
-
-class IssueListSearchBar extends React.Component<Props, State> {
-  state: State = {
-    defaultSearchItems: [SEARCH_ITEMS, []],
-    recentSearches: [],
-  };
-
-  componentDidMount() {
-    // Ideally, we would fetch on demand (e.g. when input gets focus)
-    // but `<SmartSearchBar>` is a bit complicated and this is the easiest route
-    this.fetchData();
-  }
-
-  fetchData = async () => {
-    this.props.api.clear();
-    const resp = await this.getRecentSearches();
-
-    this.setState({
-      defaultSearchItems: [
-        SEARCH_ITEMS,
-        resp
-          ? resp.map(query => ({
-              desc: query,
-              value: query,
-              type: ItemType.RECENT_SEARCH,
-            }))
-          : [],
-      ],
-      recentSearches: resp,
-    });
-  };
-
-  /**
-   * @returns array of tag values that substring match `query`
-   */
-  getTagValues = async (tag: Tag, query: string): Promise<string[]> => {
-    const {tagValueLoader} = this.props;
-
-    const values = await tagValueLoader(tag.key, query);
-    return values.map(({value}) => value);
-  };
-
-  getRecentSearches = async (): Promise<string[]> => {
-    const {api, organization} = this.props;
-    const recent = await fetchRecentSearches(
-      api,
-      organization.slug,
-      SavedSearchType.ISSUE
-    );
-    return recent?.map(({query}) => query) ?? [];
-  };
-
-  handleSavedRecentSearch = () => {
-    // Reset recent searches
-    this.fetchData();
-  };
-
-  render() {
-    const {tagValueLoader: _, savedSearch, sort, onSidebarToggle, ...props} = this.props;
-
-    const pinnedSearch = savedSearch?.isPinned ? savedSearch : undefined;
-
-    return (
-      <SmartSearchBar
-        searchSource="main_search"
-        hasRecentSearches
-        maxSearchItems={5}
-        savedSearchType={SavedSearchType.ISSUE}
-        onGetTagValues={this.getTagValues}
-        defaultSearchItems={this.state.defaultSearchItems}
-        onSavedRecentSearch={this.handleSavedRecentSearch}
-        actionBarItems={[
-          makePinSearchAction({sort, pinnedSearch}),
-          makeSaveSearchAction({sort}),
-          makeSearchBuilderAction({onSidebarToggle}),
-        ]}
-        {...props}
-      />
-    );
-  }
 }
 
-export default withApi(withOrganization(IssueListSearchBar));
+function IssueListSearchBar({
+  searchSource = 'issues',
+  initialQuery = '',
+  ...props
+}: Props) {
+  const {selection: pageFilters} = usePageFilters();
+  const {getFilterKeys, getFilterKeySections, getTagValues} =
+    useIssueListSearchBarDataProvider({pageFilters});
+
+  return (
+    <SearchQueryBuilder
+      initialQuery={initialQuery}
+      filterKeys={getFilterKeys()}
+      filterKeySections={getFilterKeySections()}
+      getTagValues={getTagValues}
+      recentSearches={SavedSearchType.ISSUE}
+      disallowLogicalOperators
+      searchSource={searchSource}
+      {...props}
+    />
+  );
+}
+
+export default IssueListSearchBar;
+
+const EXCLUDED_TAGS = [
+  'environment',
+  'ai_categorization.label.0',
+  'ai_categorization.label.1',
+  'ai_categorization.label.2',
+  'ai_categorization.label.3',
+  'ai_categorization.label.4',
+  'ai_categorization.label.5',
+  'ai_categorization.label.6',
+  'ai_categorization.label.7',
+  'ai_categorization.label.8',
+  'ai_categorization.label.9',
+  'ai_categorization.label.10',
+  'ai_categorization.label.11',
+  'ai_categorization.label.12',
+  'ai_categorization.label.13',
+  'ai_categorization.label.14',
+  'ai_categorization.label.15',
+  'ai_categorization.labels',
+];
+
+export function useIssueListSearchBarDataProvider(
+  props: SearchBarDataProviderProps
+): SearchBarData {
+  const {pageFilters} = props;
+  const api = useApi();
+  const organization = useOrganization();
+  const filterKeys = useIssueListFilterKeys();
+
+  const getFilterKeySections = useCallback((tags: TagCollection): FilterKeySection[] => {
+    const allTags: Tag[] = Object.values(tags).filter(
+      tag => !EXCLUDED_TAGS.includes(tag.key)
+    );
+
+    const issueFields = orderBy(
+      allTags.filter(tag => tag.kind === FieldKind.ISSUE_FIELD),
+      ['key']
+    ).map(tag => tag.key);
+
+    const eventFields = orderBy(
+      allTags.filter(tag => tag.kind === FieldKind.EVENT_FIELD),
+      ['key']
+    ).map(tag => tag.key);
+
+    const eventTags = orderBy(
+      allTags.filter(tag => tag.kind === FieldKind.TAG),
+      ['totalValues', 'key'],
+      ['desc', 'asc']
+    ).map(tag => tag.key);
+
+    const eventFeatureFlags = orderBy(
+      allTags.filter(tag => tag.kind === FieldKind.FEATURE_FLAG),
+      ['totalValues', 'key'],
+      ['desc', 'asc']
+    ).map(tag => tag.key);
+
+    const sections = [
+      {
+        value: FieldKind.ISSUE_FIELD,
+        label: t('Issues'),
+        children: issueFields,
+      },
+      {
+        value: FieldKind.EVENT_FIELD,
+        label: t('Event Filters'),
+        children: eventFields,
+      },
+      {
+        value: FieldKind.TAG,
+        label: t('Event Tags'),
+        children: eventTags,
+      },
+    ];
+
+    if (eventFeatureFlags.length > 0) {
+      sections.push({
+        value: FieldKind.FEATURE_FLAG,
+        label: t('Flags'), // Keeping this short so the tabs stay on 1 line.
+        children: eventFeatureFlags,
+      });
+    }
+
+    return sections;
+  }, []);
+
+  const filterKeySections = useMemo(() => {
+    return getFilterKeySections(filterKeys);
+  }, [filterKeys, getFilterKeySections]);
+
+  // Fetches the unique values seen for a tag key and query string. Result is sorted by count.
+  const tagValueLoader = useCallback(
+    async (key: string, search: string): Promise<TagValue[]> => {
+      const projectIds = pageFilters.projects.map(id => id.toString());
+      const endpointParams = {
+        start: pageFilters.datetime.start
+          ? getUtcDateString(pageFilters.datetime.start)
+          : undefined,
+        end: pageFilters.datetime.end
+          ? getUtcDateString(pageFilters.datetime.end)
+          : undefined,
+        statsPeriod: pageFilters.datetime.period,
+      };
+
+      const fetchTagValuesPayload = {
+        api,
+        orgSlug: organization.slug,
+        tagKey: key,
+        search,
+        projectIds,
+        endpointParams,
+        sort: '-count' as const,
+      };
+
+      // For now feature flags are treated like tags, but the api query is slightly different.
+      if (filterKeys[key]?.kind === FieldKind.FEATURE_FLAG) {
+        return await fetchFeatureFlagValues({
+          ...fetchTagValuesPayload,
+          organization,
+        });
+      }
+
+      if (key === FieldKey.FIRST_RELEASE) {
+        const includeLatest = 'latest'.startsWith(search.toLowerCase());
+        return [
+          ...(includeLatest
+            ? [
+                {
+                  count: 1,
+                  firstSeen: '2021-01-01',
+                  lastSeen: '2021-01-01',
+                  name: 'latest',
+                  value: 'latest',
+                } as TagValue,
+              ]
+            : []),
+          ...(await fetchTagValues({
+            ...fetchTagValuesPayload,
+            tagKey: 'release',
+            dataset: Dataset.ERRORS,
+          })),
+        ];
+      }
+
+      const [eventsDatasetValues, issuePlatformDatasetValues] = await Promise.all([
+        fetchTagValues({
+          ...fetchTagValuesPayload,
+          dataset: Dataset.ERRORS,
+        }),
+        fetchTagValues({
+          ...fetchTagValuesPayload,
+          dataset: Dataset.ISSUE_PLATFORM,
+        }),
+      ]);
+
+      return mergeAndSortTagValues(
+        eventsDatasetValues,
+        issuePlatformDatasetValues,
+        'count'
+      );
+    },
+    [
+      api,
+      filterKeys,
+      organization,
+      pageFilters.datetime.end,
+      pageFilters.datetime.period,
+      pageFilters.datetime.start,
+      pageFilters.projects,
+    ]
+  );
+
+  const getTagValues = useMemo(
+    () => makeGetIssueTagValues(tagValueLoader),
+    [tagValueLoader]
+  );
+
+  return {
+    getFilterKeys: () => filterKeys,
+    getFilterKeySections: () => filterKeySections,
+    getTagValues,
+  };
+}

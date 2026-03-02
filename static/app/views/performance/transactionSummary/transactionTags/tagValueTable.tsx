@@ -1,69 +1,77 @@
-import React, {Component} from 'react';
-import {browserHistory} from 'react-router';
+import {css} from '@emotion/react';
 import styled from '@emotion/styled';
-import {Location, LocationDescriptorObject} from 'history';
+import type {LocationDescriptorObject} from 'history';
 
-import GridEditable, {COL_WIDTH_UNDEFINED, GridColumn} from 'app/components/gridEditable';
-import SortLink from 'app/components/gridEditable/sortLink';
-import Link from 'app/components/links/link';
-import Pagination, {CursorHandler} from 'app/components/pagination';
-import {IconAdd} from 'app/icons/iconAdd';
-import {t} from 'app/locale';
-import space from 'app/styles/space';
-import {Organization, Project} from 'app/types';
-import EventView from 'app/utils/discover/eventView';
-import {fieldAlignment} from 'app/utils/discover/fields';
-import {formatPercentage} from 'app/utils/formatters';
-import {
+import {Link} from '@sentry/scraps/link';
+
+import type {CursorHandler} from 'sentry/components/pagination';
+import Pagination from 'sentry/components/pagination';
+import PerformanceDuration from 'sentry/components/performanceDuration';
+import GridEditable from 'sentry/components/tables/gridEditable';
+import SortLink from 'sentry/components/tables/gridEditable/sortLink';
+import useStateBasedColumnResize from 'sentry/components/tables/gridEditable/useStateBasedColumnResize';
+import {IconAdd} from 'sentry/icons/iconAdd';
+import {t} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {Organization} from 'sentry/types/organization';
+import type {Project} from 'sentry/types/project';
+import {trackAnalytics} from 'sentry/utils/analytics';
+import {browserHistory} from 'sentry/utils/browserHistory';
+import type EventView from 'sentry/utils/discover/eventView';
+import {fieldAlignment} from 'sentry/utils/discover/fields';
+import {formatPercentage} from 'sentry/utils/number/formatPercentage';
+import type {
   TableData,
   TableDataRow,
-} from 'app/utils/performance/segmentExplorer/segmentExplorerQuery';
-import {decodeScalar} from 'app/utils/queryString';
-import {MutableSearch} from 'app/utils/tokenizeSearch';
-import CellAction, {Actions, updateQuery} from 'app/views/eventsV2/table/cellAction';
-import {TableColumn} from 'app/views/eventsV2/table/types';
+} from 'sentry/utils/performance/segmentExplorer/segmentExplorerQuery';
+import {VisuallyCompleteWithData} from 'sentry/utils/performanceForSentry';
+import {decodeScalar} from 'sentry/utils/queryString';
+import {MutableSearch} from 'sentry/utils/tokenizeSearch';
+import {useLocation} from 'sentry/utils/useLocation';
+import {useNavigate} from 'sentry/utils/useNavigate';
+import CellAction, {Actions, updateQuery} from 'sentry/views/discover/table/cellAction';
+import type {TableColumn} from 'sentry/views/discover/table/types';
+import {TagValue} from 'sentry/views/performance/transactionSummary/transactionOverview/tagExplorer';
+import {normalizeSearchConditions} from 'sentry/views/performance/transactionSummary/utils';
 
-import {PerformanceDuration} from '../../utils';
-import {TagValue} from '../transactionOverview/tagExplorer';
-
-import {
-  TAGS_TABLE_COLUMN_ORDER,
-  TagsTableColumn,
-  TagsTableColumnKeys,
-} from './tagsDisplay';
+import type {TagsTableColumn, TagsTableColumnKeys} from './tagsDisplay';
+import {TAGS_TABLE_COLUMN_ORDER} from './tagsDisplay';
 import {trackTagPageInteraction} from './utils';
 
 const TAGS_CURSOR_NAME = 'tags_cursor';
 
 type Props = {
-  location: Location;
-  organization: Organization;
   aggregateColumn: string;
-  projects: Project[];
-  transactionName: string;
-  tagKey?: string;
   eventView: EventView;
-  tableData: TableData | null;
-  pageLinks: string | null;
   isLoading: boolean;
+  organization: Organization;
+  pageLinks: string | null;
+  projects: Project[];
+  tableData: TableData | null;
+  transactionName: string;
   onCursor?: CursorHandler;
+  tagKey?: string;
 };
 
-type State = {
-  widths: number[];
-};
+export function TagValueTable({
+  aggregateColumn,
+  eventView,
+  isLoading,
+  organization,
+  pageLinks,
+  tableData,
+  onCursor,
+  tagKey,
+}: Props) {
+  const navigate = useNavigate();
+  const location = useLocation();
 
-export class TagValueTable extends Component<Props, State> {
-  state: State = {
-    widths: [],
-  };
-  renderHeadCell(
+  const renderHeadCell = (
     sortedEventView: EventView,
     tableMeta: TableData['meta'],
     column: TableColumn<TagsTableColumnKeys>,
     columnInfo: TagsTableColumn
-  ): React.ReactNode {
-    const {location} = this.props;
+  ): React.ReactNode => {
     const align = fieldAlignment(column.key, column.type, tableMeta);
     const field = {field: column.key, width: column.width};
 
@@ -93,45 +101,44 @@ export class TagValueTable extends Component<Props, State> {
         generateSortLink={generateSortLink}
       />
     );
-  }
+  };
 
-  renderHeadCellWithMeta = (
+  const renderHeadCellWithMeta = (
     sortedEventView: EventView,
     tableMeta: TableData['meta'],
     columns: TagsTableColumn[]
   ) => {
     return (column: TableColumn<TagsTableColumnKeys>, index: number): React.ReactNode =>
-      this.renderHeadCell(sortedEventView, tableMeta, column, columns[index]);
+      renderHeadCell(sortedEventView, tableMeta, column, columns[index]!);
   };
 
-  handleTagValueClick = (location: Location, tagKey: string, tagValue: string) => {
+  const handleTagValueClick = (tagValue: string) => {
     const queryString = decodeScalar(location.query.query);
     const conditions = new MutableSearch(queryString ?? '');
 
-    conditions.addFilterValues(tagKey, [tagValue]);
+    conditions.addFilterValues(tagKey ?? '', [tagValue]);
 
-    const query = conditions.formatString();
-    browserHistory.push({
-      pathname: location.pathname,
-      query: {
-        ...location.query,
-        query: String(query).trim(),
+    navigate(
+      {
+        ...location,
+        query: {
+          ...location.query,
+          query: conditions.formatString(),
+        },
       },
-    });
+      {replace: false}
+    );
   };
 
-  handleCellAction = (
+  const handleCellAction = (
     column: TableColumn<TagsTableColumnKeys>,
-    tagValue: React.ReactText,
+    tagValue: string | number,
     actionRow: any
   ) => {
     return (action: Actions) => {
-      const {eventView, location, organization} = this.props;
       trackTagPageInteraction(organization);
 
-      const searchConditions = new MutableSearch(eventView.query);
-
-      searchConditions.removeFilter('event.type');
+      const searchConditions = normalizeSearchConditions(eventView.query);
 
       updateQuery(searchConditions, action, {...column, name: actionRow.id}, tagValue);
 
@@ -146,30 +153,56 @@ export class TagValueTable extends Component<Props, State> {
     };
   };
 
-  renderBodyCell = (
-    parentProps: Props,
+  const generateReleaseLocation = (release: string) => {
+    const {project} = location.query;
+
+    return {
+      pathname: `/organizations/${organization.slug}/releases/${encodeURIComponent(
+        release
+      )}`,
+      query: {project},
+    };
+  };
+
+  const handleReleaseLinkClicked = () => {
+    trackAnalytics('performance_views.tags.jump_to_release', {
+      organization,
+    });
+  };
+
+  const renderBodyCell = (
     column: TableColumn<TagsTableColumnKeys>,
     dataRow: TableDataRow
   ): React.ReactNode => {
+    // @ts-expect-error TS(7053): Element implicitly has an 'any' type because expre... Remove this comment to see the full error message
     const value = dataRow[column.key];
-    const {location, eventView, organization} = parentProps;
 
     if (column.key === 'key') {
       return dataRow.tags_key;
     }
 
-    const allowActions = [Actions.ADD, Actions.EXCLUDE];
+    const allowActions = [Actions.ADD, Actions.EXCLUDE, Actions.OPEN_INTERNAL_LINK];
 
     if (column.key === 'tagValue') {
       const actionRow = {...dataRow, id: dataRow.tags_key};
+
       return (
         <CellAction
           column={column}
           dataRow={actionRow}
-          handleCellAction={this.handleCellAction(column, dataRow.tags_value, actionRow)}
+          handleCellAction={handleCellAction(column, dataRow.tags_value, actionRow)}
           allowActions={allowActions}
         >
-          <TagValue row={dataRow} />
+          {column.name === 'release' ? (
+            <Link
+              to={generateReleaseLocation(dataRow.tags_value)}
+              onClick={handleReleaseLinkClicked}
+            >
+              <TagValue row={dataRow} />
+            </Link>
+          ) : (
+            <TagValue row={dataRow} />
+          )}
         </CellAction>
       );
     }
@@ -182,19 +215,22 @@ export class TagValueTable extends Component<Props, State> {
       const searchConditions = new MutableSearch(eventView.query);
       const disabled = searchConditions.hasFilter(dataRow.tags_key);
       return (
-        <Link
-          disabled={disabled}
-          to=""
-          onClick={() => {
-            trackTagPageInteraction(organization);
-            this.handleTagValueClick(location, dataRow.tags_key, dataRow.tags_value);
-          }}
-        >
-          <LinkContainer>
-            <IconAdd isCircled />
+        <AlignRight>
+          <LinkContainer
+            disabled={disabled}
+            onClick={() => {
+              if (disabled) {
+                return;
+              }
+
+              trackTagPageInteraction(organization);
+              handleTagValueClick(dataRow.tags_value);
+            }}
+          >
+            <IconAdd />
             {t('Add to filter')}
           </LinkContainer>
-        </Link>
+        </AlignRight>
       );
     }
 
@@ -227,69 +263,55 @@ export class TagValueTable extends Component<Props, State> {
     return value;
   };
 
-  renderBodyCellWithData = (parentProps: Props) => {
-    return (
-      column: TableColumn<TagsTableColumnKeys>,
-      dataRow: TableDataRow
-    ): React.ReactNode => this.renderBodyCell(parentProps, column, dataRow);
-  };
+  const renderBodyCellWithData = (
+    column: TableColumn<TagsTableColumnKeys>,
+    dataRow: TableDataRow
+  ): React.ReactNode => renderBodyCell(column, dataRow);
 
-  handleResizeColumn = (columnIndex: number, nextColumn: GridColumn) => {
-    const widths: number[] = [...this.state.widths];
-    widths[columnIndex] = nextColumn.width
-      ? Number(nextColumn.width)
-      : COL_WIDTH_UNDEFINED;
-    this.setState({widths});
-  };
+  const {columns, handleResizeColumn} = useStateBasedColumnResize({
+    columns: TAGS_TABLE_COLUMN_ORDER,
+  });
 
-  render() {
-    const {
-      eventView,
-      tagKey,
-      location,
-      isLoading,
-      tableData,
-      aggregateColumn,
-      pageLinks,
-      onCursor,
-    } = this.props;
-
-    const newColumns = [...TAGS_TABLE_COLUMN_ORDER].map(c => {
-      const newColumn = {...c};
-      if (c.key === 'tagValue' && tagKey) {
-        newColumn.name = tagKey;
+  const newColumns = columns.map(c => {
+    const newColumn = {...c};
+    if (c.key === 'tagValue' && tagKey) {
+      newColumn.name = tagKey;
+    }
+    if (c.key === 'aggregate') {
+      if (aggregateColumn === 'measurements.lcp') {
+        newColumn.name = 'Avg LCP';
       }
-      if (c.key === 'aggregate') {
-        if (aggregateColumn === 'measurements.lcp') {
-          newColumn.name = 'Avg LCP';
-        }
-      }
-      return newColumn;
-    });
+    }
+    return newColumn;
+  });
 
-    return (
-      <StyledPanelTable>
+  return (
+    <StyledPanelTable>
+      <VisuallyCompleteWithData
+        id="TransactionTags-TagValueTable"
+        hasData={!!tableData?.data?.length}
+        isLoading={isLoading}
+      >
         <GridEditable
           isLoading={isLoading}
-          data={tableData && tableData.data ? tableData.data : []}
+          data={tableData?.data ? tableData.data : []}
           columnOrder={newColumns}
           columnSortBy={[]}
           grid={{
-            renderHeadCell: this.renderHeadCellWithMeta(
+            renderHeadCell: renderHeadCellWithMeta(
               eventView,
               tableData ? tableData.meta : {},
               newColumns
             ) as any,
-            renderBodyCell: this.renderBodyCellWithData(this.props) as any,
-            onResizeColumn: this.handleResizeColumn as any,
+            renderBodyCell: renderBodyCellWithData as any,
+            onResizeColumn: handleResizeColumn,
           }}
-          location={location}
         />
+      </VisuallyCompleteWithData>
 
-        <Pagination pageLinks={pageLinks} onCursor={onCursor} size="small" />
-      </StyledPanelTable>
-    );
-  }
+      <Pagination pageLinks={pageLinks} onCursor={onCursor} size="sm" />
+    </StyledPanelTable>
+  );
 }
 
 const StyledPanelTable = styled('div')`
@@ -301,14 +323,22 @@ const StyledPanelTable = styled('div')`
 
 const AlignRight = styled('div')`
   text-align: right;
+  flex: 1;
 `;
 
-const LinkContainer = styled('div')`
+const LinkContainer = styled('div')<{disabled?: boolean}>`
+  cursor: pointer;
+  color: ${p => p.theme.tokens.interactive.link.accent.rest};
   display: grid;
   grid-auto-flow: column;
-  grid-gap: ${space(0.5)};
+  gap: ${space(0.5)};
   justify-content: flex-end;
   align-items: center;
+  ${p =>
+    p.disabled &&
+    css`
+      opacity: 0.5;
+      color: ${p.theme.tokens.content.disabled};
+      cursor: default;
+    `}
 `;
-
-export default TagValueTable;

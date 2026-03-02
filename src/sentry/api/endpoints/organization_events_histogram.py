@@ -1,9 +1,15 @@
 import sentry_sdk
 from rest_framework import serializers
+from rest_framework.request import Request
 from rest_framework.response import Response
 
 from sentry import features
-from sentry.api.bases import NoProjects, OrganizationEventsV2EndpointBase
+from sentry.api.api_owners import ApiOwner
+from sentry.api.api_publish_status import ApiPublishStatus
+from sentry.api.base import region_silo_endpoint
+from sentry.api.bases import NoProjects, OrganizationEventsEndpointBase
+from sentry.api.utils import handle_query_errors
+from sentry.models.organization import Organization
 from sentry.snuba import discover
 
 # The maximum number of array columns allowed to be queried at at time
@@ -37,31 +43,45 @@ class HistogramSerializer(serializers.Serializer):
         return fields
 
 
-class OrganizationEventsHistogramEndpoint(OrganizationEventsV2EndpointBase):
+@region_silo_endpoint
+class OrganizationEventsHistogramEndpoint(OrganizationEventsEndpointBase):
+    publish_status = {
+        "GET": ApiPublishStatus.PRIVATE,
+    }
+    owner = ApiOwner.DATA_BROWSING
+
     def has_feature(self, organization, request):
         return features.has("organizations:performance-view", organization, actor=request.user)
 
-    def get(self, request, organization):
+    def get(self, request: Request, organization: Organization) -> Response:
         if not self.has_feature(organization, request):
             return Response(status=404)
 
         try:
-            params = self.get_snuba_params(request, organization)
+            snuba_params = self.get_snuba_params(request, organization)
         except NoProjects:
             return Response({})
 
-        with sentry_sdk.start_span(op="discover.endpoint", description="histogram"):
+        use_metrics = features.has(
+            "organizations:performance-use-metrics", organization=organization, actor=request.user
+        )
+        dataset = self.get_dataset(request) if use_metrics else discover
+        metrics_enhanced = dataset != discover
+
+        sentry_sdk.set_tag("performance.metrics_enhanced", metrics_enhanced)
+
+        with sentry_sdk.start_span(op="discover.endpoint", name="histogram"):
             serializer = HistogramSerializer(data=request.GET)
             if serializer.is_valid():
                 data = serializer.validated_data
 
-                with self.handle_query_errors():
-                    results = discover.histogram_query(
-                        data["field"],
-                        data.get("query"),
-                        params,
-                        data["numBuckets"],
-                        data["precision"],
+                with handle_query_errors():
+                    results = dataset.histogram_query(
+                        fields=data["field"],
+                        user_query=data.get("query"),
+                        snuba_params=snuba_params,
+                        num_buckets=data["numBuckets"],
+                        precision=data["precision"],
                         min_value=data.get("min"),
                         max_value=data.get("max"),
                         data_filter=data.get("dataFilter"),

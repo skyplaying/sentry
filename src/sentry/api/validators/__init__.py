@@ -1,8 +1,5 @@
-# XXX(dcramer): we don't use rest framework's serializers module for actual serialization,
-# but rather we use it for validation. Consider this the appropriate place to put these
-# components going forward, though many live in sentry/api/serializers/rest_framework for
-# legacy reasons.
-
-from sentry.utils.imports import import_submodules
-
-import_submodules(globals(), __name__, __path__)
+from .auth import *  # noqa: F401,F403
+from .broadcast import *  # noqa: F401,F403
+from .email import *  # noqa: F401,F403
+from .project import *  # noqa: F401,F403
+from .project_codeowners import *  # noqa: F401,F403

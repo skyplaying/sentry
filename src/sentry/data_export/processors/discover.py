@@ -1,14 +1,25 @@
 import logging
+from typing import Any, Protocol
+
+from sentry_relay.consts import SPAN_STATUS_CODE_TO_NAME
 
 from sentry.api.utils import get_date_range_from_params
-from sentry.models import Environment, Group, Project
+from sentry.models.environment import Environment
+from sentry.models.group import Group
+from sentry.models.organization import Organization
+from sentry.models.project import Project
 from sentry.search.events.fields import get_function_alias
+from sentry.search.events.types import SnubaParams
 from sentry.snuba import discover
-from sentry.utils.compat import map
+from sentry.snuba.utils import get_dataset
 
 from ..base import ExportError
 
 logger = logging.getLogger(__name__)
+
+
+class DataFn(Protocol):
+    def __call__(self, offset: int, limit: int) -> dict[str, Any]: ...
 
 
 class DiscoverProcessor:
@@ -16,25 +27,23 @@ class DiscoverProcessor:
     Processor for exports of discover data based on a provided query
     """
 
-    def __init__(self, organization_id, discover_query):
-        self.projects = self.get_projects(organization_id, discover_query)
-        self.environments = self.get_environments(organization_id, discover_query)
+    def __init__(self, organization: Organization, discover_query: dict[str, Any]):
+        self.projects = self.get_projects(organization.id, discover_query)
+        self.environments = self.get_environments(organization.id, discover_query)
         self.start, self.end = get_date_range_from_params(discover_query)
-        self.params = {
-            "organization_id": organization_id,
-            "project_id": [project.id for project in self.projects],
-            "start": self.start,
-            "end": self.end,
-        }
+        self.snuba_params = SnubaParams(
+            organization=organization,
+            projects=self.projects,
+            start=self.start,
+            end=self.end,
+        )
         # make sure to only include environment if any are given
         # an empty list DOES NOT work
         if self.environments:
-            self.params["environment"] = self.environments
+            self.snuba_params.environments = self.environments
 
         equations = discover_query.get("equations", [])
-        self.header_fields = (
-            map(lambda x: get_function_alias(x), discover_query["field"]) + equations
-        )
+        self.header_fields = [get_function_alias(x) for x in discover_query["field"]] + equations
         self.equation_aliases = {
             f"equation[{index}]": equation for index, equation in enumerate(equations)
         }
@@ -42,19 +51,20 @@ class DiscoverProcessor:
             fields=discover_query["field"],
             equations=equations,
             query=discover_query["query"],
-            params=self.params,
+            snuba_params=self.snuba_params,
             sort=discover_query.get("sort"),
+            dataset_name=discover_query.get("dataset"),
         )
 
     @staticmethod
-    def get_projects(organization_id, query):
+    def get_projects(organization_id: int, query: dict[str, Any]) -> list[Project]:
         projects = list(Project.objects.filter(id__in=query.get("project")))
         if len(projects) == 0:
             raise ExportError("Requested project does not exist")
         return projects
 
     @staticmethod
-    def get_environments(organization_id, query):
+    def get_environments(organization_id: int, query: dict[str, Any]) -> list[Environment]:
         requested_environments = query.get("environment", [])
         if not isinstance(requested_environments, list):
             requested_environments = [requested_environments]
@@ -72,16 +82,27 @@ class DiscoverProcessor:
         if set(requested_environments) != set(environment_names):
             raise ExportError("Requested environment does not exist")
 
-        return environment_names
+        return environments
 
     @staticmethod
-    def get_data_fn(fields, equations, query, params, sort):
-        def data_fn(offset, limit):
-            return discover.query(
+    def get_data_fn(
+        fields: list[str],
+        equations: list[str],
+        query: str,
+        snuba_params: SnubaParams,
+        sort: str | None,
+        dataset_name: str | None,
+    ) -> DataFn:
+        dataset = get_dataset(dataset_name)
+        if dataset is None:
+            dataset = discover
+
+        def data_fn(offset: int, limit: int) -> dict[str, Any]:
+            return dataset.query(
                 selected_columns=fields,
                 equations=equations,
                 query=query,
-                params=params,
+                snuba_params=snuba_params,
                 offset=offset,
                 orderby=sort,
                 limit=limit,
@@ -93,24 +114,29 @@ class DiscoverProcessor:
 
         return data_fn
 
-    def handle_fields(self, result_list):
+    def handle_fields(self, result_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
         # Find issue short_id if present
         # (originally in `/api/bases/organization_events.py`)
         new_result_list = result_list[:]
 
         if "issue" in self.header_fields:
             issue_ids = {result["issue.id"] for result in new_result_list}
-            issues = {
-                i.id: i.qualified_short_id
-                for i in Group.objects.filter(
-                    id__in=issue_ids,
-                    project__in=self.params["project_id"],
-                    project__organization_id=self.params["organization_id"],
-                )
-            }
+            assert self.snuba_params.organization is not None
+            issues = Group.objects.get_issues_mapping(
+                issue_ids,
+                self.snuba_params.project_ids,
+                self.snuba_params.organization,
+            )
             for result in new_result_list:
                 if "issue.id" in result:
                     result["issue"] = issues.get(result["issue.id"], "unknown")
+
+        if "transaction.status" in self.header_fields:
+            for result in new_result_list:
+                if "transaction.status" in result:
+                    result["transaction.status"] = SPAN_STATUS_CODE_TO_NAME.get(
+                        result["transaction.status"], "unknown"
+                    )
 
         # Map equations back to their unaliased forms
         if self.equation_aliases:

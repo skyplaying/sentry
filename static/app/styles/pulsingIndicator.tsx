@@ -1,6 +1,5 @@
+import type {Theme} from '@emotion/react';
 import {css, keyframes} from '@emotion/react';
-
-import {Theme} from 'app/utils/theme';
 
 const pulse = keyframes`
   0% {
@@ -18,7 +17,7 @@ const pulsingIndicatorStyles = (p: {theme: Theme}) => css`
   height: 8px;
   width: 8px;
   border-radius: 50%;
-  background: ${p.theme.orange400};
+  background: var(--pulsingIndicatorBg, ${p.theme.colors.pink400});
   position: relative;
 
   &:before {
@@ -30,9 +29,10 @@ const pulsingIndicatorStyles = (p: {theme: Theme}) => css`
     border-radius: 50%;
     top: -46px;
     left: -46px;
-    border: 4px solid ${p.theme.orange300};
+    border: 4px solid var(--pulsingIndicatorRing, ${p.theme.colors.pink200});
     transform-origin: center;
     animation: ${pulse} 3s ease-out infinite;
+    pointer-events: none;
   }
 `;
 

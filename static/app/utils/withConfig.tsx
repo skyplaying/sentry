@@ -1,49 +1,32 @@
-import * as React from 'react';
-
-import ConfigStore from 'app/stores/configStore';
-import {Config} from 'app/types';
-import getDisplayName from 'app/utils/getDisplayName';
+import ConfigStore from 'sentry/stores/configStore';
+import {useLegacyStore} from 'sentry/stores/useLegacyStore';
+import type {Config} from 'sentry/types/system';
+import getDisplayName from 'sentry/utils/getDisplayName';
 
 type InjectedConfigProps = {
   config: Config;
 };
 
-type State = {
-  config: Config;
-};
-
 /**
- * Higher order component that passes the config object to the wrapped component
+ * Higher order component that passes the config object to the wrapped
+ * component
  */
 function withConfig<P extends InjectedConfigProps>(
   WrappedComponent: React.ComponentType<P>
 ) {
-  class WithConfig extends React.Component<
-    Omit<P, keyof InjectedConfigProps> & Partial<InjectedConfigProps>,
-    State
-  > {
-    static displayName = `withConfig(${getDisplayName(WrappedComponent)})`;
+  type Props = Omit<P, keyof InjectedConfigProps> & Partial<InjectedConfigProps>;
 
-    state = {config: ConfigStore.getConfig()};
+  function Wrapper(props: Props) {
+    const config = useLegacyStore(ConfigStore);
+    const allProps = {config, ...props} as P;
 
-    componentWillUnmount() {
-      this.unsubscribe();
-    }
-
-    unsubscribe = ConfigStore.listen(
-      () => this.setState({config: ConfigStore.getConfig()}),
-      undefined
-    );
-
-    render() {
-      const {config, ...props} = this.props as P;
-      return (
-        <WrappedComponent {...({config: config ?? this.state.config, ...props} as P)} />
-      );
-    }
+    // TODO(any): HoC prop types not working w/ emotion https://github.com/emotion-js/emotion/issues/3261
+    return <WrappedComponent {...(allProps as any)} />;
   }
 
-  return WithConfig;
+  Wrapper.displayName = `withConfig(${getDisplayName(WrappedComponent)})`;
+
+  return Wrapper;
 }
 
 export default withConfig;

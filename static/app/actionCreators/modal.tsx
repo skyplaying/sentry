@@ -1,20 +1,30 @@
-import * as React from 'react';
+import type {ModalTypes} from 'sentry/components/globalModal';
+import type {CreateReleaseIntegrationModalOptions} from 'sentry/components/modals/createReleaseIntegrationModal';
+import type {DashboardWidgetQuerySelectorModalOptions} from 'sentry/components/modals/dashboardWidgetQuerySelectorModal';
+import type {SaveQueryModalProps} from 'sentry/components/modals/explore/saveQueryModal';
+import type {ImportDashboardFromFileModalProps} from 'sentry/components/modals/importDashboardFromFileModal';
+import type {InsightChartModalOptions} from 'sentry/components/modals/insightChartModal';
+import type {InviteRow} from 'sentry/components/modals/inviteMembersModal/types';
+import type {PrivateGamingSdkAccessModalProps} from 'sentry/components/modals/privateGamingSdkAccessModal';
+import type {ReprocessEventModalOptions} from 'sentry/components/modals/reprocessEventModal';
+import type {TokenRegenerationConfirmationModalProps} from 'sentry/components/modals/tokenRegenerationConfirmationModal';
+import type {AddToDashboardModalProps} from 'sentry/components/modals/widgetBuilder/addToDashboardModal';
+import type {LinkToDashboardModalProps} from 'sentry/components/modals/widgetBuilder/linkToDashboardModal';
+import type {WidgetViewerModalOptions} from 'sentry/components/modals/widgetViewerModal';
+import type {ConsoleModalProps} from 'sentry/components/onboarding/consoleModal';
+import type {Category} from 'sentry/components/platformPicker';
+import ModalStore from 'sentry/stores/modalStore';
+import type {CustomRepoType} from 'sentry/types/debugFiles';
+import type {Event} from 'sentry/types/event';
+import type {IssueOwnership} from 'sentry/types/group';
+import type {MissingMember, Organization, OrgRole} from 'sentry/types/organization';
+import type {Project} from 'sentry/types/project';
+import type {Theme} from 'sentry/utils/theme';
+import type {AttributeBreakdownViewerModalOptions} from 'sentry/views/explore/components/attributeBreakdowns/attributeBreakdownViewerModal';
 
-import ModalActions from 'app/actions/modalActions';
-import GlobalModal from 'app/components/globalModal';
-import type {DashboardWidgetModalOptions} from 'app/components/modals/addDashboardWidgetModal';
-import type {DashboardWidgetQuerySelectorModalOptions} from 'app/components/modals/dashboardWidgetQuerySelectorModal';
-import {InviteRow} from 'app/components/modals/inviteMembersModal/types';
-import type {ReprocessEventModalOptions} from 'app/components/modals/reprocessEventModal';
-import {AppStoreConnectContextProps} from 'app/components/projects/appStoreConnectContext';
-import {Group, IssueOwnership, Organization, Project, SentryApp, Team} from 'app/types';
-import {CustomRepoType} from 'app/types/debugFiles';
-import {Event} from 'app/types/event';
-
-type ModalProps = Required<React.ComponentProps<typeof GlobalModal>>;
-
-export type ModalOptions = ModalProps['options'];
-export type ModalRenderProps = Parameters<NonNullable<ModalProps['children']>>[0];
+export type ModalOptions = ModalTypes['options'];
+export type ModalRenderProps = ModalTypes['renderProps'];
+type ModalRenderPropKeys = keyof ModalRenderProps;
 
 /**
  * Show a modal
@@ -23,88 +33,64 @@ export function openModal(
   renderer: (renderProps: ModalRenderProps) => React.ReactNode,
   options?: ModalOptions
 ) {
-  ModalActions.openModal(renderer, options);
+  ModalStore.openModal(renderer, options ?? {});
 }
 
 /**
  * Close modal
  */
 export function closeModal() {
-  ModalActions.closeModal();
+  ModalStore.closeModal();
 }
 
-type OpenSudoModalOptions = {
-  onClose?: () => void;
-  superuser?: boolean;
-  sudo?: boolean;
-  retryRequest?: () => Promise<any>;
-};
-
-type emailVerificationModalOptions = {
-  onClose?: () => void;
-  emailVerified?: boolean;
+type EmailVerificationModalOptions = {
   actionMessage?: string;
+  emailVerified?: boolean;
+  onClose?: () => void;
 };
 
-type inviteMembersModalOptions = {
+type InviteMembersModalOptions = {
+  initialData?: Array<Partial<InviteRow>>;
   onClose?: () => void;
-  initialData?: Partial<InviteRow>[];
   source?: string;
 };
-
-export async function openSudo({onClose, ...args}: OpenSudoModalOptions = {}) {
-  const mod = await import('app/components/modals/sudoModal');
-  const {default: Modal} = mod;
-
-  openModal(deps => <Modal {...deps} {...args} />, {onClose});
-}
 
 export async function openEmailVerification({
   onClose,
   ...args
-}: emailVerificationModalOptions = {}) {
-  const mod = await import('app/components/modals/emailVerificationModal');
-  const {default: Modal} = mod;
+}: EmailVerificationModalOptions = {}) {
+  const {default: Modal} =
+    await import('sentry/components/modals/emailVerificationModal');
 
   openModal(deps => <Modal {...deps} {...args} />, {onClose});
 }
 
-type OpenDiffModalOptions = {
-  targetIssueId: string;
+interface OpenDiffModalOptions extends Omit<
+  React.ComponentProps<typeof import('sentry/components/modals/diffModal').default>,
+  ModalRenderPropKeys
+> {
   project: Project;
-  baseIssueId: Group['id'];
-  orgId: Organization['id'];
-  baseEventId?: Event['id'];
-  targetEventId?: string;
-};
+}
 
 export async function openDiffModal(options: OpenDiffModalOptions) {
-  const mod = await import('app/components/modals/diffModal');
-  const {default: Modal, modalCss} = mod;
+  const {default: Modal, modalCss} = await import('sentry/components/modals/diffModal');
 
   openModal(deps => <Modal {...deps} {...options} />, {modalCss});
 }
 
-type CreateTeamModalOptions = {
-  /**
-   * The organization to create a team for
-   */
-  organization: Organization;
-  /**
-   * An initial project to add the team to. This may be deprecated soon as we may add a project selection inside of the modal flow
-   */
-  project?: Project;
-  onClose?: (team: Team) => void;
-};
+type CreateTeamModalOptions = Omit<
+  React.ComponentProps<typeof import('sentry/components/modals/createTeamModal').default>,
+  ModalRenderPropKeys
+>;
 
 export async function openCreateTeamModal(options: CreateTeamModalOptions) {
-  const mod = await import('app/components/modals/createTeamModal');
-  const {default: Modal} = mod;
+  const {default: Modal} = await import('sentry/components/modals/createTeamModal');
 
   openModal(deps => <Modal {...deps} {...options} />);
 }
 
 type CreateOwnershipRuleModalOptions = {
+  issueId: string;
   /**
    * The organization to create a rules for
    */
@@ -113,33 +99,58 @@ type CreateOwnershipRuleModalOptions = {
    * The project to create a rules for
    */
   project: Project;
-  issueId: string;
+  /**
+   * Theme object
+   */
+  theme: Theme;
+  /**
+   * Suggestions will be created from the current event
+   */
+  eventData?: Event;
 };
+
+/**
+ * Open the edit ownership modal within issue details
+ */
+export async function openIssueOwnershipRuleModal(
+  options: CreateOwnershipRuleModalOptions
+) {
+  const {default: Modal, modalCss} =
+    await import('sentry/components/modals/issueOwnershipRuleModal');
+
+  openModal(deps => <Modal {...deps} {...options} />, {
+    modalCss: modalCss(options.theme),
+  });
+}
 
 export type EditOwnershipRulesModalOptions = {
+  onSave: (ownership: IssueOwnership) => void;
   organization: Organization;
-  project: Project;
   ownership: IssueOwnership;
-  onSave: (text: string | null) => void;
+  project: Project;
+  theme: Theme;
 };
 
-export async function openCreateOwnershipRule(options: CreateOwnershipRuleModalOptions) {
-  const mod = await import('app/components/modals/createOwnershipRuleModal');
-  const {default: Modal, modalCss} = mod;
+export async function openEditOwnershipRules(options: EditOwnershipRulesModalOptions) {
+  const {default: Modal, modalCss} =
+    await import('sentry/components/modals/editOwnershipRulesModal');
+
+  openModal(deps => <Modal {...deps} {...options} />, {
+    closeEvents: 'escape-key',
+    modalCss: modalCss(options.theme),
+  });
+}
+
+export async function openCommandPaletteDeprecated(options: ModalOptions = {}) {
+  const {default: Modal, modalCss} =
+    await import('sentry/components/modals/deprecatedCommandPalette');
 
   openModal(deps => <Modal {...deps} {...options} />, {modalCss});
 }
 
-export async function openEditOwnershipRules(options: EditOwnershipRulesModalOptions) {
-  const mod = await import('app/components/modals/editOwnershipRulesModal');
-  const {default: Modal, modalCss} = mod;
-
-  openModal(deps => <Modal {...deps} {...options} />, {backdrop: 'static', modalCss});
-}
-
 export async function openCommandPalette(options: ModalOptions = {}) {
-  const mod = await import('app/components/modals/commandPalette');
-  const {default: Modal, modalCss} = mod;
+  const {default: Modal, modalCss} =
+    await import('sentry/components/commandPalette/ui/modal');
 
   openModal(deps => <Modal {...deps} {...options} />, {modalCss});
 }
@@ -149,30 +160,22 @@ type RecoveryModalOptions = {
 };
 
 export async function openRecoveryOptions(options: RecoveryModalOptions) {
-  const mod = await import('app/components/modals/recoveryOptionsModal');
-  const {default: Modal} = mod;
+  const {default: Modal} = await import('sentry/components/modals/recoveryOptionsModal');
 
   openModal(deps => <Modal {...deps} {...options} />);
 }
 
 export type TeamAccessRequestModalOptions = {
   memberId: string;
-  teamId: string;
   orgId: string;
+  teamId: string;
 };
 
 export async function openTeamAccessRequestModal(options: TeamAccessRequestModalOptions) {
-  const mod = await import('app/components/modals/teamAccessRequestModal');
-  const {default: Modal} = mod;
+  const {default: Modal} =
+    await import('sentry/components/modals/teamAccessRequestModal');
 
   openModal(deps => <Modal {...deps} {...options} />);
-}
-
-export async function redirectToProject(newProjectSlug: string) {
-  const mod = await import('app/components/modals/redirectToProject');
-  const {default: Modal} = mod;
-
-  openModal(deps => <Modal {...deps} slug={newProjectSlug} />, {});
 }
 
 type HelpSearchModalOptions = {
@@ -181,24 +184,16 @@ type HelpSearchModalOptions = {
 };
 
 export async function openHelpSearchModal(options?: HelpSearchModalOptions) {
-  const mod = await import('app/components/modals/helpSearchModal');
-  const {default: Modal, modalCss} = mod;
+  const {default: Modal, modalCss} =
+    await import('sentry/components/modals/helpSearchModal');
 
   openModal(deps => <Modal {...deps} {...options} />, {modalCss});
 }
 
-export type SentryAppDetailsModalOptions = {
-  sentryApp: SentryApp;
-  isInstalled: boolean;
-  onInstall: () => Promise<void>;
-  organization: Organization;
-  onCloseModal?: () => void; // used for analytics
-};
-
 type DebugFileSourceModalOptions = {
-  sourceType: CustomRepoType;
   onSave: (data: Record<string, any>) => Promise<void>;
-  appStoreConnectContext?: AppStoreConnectContextProps;
+  organization: Organization;
+  sourceType: CustomRepoType;
   onClose?: () => void;
   sourceConfig?: Record<string, any>;
 };
@@ -207,11 +202,9 @@ export async function openDebugFileSourceModal({
   onClose,
   ...restOptions
 }: DebugFileSourceModalOptions) {
-  const mod = await import(
-    /* webpackChunkName: "DebugFileCustomRepository" */ 'app/components/modals/debugFileCustomRepository'
-  );
+  const {default: Modal, modalCss} =
+    await import('sentry/components/modals/debugFileCustomRepository');
 
-  const {default: Modal, modalCss} = mod;
   openModal(deps => <Modal {...deps} {...restOptions} />, {
     modalCss,
     onClose,
@@ -221,34 +214,88 @@ export async function openDebugFileSourceModal({
 export async function openInviteMembersModal({
   onClose,
   ...args
-}: inviteMembersModalOptions = {}) {
-  const mod = await import('app/components/modals/inviteMembersModal');
-  const {default: Modal, modalCss} = mod;
+}: InviteMembersModalOptions = {}) {
+  const {default: Modal, modalCss} =
+    await import('sentry/components/modals/inviteMembersModal');
 
   openModal(deps => <Modal {...deps} {...args} />, {modalCss, onClose});
 }
 
-export async function openAddDashboardWidgetModal(options: DashboardWidgetModalOptions) {
-  const mod = await import('app/components/modals/addDashboardWidgetModal');
-  const {default: Modal, modalCss} = mod;
+type InviteMissingMembersModalOptions = {
+  allowedRoles: OrgRole[];
+  missingMembers: MissingMember[];
+  onClose: () => void;
+  organization: Organization;
+};
 
-  openModal(deps => <Modal {...deps} {...options} />, {backdrop: 'static', modalCss});
+export async function openInviteMissingMembersModal({
+  onClose,
+  ...args
+}: InviteMissingMembersModalOptions) {
+  const {InviteMissingMembersModal, modalCss} =
+    await import('sentry/components/modals/inviteMissingMembersModal');
+
+  openModal(deps => <InviteMissingMembersModal {...deps} {...args} />, {
+    modalCss,
+    onClose,
+  });
+}
+
+export async function openAddToDashboardModal(options: AddToDashboardModalProps) {
+  const {default: Modal, modalCss} =
+    await import('sentry/components/modals/widgetBuilder/addToDashboardModal');
+
+  openModal(deps => <Modal {...deps} {...options} />, {
+    closeEvents: 'escape-key',
+    modalCss,
+  });
+}
+
+export async function openLinkToDashboardModal(options: LinkToDashboardModalProps) {
+  const {LinkToDashboardModal, modalCss} =
+    await import('sentry/components/modals/widgetBuilder/linkToDashboardModal');
+
+  openModal(deps => <LinkToDashboardModal {...deps} {...options} />, {
+    closeEvents: 'escape-key',
+    modalCss,
+  });
+}
+
+export async function openImportDashboardFromFileModal(
+  options: ImportDashboardFromFileModalProps
+) {
+  const {default: Modal, modalCss} =
+    await import('sentry/components/modals/importDashboardFromFileModal');
+
+  openModal(deps => <Modal {...deps} {...options} />, {
+    closeEvents: 'escape-key',
+    modalCss,
+  });
 }
 
 export async function openReprocessEventModal({
   onClose,
   ...options
 }: ReprocessEventModalOptions & {onClose?: () => void}) {
-  const mod = await import('app/components/modals/reprocessEventModal');
+  const {ReprocessingEventModal} =
+    await import('sentry/components/modals/reprocessEventModal');
 
-  const {default: Modal} = mod;
-
-  openModal(deps => <Modal {...deps} {...options} />, {onClose});
+  openModal(deps => <ReprocessingEventModal {...deps} {...options} />, {onClose});
 }
 
 export async function demoSignupModal(options: ModalOptions = {}) {
-  const mod = await import('app/components/modals/demoSignUp');
-  const {default: Modal, modalCss} = mod;
+  const {default: Modal, modalCss} = await import('sentry/components/modals/demoSignUp');
+
+  openModal(deps => <Modal {...deps} {...options} />, {modalCss});
+}
+
+type DemoEndModalOptions = {
+  tour: string;
+};
+
+export async function demoEndModal(options: DemoEndModalOptions) {
+  const {default: Modal, modalCss} =
+    await import('sentry/components/modals/demoEndModal');
 
   openModal(deps => <Modal {...deps} {...options} />, {modalCss});
 }
@@ -256,8 +303,157 @@ export async function demoSignupModal(options: ModalOptions = {}) {
 export async function openDashboardWidgetQuerySelectorModal(
   options: DashboardWidgetQuerySelectorModalOptions
 ) {
-  const mod = await import('app/components/modals/dashboardWidgetQuerySelectorModal');
-  const {default: Modal, modalCss} = mod;
+  const {default: Modal, modalCss} =
+    await import('sentry/components/modals/dashboardWidgetQuerySelectorModal');
 
-  openModal(deps => <Modal {...deps} {...options} />, {backdrop: 'static', modalCss});
+  openModal(deps => <Modal {...deps} {...options} />, {
+    closeEvents: 'escape-key',
+    modalCss,
+  });
+}
+
+export async function openWidgetViewerModal({
+  onClose,
+  ...options
+}: WidgetViewerModalOptions & {onClose?: () => void}) {
+  const {
+    default: Modal,
+    modalCss,
+    backdropCss,
+  } = await import('sentry/components/modals/widgetViewerModal');
+
+  openModal(deps => <Modal {...deps} {...options} />, {
+    closeEvents: 'none',
+    modalCss,
+    backdropCss,
+    onClose,
+  });
+}
+
+export async function openCreateNewIntegrationModal() {
+  const {default: Modal} =
+    await import('sentry/components/modals/createNewIntegrationModal');
+
+  openModal(deps => <Modal {...deps} />);
+}
+
+export async function openCreateReleaseIntegration(
+  options: CreateReleaseIntegrationModalOptions
+) {
+  const {default: Modal} =
+    await import('sentry/components/modals/createReleaseIntegrationModal');
+
+  openModal(deps => <Modal {...deps} {...options} />);
+}
+
+type NavigateToExternalLinkModalOptions = {
+  linkText: string;
+};
+
+export async function openNavigateToExternalLinkModal(
+  options: NavigateToExternalLinkModalOptions
+) {
+  const {default: Modal} =
+    await import('sentry/components/modals/navigateToExternalLinkModal');
+
+  openModal(deps => <Modal {...deps} {...options} />);
+}
+
+export async function openProjectCreationModal(options: {defaultCategory: Category}) {
+  const {default: Modal, modalCss} =
+    await import('sentry/components/modals/projectCreationModal');
+
+  openModal(deps => <Modal {...deps} {...options} />, {modalCss});
+}
+
+export async function openConsoleModal(
+  options: ConsoleModalProps & {
+    onClose?: () => void;
+  }
+) {
+  const {ConsoleModal: Modal, modalCss} =
+    await import('sentry/components/onboarding/consoleModal');
+  openModal(deps => <Modal {...deps} {...options} />, {
+    modalCss,
+    onClose: options.onClose,
+  });
+}
+
+export async function openBulkEditMonitorsModal({onClose, ...options}: ModalOptions) {
+  const {BulkEditMonitorsModal, modalCss} =
+    await import('sentry/components/modals/bulkEditMonitorsModal');
+
+  openModal(deps => <BulkEditMonitorsModal {...deps} {...options} />, {
+    modalCss,
+    onClose,
+  });
+}
+
+export async function openInsightChartModal(options: InsightChartModalOptions) {
+  const {
+    default: Modal,
+    modalCss,
+    fullscreenModalCss,
+  } = await import('sentry/components/modals/insightChartModal');
+
+  openModal(deps => <Modal {...deps} {...options} />, {
+    modalCss: options.fullscreen ? fullscreenModalCss : modalCss,
+  });
+}
+
+export async function openAddTempestCredentialsModal(options: {
+  organization: Organization;
+  origin: 'onboarding' | 'project-creation' | 'project-settings';
+  project: Project;
+}) {
+  const {default: Modal} =
+    await import('sentry/components/modals/addTempestCredentialsModal');
+
+  openModal(deps => <Modal {...deps} {...options} />);
+}
+
+export async function openSaveQueryModal(options: SaveQueryModalProps) {
+  const {default: Modal} =
+    await import('sentry/components/modals/explore/saveQueryModal');
+
+  openModal(deps => <Modal {...deps} {...options} />);
+}
+
+export async function openTokenRegenerationConfirmationModal(
+  options: TokenRegenerationConfirmationModalProps
+) {
+  const {default: Modal} =
+    await import('sentry/components/modals/tokenRegenerationConfirmationModal');
+
+  openModal(deps => <Modal {...deps} {...options} />);
+}
+
+export async function openPrivateGamingSdkAccessModal(
+  options: PrivateGamingSdkAccessModalProps
+) {
+  const {PrivateGamingSdkAccessModal} =
+    await import('sentry/components/modals/privateGamingSdkAccessModal');
+
+  openModal(deps => <PrivateGamingSdkAccessModal {...deps} {...options} />);
+}
+
+type InsightInfoModalOptions = {
+  children: React.ReactNode;
+  title: string;
+};
+
+export async function openInsightInfoModal(options: InsightInfoModalOptions) {
+  const {InsightInfoModal} =
+    await import('sentry/views/preprod/buildDetails/main/insights/insightInfoModal');
+
+  openModal(deps => <InsightInfoModal {...deps} {...options} />);
+}
+
+export async function openAttributeBreakdownViewerModal(
+  options: AttributeBreakdownViewerModalOptions
+) {
+  const {default: Modal, modalCss} =
+    await import('sentry/views/explore/components/attributeBreakdowns/attributeBreakdownViewerModal');
+
+  openModal(deps => <Modal {...deps} {...options} />, {modalCss});
 }

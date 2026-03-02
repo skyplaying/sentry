@@ -1,100 +1,207 @@
 import {Fragment} from 'react';
-import uniq from 'lodash/uniq';
+import styled from '@emotion/styled';
 
-import AsyncComponent from 'app/components/asyncComponent';
-import {t} from 'app/locale';
-import {Frame, Organization, Project, TagWithTopValues} from 'app/types';
-import {Entry, EventError} from 'app/types/event';
-import OwnerInput from 'app/views/settings/project/projectOwnership/ownerInput';
+import {ExternalLink} from '@sentry/scraps/link';
+
+import LoadingError from 'sentry/components/loadingError';
+import LoadingIndicator from 'sentry/components/loadingIndicator';
+import {t, tct} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {Event, Frame} from 'sentry/types/event';
+import type {TagWithTopValues} from 'sentry/types/group';
+import type {Organization} from 'sentry/types/organization';
+import type {Project} from 'sentry/types/project';
+import getApiUrl from 'sentry/utils/api/getApiUrl';
+import {uniq} from 'sentry/utils/array/uniq';
+import {useApiQuery} from 'sentry/utils/queryClient';
+import {safeURL} from 'sentry/utils/url/safeURL';
+import {useUser} from 'sentry/utils/useUser';
+import OwnerInput from 'sentry/views/settings/project/projectOwnership/ownerInput';
 
 type IssueOwnershipResponse = {
-  raw: string;
-  fallthrough: boolean;
-  dateCreated: string;
-  lastUpdated: string;
-  isActive: boolean;
   autoAssignment: boolean;
+  dateCreated: string;
+  fallthrough: boolean;
+  isActive: boolean;
+  lastUpdated: string;
+  raw: string;
 };
 
-type Props = AsyncComponent['props'] & {
+type Props = {
+  issueId: string;
+  onCancel: () => void;
   organization: Organization;
   project: Project;
-  issueId: string;
-  onSave: () => void;
+  eventData?: Event;
 };
 
-type State = {
-  ownership: null | IssueOwnershipResponse;
-  eventData: null | EventError;
-  urlTagData: null | TagWithTopValues;
-} & AsyncComponent['state'];
+function getFrameSuggestions(eventData?: Event) {
+  // pull frame data out of exception or the stacktrace
+  const entry = eventData?.entries?.find(({type}) =>
+    ['exception', 'stacktrace'].includes(type)
+  );
 
-class ProjectOwnershipModal extends AsyncComponent<Props, State> {
-  getEndpoints(): ReturnType<AsyncComponent['getEndpoints']> {
-    const {organization, project, issueId} = this.props;
-    return [
-      ['ownership', `/projects/${organization.slug}/${project.slug}/ownership/`],
-      [
-        'urlTagData',
-        `/issues/${issueId}/tags/url/`,
-        {},
-        {
-          allowError: error =>
-            // Allow for 404s
-            error.status === 404,
-        },
-      ],
-      ['eventData', `/issues/${issueId}/events/latest/`],
-    ];
+  let frames: Frame[] = [];
+  if (entry?.type === 'exception') {
+    frames = entry?.data?.values?.[0]?.stacktrace?.frames ?? [];
+  } else if (entry?.type === 'stacktrace') {
+    frames = entry?.data?.frames ?? [];
   }
 
-  renderBody() {
-    const {ownership, urlTagData, eventData} = this.state;
-    if (!ownership && !urlTagData && !eventData) {
-      return null;
-    }
-    const urls = urlTagData
-      ? urlTagData.topValues
-          .sort((a, b) => a.count - b.count)
-          .map(i => i.value)
-          .slice(0, 5)
-      : [];
+  // Only display in-app frames
+  frames = frames.filter(frame => frame?.inApp).reverse();
 
-    // pull frame data out of exception or the stacktrace
-    const entry = (eventData?.entries as Entry[]).find(({type}) =>
-      ['exception', 'stacktrace'].includes(type)
-    );
-
-    let frames: Frame[] = [];
-    if (entry?.type === 'exception') {
-      frames = entry?.data?.values?.[0]?.stacktrace?.frames ?? [];
-    }
-    if (entry?.type === 'stacktrace') {
-      frames = entry?.data?.frames ?? [];
-    }
-
-    // filter frames by inApp unless there would be 0
-    const inAppFrames = frames.filter(frame => frame.inApp);
-    if (inAppFrames.length > 0) {
-      frames = inAppFrames;
-    }
-
-    const paths = uniq(frames.map(frame => frame.filename || frame.absPath || ''))
-      .filter(i => i)
-      .slice(0, 30);
-
-    return (
-      <Fragment>
-        <p>{t('Match against Issue Data: (globbing syntax *, ? supported)')}</p>
-        <OwnerInput
-          {...this.props}
-          initialText={ownership?.raw || ''}
-          urls={urls}
-          paths={paths}
-        />
-      </Fragment>
-    );
-  }
+  return uniq(frames.map(frame => frame.filename || frame.absPath || ''));
 }
+
+/**
+ * Attempt to remove the origin from a URL
+ */
+function getUrlPath(maybeUrl?: string) {
+  if (!maybeUrl) {
+    return '';
+  }
+
+  const parsedURL = safeURL(maybeUrl);
+  if (!parsedURL) {
+    return maybeUrl;
+  }
+
+  return `*${parsedURL.pathname}`;
+}
+
+function OwnershipSuggestions({
+  paths,
+  urls,
+  eventData,
+}: {
+  paths: string[];
+  urls: string[];
+  eventData?: Event;
+}) {
+  const user = useUser();
+  if (!user.email) {
+    return null;
+  }
+
+  const pathSuggestion = paths.length ? `path:${paths[0]} ${user.email}` : null;
+  const urlSuggestion = urls.length ? `url:${getUrlPath(urls[0])} ${user.email}` : null;
+
+  const transactionTag = eventData?.tags?.find(({key}) => key === 'transaction');
+  const transactionSuggestion = transactionTag
+    ? `tags.transaction:${transactionTag.value} ${user.email}`
+    : null;
+
+  return (
+    <StyledPre>
+      # {t('Here’s some suggestions based on this issue')}
+      <br />
+      {[pathSuggestion, urlSuggestion, transactionSuggestion]
+        .filter(x => x)
+        .map(suggestion => (
+          <Fragment key={suggestion}>
+            {suggestion}
+            <br />
+          </Fragment>
+        ))}
+    </StyledPre>
+  );
+}
+
+function ProjectOwnershipModal({
+  organization,
+  project,
+  issueId,
+  eventData,
+  onCancel,
+}: Props) {
+  const {
+    data: urlTagData,
+    isPending: isUrlTagDataPending,
+    isError: isUrlTagDataError,
+    error,
+  } = useApiQuery<TagWithTopValues>(
+    [
+      getApiUrl(`/organizations/$organizationIdOrSlug/issues/$issueId/tags/$key/`, {
+        path: {organizationIdOrSlug: organization.slug, issueId, key: 'url'},
+      }),
+    ],
+    {staleTime: 0}
+  );
+
+  const {
+    data: ownership,
+    isPending: isOwnershipPending,
+    isError: isOwnershipError,
+  } = useApiQuery<IssueOwnershipResponse>(
+    [
+      getApiUrl(`/projects/$organizationIdOrSlug/$projectIdOrSlug/ownership/`, {
+        path: {organizationIdOrSlug: organization.slug, projectIdOrSlug: project.slug},
+      }),
+    ],
+    {
+      staleTime: 0,
+    }
+  );
+
+  if (isOwnershipPending || isUrlTagDataPending) {
+    return <LoadingIndicator />;
+  }
+
+  if (isOwnershipError || (isUrlTagDataError && error.status !== 404)) {
+    return <LoadingError />;
+  }
+
+  if (!ownership) {
+    return null;
+  }
+
+  const urls = urlTagData
+    ? urlTagData.topValues
+        .sort((a, b) => a.count - b.count)
+        .map(i => i.value)
+        .slice(0, 5)
+    : [];
+  const paths = getFrameSuggestions(eventData);
+
+  return (
+    <Fragment>
+      <Fragment>
+        <Description>
+          {tct(
+            'Assign issues based on custom rules. To learn more, [docs:read the docs].',
+            {
+              docs: (
+                <ExternalLink href="https://docs.sentry.io/product/issues/issue-owners/" />
+              ),
+            }
+          )}
+        </Description>
+        <OwnershipSuggestions paths={paths} urls={urls} eventData={eventData} />
+      </Fragment>
+      <OwnerInput
+        organization={organization}
+        project={project}
+        initialText={ownership?.raw || ''}
+        urls={urls}
+        paths={paths}
+        dateUpdated={ownership.lastUpdated}
+        onCancel={onCancel}
+        page="issue_details"
+      />
+    </Fragment>
+  );
+}
+
+const Description = styled('p')`
+  margin-bottom: ${space(1)};
+`;
+
+const StyledPre = styled('pre')`
+  word-break: break-word;
+  padding: ${space(2)};
+  line-height: 1.6;
+  color: ${p => p.theme.tokens.content.secondary};
+`;
 
 export default ProjectOwnershipModal;

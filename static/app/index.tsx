@@ -30,17 +30,14 @@
 //
 // 3. App initialization does the following...
 //
-//   a. Initalize the ConfigStore with clinet-config data.
+//   a. Initialize the ConfigStore with client-config data.
 //
-//   b. Setup the colorscheme event handlers, for matching the system
-//      colorscheme.
-//
-//   c. Initialize the Sentry SDK. This includes setting up integrations for
+//   b. Initialize the Sentry SDK. This includes setting up integrations for
 //      routing and tracing.
 //
-//   d. The <Main /> component is rendered. See step 4 for more details.
+//   c. The <Main /> component is rendered. See step 4 for more details.
 //
-//   e. Run global init-queue tasks. These are essentially functions registered
+//   d. Run global init-queue tasks. These are essentially functions registered
 //      in the `window.__onSentryInit` array from outside of the app. This is
 //      specifically for old-style pages rendered as django templates, but
 //      still need React frontend components.
@@ -61,21 +58,49 @@
 //    |                            parts of the application (such as loading
 //    |                            your org list)
 //    |
-//    <OrganizationDetails>    <-- Most routes live within the
-//                                 OrganizationDetails, which handles loading
+//    <OrganizationLayout>     <-- Most routes live within the
+//                                 OrganizationLayout, which handles loading
 //                                 details for the org, projects, and teams.
+//
+//
+// Did you read through this whole thing and don't even work here? [1]
+//
+// [1]: https://sentry.io/careers/
 
 async function app() {
   // We won't need initalizeMainImport until we complete bootstrapping.
   // Initaite the fetch, just don't await it until we need it.
-  const initalizeMainImport = import('app/bootstrap/initializeMain');
-  const bootstrapImport = import('app/bootstrap');
+  const initalizeMainImport = import('sentry/bootstrap/initializeMain');
+  const bootstrapImport = import('sentry/bootstrap');
 
   const {bootstrap} = await bootstrapImport;
   const config = await bootstrap();
 
+  if (config.sentryMode === 'SELF_HOSTED') {
+    const {initializeMain} = await initalizeMainImport;
+    initializeMain(config);
+    return;
+  }
+
+  // We have split up the imports this way so that locale is initialized as
+  // early as possible, (e.g. before `registerHooks` is imported otherwise the
+  // imports in `registerHooks` will not be in the correct locale.
+  // eslint-disable-next-line boundaries/element-types -- getsentry entrypoint
+  const registerHooksImport = import('getsentry/registerHooks');
+  // eslint-disable-next-line boundaries/element-types -- getsentry entrypoint
+  const initalizeBundleMetricsImport = import('getsentry/initializeBundleMetrics');
+
+  // getsentry augments Sentry's application through a 'hook' mechanism. Sentry
+  // provides various hooks into parts of its application. Thus all getsentry
+  // functionality is initialized by registering its hook functions.
+  const {default: registerHooks} = await registerHooksImport;
+  registerHooks();
+
   const {initializeMain} = await initalizeMainImport;
   initializeMain(config);
+
+  const {initializeBundleMetrics} = await initalizeBundleMetricsImport;
+  initializeBundleMetrics();
 }
 
 app();

@@ -1,25 +1,42 @@
-import * as React from 'react';
+import {memo} from 'react';
 import styled from '@emotion/styled';
 
-import Avatar from 'app/components/avatar';
-import overflowEllipsis from 'app/styles/overflowEllipsis';
-import space from 'app/styles/space';
-import {AvatarProject, Organization, Team} from 'app/types';
+import {
+  ActorAvatar,
+  OrganizationAvatar,
+  ProjectAvatar,
+  TeamAvatar,
+  UserAvatar,
+} from '@sentry/scraps/avatar';
+import {Flex} from '@sentry/scraps/layout';
 
-type Props = {
-  displayName: React.ReactNode;
-  hideName?: boolean; // Hides the main display name
-  hideAvatar?: boolean;
+import {space, type ValidSize} from 'sentry/styles/space';
+import type {Actor} from 'sentry/types/core';
+import type {Organization, Team} from 'sentry/types/organization';
+import type {AvatarProject} from 'sentry/types/project';
+import type {AvatarUser} from 'sentry/types/user';
+
+export interface BaseBadgeProps {
   avatarProps?: Record<string, any>;
   avatarSize?: number;
+  className?: string;
   description?: React.ReactNode;
-  team?: Team;
+  // Hides the main display name
+  hideAvatar?: boolean;
+  hideName?: boolean;
+  onClick?: React.HTMLAttributes<HTMLDivElement>['onClick'];
+}
+
+interface AllBaseBadgeProps extends BaseBadgeProps {
+  displayName: React.ReactNode;
+  actor?: Actor;
   organization?: Organization;
   project?: AvatarProject;
-  className?: string;
-};
+  team?: Team;
+  user?: AvatarUser;
+}
 
-const BaseBadge = React.memo(
+export const BaseBadge = memo(
   ({
     displayName,
     hideName = false,
@@ -27,52 +44,87 @@ const BaseBadge = React.memo(
     avatarProps = {},
     avatarSize = 24,
     description,
+    onClick,
     team,
+    user,
     organization,
     project,
+    actor,
     className,
-  }: Props) => (
-    <Wrapper className={className}>
-      {!hideAvatar && (
-        <StyledAvatar
-          {...avatarProps}
-          size={avatarSize}
-          hideName={hideName}
-          team={team}
-          organization={organization}
-          project={project}
-        />
-      )}
+  }: AllBaseBadgeProps) => {
+    // Space items appropriatley depending on avatar size
+    const wrapperGap: ValidSize = avatarSize <= 14 ? 0.5 : avatarSize <= 20 ? 0.75 : 1;
 
-      {(!hideName || !!description) && (
-        <DisplayNameAndDescription>
-          {!hideName && (
-            <DisplayName data-test-id="badge-display-name">{displayName}</DisplayName>
-          )}
-          {!!description && <Description>{description}</Description>}
-        </DisplayNameAndDescription>
-      )}
-    </Wrapper>
-  )
+    return (
+      <Flex
+        align="center"
+        flexShrink={0}
+        className={className}
+        style={{gap: space(wrapperGap)}}
+        onClick={onClick}
+      >
+        {!hideAvatar && (
+          <EntityAvatarType
+            team={team}
+            user={user}
+            organization={organization}
+            project={project}
+            actor={actor}
+            avatarProps={{...avatarProps, size: avatarSize}}
+          />
+        )}
+
+        {(!hideName || !!description) && (
+          <DisplayNameAndDescription>
+            {!hideName && (
+              <DisplayName data-test-id="badge-display-name">{displayName}</DisplayName>
+            )}
+            {!!description && <Description>{description}</Description>}
+          </DisplayNameAndDescription>
+        )}
+      </Flex>
+    );
+  }
 );
 
-export default BaseBadge;
+function EntityAvatarType({
+  user,
+  team,
+  organization,
+  project,
+  actor,
+  avatarProps,
+}: Pick<
+  AllBaseBadgeProps,
+  'user' | 'team' | 'organization' | 'project' | 'actor' | 'avatarProps'
+>) {
+  if (user) {
+    return <UserAvatar user={user} {...avatarProps} />;
+  }
 
-const Wrapper = styled('div')`
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-`;
+  if (team) {
+    return <TeamAvatar team={team} {...avatarProps} />;
+  }
 
-const StyledAvatar = styled(Avatar)<{hideName: boolean}>`
-  margin-right: ${p => (p.hideName ? 0 : space(1))};
-  flex-shrink: 0;
-`;
+  if (organization) {
+    return <OrganizationAvatar organization={organization} {...avatarProps} />;
+  }
+
+  if (project) {
+    return <ProjectAvatar project={project} {...avatarProps} />;
+  }
+
+  if (actor) {
+    return <ActorAvatar actor={actor} {...avatarProps} />;
+  }
+
+  return null;
+}
 
 const DisplayNameAndDescription = styled('div')`
   display: flex;
   flex-direction: column;
-  line-height: 1;
+  line-height: 1.2;
   overflow: hidden;
 `;
 
@@ -85,7 +137,11 @@ const DisplayName = styled('span')`
 const Description = styled('div')`
   font-size: 0.875em;
   margin-top: ${space(0.25)};
-  color: ${p => p.theme.gray300};
+  color: ${p => p.theme.tokens.content.secondary};
   line-height: 14px;
-  ${overflowEllipsis};
+  display: block;
+  width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 `;

@@ -1,10 +1,11 @@
 from sentry import analytics
 
 
+@analytics.eventclass("join_request.created")
 class JoinRequestCreatedEvent(analytics.Event):
-    type = "join_request.created"
-
-    attributes = (analytics.Attribute("member_id"), analytics.Attribute("organization_id"))
+    member_id: int
+    organization_id: int
+    referrer: str | None = None
 
 
 analytics.register(JoinRequestCreatedEvent)

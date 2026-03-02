@@ -1,8 +1,15 @@
-from typing import List, Optional
+from __future__ import annotations
 
+from django.contrib.auth import REDIRECT_FIELD_NAME
+from django.http.request import HttpRequest
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.exceptions import APIException
+
+from sentry.models.organization import Organization
+from sentry.organizations.services.organization.model import RpcOrganization
+from sentry.utils.auth import construct_link_with_query
+from sentry.utils.http import is_using_customer_domain
 
 
 class ResourceDoesNotExist(APIException):
@@ -29,22 +36,18 @@ class SentryAPIException(APIException):
         self.detail = {"detail": detail}
 
 
+class BadRequest(SentryAPIException):
+    status_code = status.HTTP_400_BAD_REQUEST
+    code = "invalid-request"
+    message = "Invalid request"
+
+
 class ParameterValidationError(SentryAPIException):
     status_code = status.HTTP_400_BAD_REQUEST
     code = "parameter-validation-error"
 
-    def __init__(self, message: str, context: Optional[List[str]] = None) -> None:
+    def __init__(self, message: str, context: list[str] | None = None) -> None:
         super().__init__(message=message, context=".".join(context or []))
-
-
-class ProjectMoved(SentryAPIException):
-    status_code = status.HTTP_302_FOUND
-    # code/message currently don't get used
-    code = "resource-moved"
-    message = "Resource has been moved"
-
-    def __init__(self, new_url, slug):
-        super().__init__(url=new_url, slug=slug)
 
 
 class SsoRequired(SentryAPIException):
@@ -52,8 +55,21 @@ class SsoRequired(SentryAPIException):
     code = "sso-required"
     message = "Must login via SSO"
 
-    def __init__(self, organization):
-        super().__init__(loginUrl=reverse("sentry-auth-organization", args=[organization.slug]))
+    def __init__(
+        self,
+        organization: Organization | RpcOrganization,
+        request: HttpRequest,
+        after_login_redirect=None,
+    ):
+        login_url = reverse("sentry-auth-organization", args=[organization.slug])
+        if is_using_customer_domain(request):
+            login_url = organization.absolute_url(path=login_url)
+
+        if after_login_redirect:
+            query_params = {REDIRECT_FIELD_NAME: after_login_redirect}
+            login_url = construct_link_with_query(path=login_url, query_params=query_params)
+
+        super().__init__(loginUrl=login_url)
 
 
 class MemberDisabledOverLimit(SentryAPIException):
@@ -73,6 +89,17 @@ class SuperuserRequired(SentryAPIException):
     message = "You need to re-authenticate for superuser."
 
 
+class StaffRequired(SentryAPIException):
+    status_code = status.HTTP_403_FORBIDDEN
+    code = "staff-required"
+    message = "You need to re-authenticate for staff."
+
+
+class DataSecrecyError(SentryAPIException):
+    status_code = status.HTTP_401_UNAUTHORIZED
+    code = "data-secrecy"
+
+
 class SudoRequired(SentryAPIException):
     status_code = status.HTTP_401_UNAUTHORIZED
     code = "sudo-required"
@@ -82,10 +109,10 @@ class SudoRequired(SentryAPIException):
         super().__init__(username=user.username)
 
 
-class EmailVerificationRequired(SentryAPIException):
+class PrimaryEmailVerificationRequired(SentryAPIException):
     status_code = status.HTTP_401_UNAUTHORIZED
-    code = "email-verification-required"
-    message = "Email verification required."
+    code = "primary-email-verification-required"
+    message = "Primary email verification required."
 
     def __init__(self, user):
         super().__init__(username=user.username)
@@ -97,39 +124,15 @@ class TwoFactorRequired(SentryAPIException):
     message = "Organization requires two-factor authentication to be enabled"
 
 
-class AppConnectAuthenticationError(SentryAPIException):
-    status_code = status.HTTP_401_UNAUTHORIZED
-    code = "app-connect-authentication-error"
-    message = "App connect authentication error"
-
-
-class AppConnectMultipleSourcesError(SentryAPIException):
-    status_code = status.HTTP_401_UNAUTHORIZED
-    code = "app-connect-multiple-sources-error"
-    message = "Only one Apple App Store Connect application is allowed in this project"
-
-
-class ItunesAuthenticationError(SentryAPIException):
-    status_code = status.HTTP_401_UNAUTHORIZED
-    code = "itunes-authentication-error"
-    message = "Itunes authentication error"
-
-
-class ItunesSmsBlocked(SentryAPIException):
-    status_code = status.HTTP_423_LOCKED
-    code = "itunes-sms-blocked-error"
-    message = "Blocked from requesting more SMS codes for an unspecified period of time"
-
-
-class ItunesTwoFactorAuthenticationRequired(SentryAPIException):
-    status_code = status.HTTP_401_UNAUTHORIZED
-    code = "itunes-2fa-required"
-    message = "Itunes requires two-factor authentication to be enabled"
-
-
 class ConflictError(APIException):
     status_code = status.HTTP_409_CONFLICT
 
 
 class InvalidRepository(Exception):
     pass
+
+
+class RequestTimeout(SentryAPIException):
+    status_code = status.HTTP_408_REQUEST_TIMEOUT
+    code = "request-timeout"
+    message = "Proxied request timed out"

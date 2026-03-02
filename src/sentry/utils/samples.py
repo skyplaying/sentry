@@ -1,19 +1,22 @@
+import logging
 import os.path
 import random
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-import pytz
+import sentry_sdk
+from django.core.exceptions import SuspiciousFileOperation
 
-from sentry.constants import DATA_ROOT, INTEGRATION_ID_TO_PLATFORM_DATA
-from sentry.event_manager import EventManager
+from sentry.constants import DATA_ROOT, INTEGRATION_ID_TO_PLATFORM_DATA, STATIC_ROOT
+from sentry.event_manager import EventManager, set_tag
 from sentry.interfaces.user import User as UserInterface
+from sentry.spans.grouping.utils import hash_values
 from sentry.utils import json
-from sentry.utils.canonical import CanonicalKeyDict
-from sentry.utils.dates import to_timestamp
+from sentry.utils.platform_categories import CONSOLES
 
-epoch = datetime.utcfromtimestamp(0)
+logger = logging.getLogger(__name__)
+epoch = datetime.fromtimestamp(0)
 
 
 def random_normal(mu, sigma, minimum, maximum=None):
@@ -21,11 +24,6 @@ def random_normal(mu, sigma, minimum, maximum=None):
     if maximum is not None:
         random_value = min(random_value, maximum)
     return random_value
-
-
-def milliseconds_ago(now, milliseconds):
-    ago = now - timedelta(milliseconds=milliseconds)
-    return (ago - epoch).total_seconds()
 
 
 def random_ip():
@@ -107,14 +105,17 @@ def generate_user(username=None, email=None, ip_address=None, id=None):
 
 
 def load_data(
-    platform,
-    default=None,
-    sample_name=None,
+    platform: str,
+    default: str | None = None,
+    sample_name: str | None = None,
     timestamp=None,
     start_timestamp=None,
-    trace=None,
-    span_id=None,
+    trace: str | None = None,
+    span_id: str | None = None,
     spans=None,
+    trace_context=None,
+    fingerprint=None,
+    event_id=None,
 ):
     # NOTE: Before editing this data, make sure you understand the context
     # in which its being used. It is NOT only used for local development and
@@ -132,18 +133,33 @@ def load_data(
         language = platform_data["language"]
 
     samples_root = os.path.join(DATA_ROOT, "samples")
-    all_samples = {f for f in os.listdir(samples_root) if f.endswith(".json")}
 
-    for platform in (platform, language, default):
-        if not platform:
+    # this loop will try to load the specified platform first, but if we do not
+    # have a specific sample for it, we then move on to the `language`, then the `default`.
+    # The `default` is set to `javascript` in ./src/sentry/api/endpoints/project_create_sample.py
+    # on the `ProjectCreateSampleEndpoint`
+    for sample in (platform, language, default):
+        if not sample:
             continue
 
-        # Verify by checking if the file is within our folder explicitly
-        # avoids being able to have a name that invokes traversing directories.
-        json_path = f"{platform}.json"
+        # Verify the requested path is valid and disallow path traversal attempts
+        json_file = f"{sample}.json"
 
-        if json_path not in all_samples:
+        expected_commonpath = os.path.realpath(
+            samples_root
+        )  # .realpath() ensures symlinks are handled
+        json_path = os.path.join(samples_root, json_file)
+        json_real_path = os.path.realpath(json_path)
+
+        if expected_commonpath != os.path.commonpath([expected_commonpath, json_real_path]):
+            raise SuspiciousFileOperation("potential path traversal attack detected")
+
+        # the requested `sample` does not exist, so continue through to the next iteration
+        if not os.path.exists(json_path):
             continue
+
+        if not os.path.isfile(json_path):
+            raise IsADirectoryError("expected file but found a directory instead")
 
         if not sample_name:
             try:
@@ -152,16 +168,15 @@ def load_data(
                 pass
 
         # XXX: At this point, it's assumed that `json_path` was safely found
-        # within `samples_root` due to the check above and cannot traverse
+        # within `samples_root` due to the checks above and cannot traverse
         # into paths.
-        with open(os.path.join(samples_root, json_path)) as fp:
+        with open(json_path) as fp:
             data = json.load(fp)
             break
 
     if data is None:
         return
 
-    data = CanonicalKeyDict(data)
     if platform in ("csp", "hkpk", "expectct", "expectstaple"):
         return data
 
@@ -169,15 +184,18 @@ def load_data(
     if timestamp is None:
         timestamp = datetime.utcnow() - timedelta(minutes=1)
         timestamp = timestamp - timedelta(microseconds=timestamp.microsecond % 1000)
-    timestamp = timestamp.replace(tzinfo=pytz.utc)
-    data.setdefault("timestamp", to_timestamp(timestamp))
+    timestamp = timestamp.replace(tzinfo=timezone.utc)
+    data.setdefault("timestamp", timestamp.timestamp())
+    if start_timestamp:
+        start_timestamp = start_timestamp.replace(tzinfo=timezone.utc)
+        data.setdefault("start_timestamp", start_timestamp.timestamp())
 
     if data.get("type") == "transaction":
         if start_timestamp is None:
             start_timestamp = timestamp - timedelta(seconds=3)
         else:
-            start_timestamp = start_timestamp.replace(tzinfo=pytz.utc)
-        data["start_timestamp"] = to_timestamp(start_timestamp)
+            start_timestamp = start_timestamp.replace(tzinfo=timezone.utc)
+        data["start_timestamp"] = start_timestamp.timestamp()
 
         if trace is None:
             trace = uuid4().hex
@@ -191,7 +209,9 @@ def load_data(
                 tag[1] = span_id
         data["contexts"]["trace"]["trace_id"] = trace
         data["contexts"]["trace"]["span_id"] = span_id
-        if spans:
+        if trace_context is not None:
+            data["contexts"]["trace"].update(trace_context)
+        if spans is not None:
             data["spans"] = spans
 
         for span in data.get("spans", []):
@@ -216,16 +236,41 @@ def load_data(
         if measurements:
             measurement_markers = {}
             for key, entry in measurements.items():
-                if key in ["fp", "fcp", "lcp", "fid"]:
+                if key in [
+                    "fp",
+                    "fcp",
+                    "lcp",
+                    "fid",
+                    "time_to_initial_display",
+                    "time_to_full_display",
+                ]:
                     measurement_markers[f"mark.{key}"] = {
-                        "value": round(data["start_timestamp"] + entry["value"] / 1000, 3)
+                        "unit": "none",
+                        "value": round(data["start_timestamp"] + entry["value"] / 1000, 3),
                     }
             measurements.update(measurement_markers)
 
+    if fingerprint is not None:
+        if data.get("type") == "transaction":
+            for f in fingerprint:
+                f_data = f.split("-", 1)
+                if len(f_data) < 2:
+                    raise ValueError(
+                        "Invalid performance fingerprint data. Format must be 'group_type-fingerprint'."
+                    )
+        else:
+            if not isinstance(fingerprint, list):
+                raise ValueError("Invalid fingerprint. Fingerprint must be a list of strings.")
+
+        data["fingerprint"] = fingerprint
+
+    if event_id is not None:
+        data["event_id"] = event_id
+
     data["platform"] = platform
-    # XXX: Message is a legacy alias for logentry. Do not overwrite if set.
-    if "message" not in data:
-        data["message"] = f"This is an example {sample_name or platform} exception"
+    data.setdefault(
+        "logentry", {"formatted": f"This is an example {sample_name or platform} exception"}
+    )
     data.setdefault(
         "user",
         generate_user(ip_address="127.0.0.1", username="sentry", id=1, email="sentry@example.com"),
@@ -263,6 +308,140 @@ def load_data(
     return data
 
 
+def load_console_screenshot():
+    expected_commonpath = os.path.realpath(os.path.join(STATIC_ROOT, "images"))
+    image_path = os.path.join(expected_commonpath, "console-screenshot.png")
+    image_real_path = os.path.realpath(image_path)
+
+    if expected_commonpath != os.path.commonpath([expected_commonpath, image_real_path]):
+        raise SuspiciousFileOperation("illegal path access")
+
+    if os.path.exists(image_path):
+        return image_path
+    else:
+        return None
+
+
+def create_console_screenshot_attachment(event, project, platform):
+    from sentry.attachments.base import CachedAttachment
+    from sentry.models.eventattachment import EventAttachment
+
+    screenshot_path = load_console_screenshot()
+
+    if not screenshot_path:
+        return None
+
+    try:
+        with open(screenshot_path, "rb") as f:
+            image_data = f.read()
+    except OSError:
+        return None
+
+    try:
+        attachment = CachedAttachment(
+            name="screenshot.png",
+            content_type="image/png",
+            data=image_data,
+            type="event.attachment",
+        )
+
+        file_result = EventAttachment.putfile(project.id, attachment)
+
+        EventAttachment.objects.create(
+            event_id=event.event_id,
+            project_id=project.id,
+            group_id=event.group_id,
+            type=attachment.type,
+            name=attachment.name,
+            content_type=file_result.content_type,
+            size=file_result.size,
+            sha1=file_result.sha1,
+            blob_path=file_result.blob_path,
+        )
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+        return None
+
+
+def create_n_plus_one_issue(data):
+    timestamp = datetime.fromtimestamp(data["start_timestamp"])
+    n_plus_one_db_duration = timedelta(milliseconds=100)
+    n_plus_one_db_current_offset = timestamp
+    parent_span_id = data["spans"][0]["parent_span_id"]
+    trace_id = data["contexts"]["trace"]["trace_id"]
+    data["spans"].append(
+        {
+            "timestamp": (timestamp + n_plus_one_db_duration).timestamp(),
+            "start_timestamp": (timestamp + timedelta(milliseconds=10)).timestamp(),
+            "description": "SELECT `books_book`.`id`, `books_book`.`title`, `books_book`.`author_id` FROM `books_book` ORDER BY `books_book`.`id` DESC LIMIT 10",
+            "op": "db",
+            "parent_span_id": parent_span_id,
+            "span_id": uuid4().hex[:16],
+            "hash": "858fea692d4d93e8",
+            "trace_id": trace_id,
+        }
+    )
+    for i in range(200):
+        n_plus_one_db_duration += timedelta(milliseconds=200) + timedelta(milliseconds=1)
+        n_plus_one_db_current_offset = timestamp + n_plus_one_db_duration
+        data["spans"].append(
+            {
+                "timestamp": (
+                    n_plus_one_db_current_offset + timedelta(milliseconds=200)
+                ).timestamp(),
+                "start_timestamp": (
+                    n_plus_one_db_current_offset + timedelta(milliseconds=1)
+                ).timestamp(),
+                "description": "SELECT `books_author`.`id`, `books_author`.`name` FROM `books_author` WHERE `books_author`.`id` = %s LIMIT 21",
+                "op": "db",
+                "span_id": uuid4().hex[:16],
+                "parent_span_id": parent_span_id,
+                "hash": "63f1e89e6a073441",
+                "trace_id": trace_id,
+            }
+        )
+    data["spans"].append(
+        {
+            "timestamp": (
+                timestamp + n_plus_one_db_duration + timedelta(milliseconds=200)
+            ).timestamp(),
+            "start_timestamp": timestamp.timestamp(),
+            "description": "new",
+            "op": "django.view",
+            "parent_span_id": uuid4().hex[:16],
+            "span_id": parent_span_id,
+            "hash": "0f43fb6f6e01ca52",
+            "trace_id": trace_id,
+        }
+    )
+
+
+def create_db_main_thread_issue(data):
+    timestamp = datetime.fromtimestamp(data["start_timestamp"])
+    span_duration = timedelta(milliseconds=100)
+    parent_span_id = data["spans"][0]["parent_span_id"]
+    trace_id = data["contexts"]["trace"]["trace_id"]
+    data["spans"].append(
+        {
+            "timestamp": (timestamp + span_duration).timestamp(),
+            "start_timestamp": (timestamp + timedelta(milliseconds=10)).timestamp(),
+            "description": "SELECT `books_book`.`id`, `books_book`.`title`, `books_book`.`author_id` FROM `books_book` ORDER BY `books_book`.`id` DESC LIMIT 10",
+            "op": "db",
+            "parent_span_id": parent_span_id,
+            "span_id": uuid4().hex[:16],
+            "hash": "858fea692d4d93e8",
+            "trace_id": trace_id,
+            "data": {"blocked_main_thread": True},
+        }
+    )
+
+
+PERFORMANCE_ISSUE_CREATORS = {
+    "n+1": create_n_plus_one_issue,
+    "db-main-thread": create_db_main_thread_issue,
+}
+
+
 def create_sample_event(
     project,
     platform=None,
@@ -274,6 +453,8 @@ def create_sample_event(
     trace=None,
     span_id=None,
     spans=None,
+    tagged=False,
+    performance_issues=None,
     **kwargs,
 ):
     if not platform and not default:
@@ -290,16 +471,28 @@ def create_sample_event(
         spans,
     )
 
-    if not data:
-        return
-    if "parent_span_id" in kwargs:
-        data["contexts"]["trace"]["parent_span_id"] = kwargs.pop("parent_span_id")
+    for key in ["parent_span_id", "hash", "exclusive_time"]:
+        if key in kwargs:
+            data["contexts"]["trace"][key] = kwargs.pop(key)
+    if performance_issues:
+        for issue in performance_issues:
+            if issue in PERFORMANCE_ISSUE_CREATORS:
+                PERFORMANCE_ISSUE_CREATORS[issue](data)
 
     data.update(kwargs)
-    return create_sample_event_basic(data, project.id, raw=raw)
+    event = create_sample_event_basic(data, project.id, raw=raw, tagged=tagged)
+
+    if platform in CONSOLES:
+        create_console_screenshot_attachment(event, project, platform)
+
+    return event
 
 
-def create_sample_event_basic(data, project_id, raw=True, skip_send_first_transaction=False):
+def create_sample_event_basic(
+    data, project_id, raw=True, skip_send_first_transaction=False, tagged=False
+):
+    if tagged:
+        set_tag(data, "sample_event", "yes")
     manager = EventManager(data)
     manager.normalize()
     return manager.save(
@@ -310,23 +503,32 @@ def create_sample_event_basic(data, project_id, raw=True, skip_send_first_transa
 def create_trace(slow, start_timestamp, timestamp, user, trace_id, parent_span_id, data):
     """A recursive function that creates the events of a trace"""
     frontend = data.get("frontend")
+    mobile = data.get("mobile")
+
     current_span_id = uuid4().hex[:16]
     spans = []
     new_start = start_timestamp + timedelta(milliseconds=random_normal(50, 25, 10))
     new_end = timestamp - timedelta(milliseconds=random_normal(50, 25, 10))
+
     for child in data["children"]:
         span_id = uuid4().hex[:16]
+        description = f"GET {child['transaction']}"
+        duration = random_normal((new_end - new_start).total_seconds(), 0.25, 0.01)
         spans.append(
             {
                 "same_process_as_parent": True,
                 "op": "http",
-                "description": f"GET {child['transaction']}",
+                "description": description,
                 "data": {
-                    "duration": random_normal((new_end - new_start).total_seconds(), 0.25, 0.01),
+                    "duration": duration,
                     "offset": 0.02,
                 },
                 "span_id": span_id,
                 "trace_id": trace_id,
+                "hash": hash_values([description]),
+                # not the best but just set the exclusive time
+                # equal to the duration to get some span data
+                "exclusive_time": duration,
             }
         )
         create_trace(
@@ -338,10 +540,18 @@ def create_trace(slow, start_timestamp, timestamp, user, trace_id, parent_span_i
             span_id,
             child,
         )
+
+    if frontend:
+        platform = "javascript"
+    elif mobile:
+        platform = "android"
+    else:
+        platform = "python"
+
     for _ in range(data.get("errors", 0)):
         create_sample_event(
             project=data["project"],
-            platform="javascript" if frontend else "python",
+            platform=platform,
             user=user,
             transaction=data["transaction"],
             contexts={
@@ -352,27 +562,43 @@ def create_trace(slow, start_timestamp, timestamp, user, trace_id, parent_span_i
                 }
             },
         )
-    create_sample_event(
-        project=data["project"],
-        platform="javascript-transaction" if frontend else "transaction",
-        transaction=data["transaction"],
-        event_id=uuid4().hex,
-        user=user,
-        timestamp=timestamp,
-        start_timestamp=start_timestamp,
-        measurements={
+
+    if frontend:
+        txn_platform = "javascript-transaction"
+        measurements = {
             "fp": {"value": random_normal(1250 - 50, 200, 500)},
             "fcp": {"value": random_normal(1250 - 50, 200, 500)},
             "lcp": {"value": random_normal(2800 - 50, 400, 2000)},
             "fid": {"value": random_normal(5 - 0.125, 2, 1)},
         }
-        if frontend
-        else {},
+    elif mobile:
+        txn_platform = "android-transaction"
+        measurements = {
+            "time_to_initial_display": {"value": random_normal(2200 - 50, 400, 2000)},
+            "time_to_full_display": {"value": random_normal(3500 - 50, 400, 2000)},
+        }
+    else:
+        txn_platform = "transaction"
+        measurements = {}
+    create_sample_event(
+        project=data["project"],
+        platform=txn_platform,
+        transaction=data["transaction"],
+        event_id=uuid4().hex,
+        user=user,
+        timestamp=timestamp,
+        start_timestamp=start_timestamp,
+        measurements=measurements,
         # Root
         parent_span_id=parent_span_id,
         span_id=current_span_id,
         trace=trace_id,
         spans=spans,
+        hash=hash_values([data["transaction"]]),
+        performance_issues=data.get("performance_issues"),
+        # not the best but just set the exclusive time
+        # equal to the duration to get some span data
+        exclusive_time=(timestamp - start_timestamp).total_seconds(),
     )
     # try to give clickhouse some breathing room
     if slow:

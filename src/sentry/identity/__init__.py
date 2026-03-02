@@ -1,15 +1,4 @@
-from .base import *  # NOQA
-from .bitbucket import *  # NOQA
-from .github import *  # NOQA
-from .github_enterprise import *  # NOQA
-from .gitlab import *  # NOQA
-from .google import *  # NOQA
-from .manager import IdentityManager  # NOQA
-from .oauth2 import *  # NOQA
-from .slack import *  # NOQA
-from .vercel import *  # NOQA
-from .vsts import *  # NOQA
-from .vsts_extension import *  # NOQA
+from .manager import IdentityManager
 
 default_manager = IdentityManager()
 all = default_manager.all
@@ -17,15 +6,34 @@ get = default_manager.get
 exists = default_manager.exists
 register = default_manager.register
 unregister = default_manager.unregister
+is_login_provider = default_manager.is_login_provider
 
-# TODO(epurkhiser): Should this be moved into it's own plugin, it should be
-# initialized there.
-register(SlackIdentityProvider)  # NOQA
-register(GitHubIdentityProvider)  # NOQA
-register(GitHubEnterpriseIdentityProvider)  # NOQA
-register(VSTSIdentityProvider)  # NOQA
-register(VstsExtensionIdentityProvider)  # NOQA
-register(VercelIdentityProvider)  # NOQA
-register(BitbucketIdentityProvider)  # NOQA
-register(GitlabIdentityProvider)  # NOQA
-register(GoogleIdentityProvider)  # NOQA
+
+def _register_providers() -> None:
+    from .bitbucket.provider import BitbucketIdentityProvider
+    from .discord.provider import DiscordIdentityProvider
+    from .github.provider import GitHubIdentityProvider
+    from .github_enterprise.provider import GitHubEnterpriseIdentityProvider
+    from .gitlab.provider import GitlabIdentityProvider
+    from .google.provider import GoogleIdentityProvider
+    from .slack.provider import SlackIdentityProvider
+    from .vercel.provider import VercelIdentityProvider
+    from .vsts.provider import VSTSIdentityProvider, VSTSNewIdentityProvider
+    from .vsts_extension.provider import VstsExtensionIdentityProvider
+
+    # TODO(epurkhiser): Should this be moved into it's own plugin, it should be
+    # initialized there.
+    register(SlackIdentityProvider)
+    register(GitHubIdentityProvider)
+    register(GitHubEnterpriseIdentityProvider)
+    register(VSTSNewIdentityProvider)
+    register(VSTSIdentityProvider)
+    register(VstsExtensionIdentityProvider)
+    register(VercelIdentityProvider)
+    register(BitbucketIdentityProvider)
+    register(GitlabIdentityProvider)
+    register(GoogleIdentityProvider)
+    register(DiscordIdentityProvider)
+
+
+_register_providers()

@@ -1,29 +1,32 @@
 import {Fragment} from 'react';
-import {browserHistory} from 'react-router';
 import styled from '@emotion/styled';
-import {Location} from 'history';
+import type {Location} from 'history';
 
-import BreakdownBars from 'app/components/charts/breakdownBars';
-import ErrorPanel from 'app/components/charts/errorPanel';
-import {SectionHeading} from 'app/components/charts/styles';
-import EmptyStateWarning from 'app/components/emptyStateWarning';
-import Placeholder from 'app/components/placeholder';
-import QuestionTooltip from 'app/components/questionTooltip';
-import {IconWarning} from 'app/icons';
-import {t} from 'app/locale';
-import {Organization} from 'app/types';
-import DiscoverQuery from 'app/utils/discover/discoverQuery';
-import EventView from 'app/utils/discover/eventView';
-import {MutableSearch} from 'app/utils/tokenizeSearch';
-import {getTermHelp, PERFORMANCE_TERM} from 'app/views/performance/data';
+import BreakdownBars from 'sentry/components/charts/breakdownBars';
+import ErrorPanel from 'sentry/components/charts/errorPanel';
+import {SectionHeading} from 'sentry/components/charts/styles';
+import EmptyStateWarning from 'sentry/components/emptyStateWarning';
+import Placeholder from 'sentry/components/placeholder';
+import QuestionTooltip from 'sentry/components/questionTooltip';
+import {IconWarning} from 'sentry/icons';
+import {t} from 'sentry/locale';
+import type {Organization} from 'sentry/types/organization';
+import {trackAnalytics} from 'sentry/utils/analytics';
+import DiscoverQuery from 'sentry/utils/discover/discoverQuery';
+import type EventView from 'sentry/utils/discover/eventView';
+import {MutableSearch} from 'sentry/utils/tokenizeSearch';
+import {useNavigate} from 'sentry/utils/useNavigate';
+import {getTermHelp, PerformanceTerm} from 'sentry/views/performance/data';
 
 type Props = {
-  organization: Organization;
-  location: Location;
   eventView: EventView;
+  location: Location;
+  organization: Organization;
 };
 
 function StatusBreakdown({eventView, location, organization}: Props) {
+  const navigate = useNavigate();
+
   const breakdownView = eventView
     .withColumns([
       {kind: 'function', function: ['count', '', '', undefined]},
@@ -37,7 +40,7 @@ function StatusBreakdown({eventView, location, organization}: Props) {
         {t('Status Breakdown')}
         <QuestionTooltip
           position="top"
-          title={getTermHelp(organization, PERFORMANCE_TERM.STATUS_BREAKDOWN)}
+          title={getTermHelp(organization, PerformanceTerm.STATUS_BREAKDOWN)}
           size="sm"
         />
       </SectionHeading>
@@ -45,7 +48,7 @@ function StatusBreakdown({eventView, location, organization}: Props) {
         eventView={breakdownView}
         location={location}
         orgSlug={organization.slug}
-        referrer="api.performance.status-breakdown"
+        referrer="api.insights.status-breakdown"
       >
         {({isLoading, error, tableData}) => {
           if (isLoading) {
@@ -54,7 +57,7 @@ function StatusBreakdown({eventView, location, organization}: Props) {
           if (error) {
             return (
               <ErrorPanel height="124px">
-                <IconWarning color="gray300" size="lg" />
+                <IconWarning variant="muted" size="lg" />
               </ErrorPanel>
             );
           }
@@ -65,13 +68,21 @@ function StatusBreakdown({eventView, location, organization}: Props) {
           }
           const points = tableData.data.map(row => ({
             label: String(row['transaction.status']),
-            value: parseInt(String(row.count), 10),
+            value: parseInt(String(row['count()']), 10),
             onClick: () => {
               const query = new MutableSearch(eventView.query);
+
+              // Strip default filters, as we don't want them to show in the
+              // search bar. See `generateEventView` in
+              // static/app/views/performance/transactionSummary/transactionOverview/index.tsx.
+              query.removeFilter('event.type').removeFilter('transaction');
+
               query
                 .removeFilter('!transaction.status')
-                .setFilterValues('transaction.status', [row['transaction.status']]);
-              browserHistory.push({
+                .setFilterValues('transaction.status', [
+                  row['transaction.status'] as string,
+                ]);
+              navigate({
                 pathname: location.pathname,
                 query: {
                   ...location.query,
@@ -79,6 +90,14 @@ function StatusBreakdown({eventView, location, organization}: Props) {
                   query: query.formatString(),
                 },
               });
+
+              trackAnalytics(
+                'performance_views.transaction_summary.status_breakdown_click',
+                {
+                  organization,
+                  status: row['transaction.status'] as string,
+                }
+              );
             },
           }));
           return <BreakdownBars data={points} />;

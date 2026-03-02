@@ -1,43 +1,83 @@
+import hashlib
+import hmac
 import ipaddress
 import logging
-import re
+from abc import ABC
+from collections.abc import Mapping
+from datetime import timezone
+from typing import Any
 
-import dateutil.parser
-from django.db import IntegrityError, transaction
-from django.http import Http404, HttpResponse
-from django.utils import timezone
+import orjson
+from dateutil.parser import parse as parse_date
+from django.db import IntegrityError, router, transaction
+from django.http import Http404, HttpRequest, HttpResponse
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
-from django.views.generic import View
 
+from sentry.api.api_owners import ApiOwner
+from sentry.api.api_publish_status import ApiPublishStatus
+from sentry.api.base import Endpoint, region_silo_endpoint
+from sentry.api.exceptions import SentryAPIException
+from sentry.integrations.base import IntegrationDomain
 from sentry.integrations.bitbucket.constants import BITBUCKET_IP_RANGES, BITBUCKET_IPS
-from sentry.models import Commit, CommitAuthor, Organization, Repository
+from sentry.integrations.services.integration.service import integration_service
+from sentry.integrations.source_code_management.webhook import SCMWebhook
+from sentry.integrations.types import IntegrationProviderSlug
+from sentry.integrations.utils.metrics import IntegrationWebhookEvent, IntegrationWebhookEventType
+from sentry.models.commit import Commit
+from sentry.models.commitauthor import CommitAuthor
+from sentry.models.organization import Organization
+from sentry.models.repository import Repository
 from sentry.plugins.providers import IntegrationRepositoryProvider
-from sentry.utils import json
+from sentry.utils.email import parse_email
 
 logger = logging.getLogger("sentry.webhooks")
 
 PROVIDER_NAME = "integrations:bitbucket"
 
 
-def parse_raw_user_email(raw):
-    # captures content between angle brackets
-    match = re.search("(?<=<).*(?=>$)", raw)
-    if match is None:
-        return
-    return match.group(0)
+def is_valid_signature(body: bytes, secret: str, signature: str) -> bool:
+    hash_object = hmac.new(
+        secret.encode("utf-8"),
+        msg=body,
+        digestmod=hashlib.sha256,
+    )
+    expected_signature = hash_object.hexdigest()
+
+    if not hmac.compare_digest(expected_signature, signature):
+        logger.info(
+            "%s.webhook.invalid-signature",
+            PROVIDER_NAME,
+            extra={"expected": expected_signature, "given": signature},
+        )
+        return False
+    return True
 
 
-def parse_raw_user_name(raw):
-    # captures content before angle bracket
-    return raw.split("<")[0].strip()
+class WebhookMissingSignatureException(SentryAPIException):
+    status_code = 400
+    code = f"{PROVIDER_NAME}.webhook.missing-signature"
+    message = "Missing webhook signature"
 
 
-class Webhook:
-    def __call__(self, organization, event):
-        raise NotImplementedError
+class WebhookUnsupportedSignatureMethodException(SentryAPIException):
+    status_code = 400
+    code = f"{PROVIDER_NAME}.webhook.unsupported-signature-method"
+    message = "Signature method is not supported"
 
-    def update_repo_data(self, repo, event):
+
+class WebhookInvalidSignatureException(SentryAPIException):
+    status_code = 400
+    code = f"{PROVIDER_NAME}.webhook.invalid-signature"
+    message = "Webhook signature is invalid"
+
+
+class BitbucketWebhook(SCMWebhook, ABC):
+    @property
+    def provider(self) -> str:
+        return IntegrationProviderSlug.BITBUCKET.value
+
+    def update_repo_data(self, repo: Repository, event: Mapping[str, Any]) -> None:
         """
         Given a webhook payload, update stored repo data if needed.
 
@@ -65,19 +105,20 @@ class Webhook:
             )
 
 
-class PushEventWebhook(Webhook):
+class PushEventWebhook(BitbucketWebhook):
     # https://confluence.atlassian.com/bitbucket/event-payloads-740262817.html#EventPayloads-Push
-    def __call__(self, organization, event):
+
+    @property
+    def event_type(self) -> IntegrationWebhookEventType:
+        return IntegrationWebhookEventType.PUSH
+
+    def __call__(self, event: Mapping[str, Any], **kwargs) -> None:
         authors = {}
 
-        try:
-            repo = Repository.objects.get(
-                organization_id=organization.id,
-                provider=PROVIDER_NAME,
-                external_id=str(event["repository"]["uuid"]),
-            )
-        except Repository.DoesNotExist:
-            raise Http404()
+        if not (repo := kwargs.get("repo")):
+            raise ValueError("Missing repo")
+        if not (organization := kwargs.get("organization")):
+            raise ValueError("Missing organization")
 
         # while we're here, make sure repo data is up to date
         self.update_repo_data(repo, event)
@@ -87,7 +128,7 @@ class PushEventWebhook(Webhook):
                 if IntegrationRepositoryProvider.should_ignore_commit(commit["message"]):
                     continue
 
-                author_email = parse_raw_user_email(commit["author"]["raw"])
+                author_email = parse_email(commit["author"]["raw"])
 
                 # TODO(dcramer): we need to deal with bad values here, but since
                 # its optional, lets just throw it out for now
@@ -102,58 +143,64 @@ class PushEventWebhook(Webhook):
                 else:
                     author = authors[author_email]
                 try:
-                    with transaction.atomic():
-
+                    with transaction.atomic(router.db_for_write(Commit)):
                         Commit.objects.create(
                             repository_id=repo.id,
                             organization_id=organization.id,
                             key=commit["hash"],
                             message=commit["message"],
                             author=author,
-                            date_added=dateutil.parser.parse(commit["date"]).astimezone(
-                                timezone.utc
-                            ),
+                            date_added=parse_date(commit["date"]).astimezone(timezone.utc),
                         )
 
                 except IntegrityError:
                     pass
 
 
-class BitbucketWebhookEndpoint(View):
-    _handlers = {"repo:push": PushEventWebhook}
+@region_silo_endpoint
+class BitbucketWebhookEndpoint(Endpoint):
+    owner = ApiOwner.INTEGRATIONS
+    publish_status = {
+        "POST": ApiPublishStatus.PRIVATE,
+    }
+    permission_classes = ()
+    _handlers: dict[str, type[BitbucketWebhook]] = {"repo:push": PushEventWebhook}
 
-    def get_handler(self, event_type):
+    def get_handler(self, event_type) -> type[BitbucketWebhook] | None:
         return self._handlers.get(event_type)
 
     @method_decorator(csrf_exempt)
-    def dispatch(self, request, *args, **kwargs):
+    def dispatch(self, request: HttpRequest, *args, **kwargs) -> HttpResponse:
         if request.method != "POST":
             return HttpResponse(status=405)
 
         return super().dispatch(request, *args, **kwargs)
 
-    def post(self, request, organization_id):
+    def post(self, request: HttpRequest, organization_id: int) -> HttpResponse:
         try:
             organization = Organization.objects.get_from_cache(id=organization_id)
         except Organization.DoesNotExist:
-            logger.error(
-                PROVIDER_NAME + ".webhook.invalid-organization",
+            logger.info(
+                "%s.webhook.invalid-organization",
+                PROVIDER_NAME,
                 extra={"organization_id": organization_id},
             )
             return HttpResponse(status=400)
 
         body = bytes(request.body)
         if not body:
-            logger.error(
-                PROVIDER_NAME + ".webhook.missing-body", extra={"organization_id": organization.id}
+            logger.warning(
+                "%s.webhook.missing-body", PROVIDER_NAME, extra={"organization_id": organization.id}
             )
             return HttpResponse(status=400)
 
         try:
             handler = self.get_handler(request.META["HTTP_X_EVENT_KEY"])
         except KeyError:
-            logger.error(
-                PROVIDER_NAME + ".webhook.missing-event", extra={"organization_id": organization.id}
+            logger.warning(
+                "%s.webhook.missing-event",
+                PROVIDER_NAME,
+                extra={"organization_id": organization.id},
             )
             return HttpResponse(status=400)
 
@@ -169,21 +216,53 @@ class BitbucketWebhookEndpoint(View):
                 break
 
         if not valid_ip and address_string not in BITBUCKET_IPS:
-            logger.error(
-                PROVIDER_NAME + ".webhook.invalid-ip-range",
+            logger.warning(
+                "%s.webhook.invalid-ip-range",
+                PROVIDER_NAME,
                 extra={"organization_id": organization.id},
             )
             return HttpResponse(status=401)
 
         try:
-            event = json.loads(body.decode("utf-8"))
-        except json.JSONDecodeError:
-            logger.error(
-                PROVIDER_NAME + ".webhook.invalid-json",
+            event = orjson.loads(body)
+        except orjson.JSONDecodeError:
+            logger.warning(
+                "%s.webhook.invalid-json",
+                PROVIDER_NAME,
                 extra={"organization_id": organization.id},
-                exc_info=True,
             )
             return HttpResponse(status=400)
 
-        handler()(organization, event)
+        try:
+            repo = Repository.objects.get(
+                organization_id=organization.id,
+                provider=PROVIDER_NAME,
+                external_id=str(event["repository"]["uuid"]),
+            )
+        except Repository.DoesNotExist:
+            raise Http404()
+
+        integration = integration_service.get_integration(integration_id=repo.integration_id)
+        if integration and "webhook_secret" in integration.metadata:
+            secret = integration.metadata["webhook_secret"]
+            try:
+                method, signature = request.META["HTTP_X_HUB_SIGNATURE"].split("=", 1)
+            except (IndexError, KeyError, ValueError):
+                raise WebhookMissingSignatureException()
+
+            if method != "sha256":
+                raise WebhookUnsupportedSignatureMethodException()
+
+            if not is_valid_signature(request.body, secret, signature):
+                raise WebhookInvalidSignatureException()
+
+        event_handler = handler()
+
+        with IntegrationWebhookEvent(
+            interaction_type=event_handler.event_type,
+            domain=IntegrationDomain.SOURCE_CODE_MANAGEMENT,
+            provider_key=event_handler.provider,
+        ).capture():
+            event_handler(event, repo=repo, organization=organization)
+
         return HttpResponse(status=204)

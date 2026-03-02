@@ -7,7 +7,13 @@ from sentry.discover.arithmetic import (
     Operation,
     parse_arithmetic,
 )
-from sentry.search.events.fields import get_function_alias
+
+
+def parse_arithmetic_must_be_operation(s: str) -> Operation:
+    result, _, _ = parse_arithmetic(s)
+    assert isinstance(result, Operation)
+    return result
+
 
 op_map = {
     "+": "plus",
@@ -42,12 +48,22 @@ op_map = {
         (1.2345, "÷", 6.7890),
     ],
 )
-def test_simple_arithmetic(a, op, b):
+def test_simple_arithmetic(a, op, b) -> None:
     equation = f"{a}{op}{b}"
-    result, _, _ = parse_arithmetic(equation)
+    result = parse_arithmetic_must_be_operation(equation)
     assert result.operator == op_map[op.strip()], equation
     assert result.lhs == float(a), equation
     assert result.rhs == float(b), equation
+
+
+def test_parse_arithmetic_returns_float() -> None:
+    result, _, _ = parse_arithmetic("0")
+    assert result == 0.0
+
+
+def test_parse_arithmetic_returns_column() -> None:
+    result, _, _ = parse_arithmetic("spans.db")
+    assert result == "spans.db"
 
 
 @pytest.mark.parametrize(
@@ -67,10 +83,10 @@ def test_simple_arithmetic(a, op, b):
         ("12", "÷", "34", "÷", "56"),
     ],
 )
-def test_homogenous_arithmetic(a, op1, b, op2, c):
+def test_homogenous_arithmetic(a, op1, b, op2, c) -> None:
     """Test that literal order of ops is respected assuming we don't have to worry about BEDMAS"""
     equation = f"{a}{op1}{b}{op2}{c}"
-    result, _, _ = parse_arithmetic(equation)
+    result = parse_arithmetic_must_be_operation(equation)
     assert result.operator == op_map[op2.strip()], equation
     assert isinstance(result.lhs, Operation), equation
     assert result.lhs.operator == op_map[op1.strip()], equation
@@ -79,8 +95,8 @@ def test_homogenous_arithmetic(a, op1, b, op2, c):
     assert result.rhs == float(c), equation
 
 
-def test_mixed_arithmetic():
-    result, _, _ = parse_arithmetic("12 + 34 * 56")
+def test_mixed_arithmetic() -> None:
+    result = parse_arithmetic_must_be_operation("12 + 34 * 56")
     assert result.operator == "plus"
     assert result.lhs == 12.0
     assert isinstance(result.rhs, Operation)
@@ -88,7 +104,7 @@ def test_mixed_arithmetic():
     assert result.rhs.lhs == 34.0
     assert result.rhs.rhs == 56.0
 
-    result, _, _ = parse_arithmetic("12 / 34 - 56")
+    result = parse_arithmetic_must_be_operation("12 / 34 - 56")
     assert result.operator == "minus"
     assert isinstance(result.lhs, Operation)
     assert result.lhs.operator == "divide"
@@ -97,8 +113,8 @@ def test_mixed_arithmetic():
     assert result.rhs == 56.0
 
 
-def test_four_terms():
-    result, _, _ = parse_arithmetic("1 + 2 / 3 * 4")
+def test_four_terms() -> None:
+    result = parse_arithmetic_must_be_operation("1 + 2 / 3 * 4")
     assert result.operator == "plus"
     assert result.lhs == 1.0
     assert isinstance(result.rhs, Operation)
@@ -110,8 +126,8 @@ def test_four_terms():
     assert result.rhs.rhs == 4.0
 
 
-def test_brackets_with_two_inner_terms():
-    result, _, _ = parse_arithmetic("(1 + 2) / (3 - 4)")
+def test_brackets_with_two_inner_terms() -> None:
+    result = parse_arithmetic_must_be_operation("(1 + 2) / (3 - 4)")
     assert result.operator == "divide"
     assert isinstance(result.lhs, Operation)
     assert result.lhs.operator == "plus"
@@ -123,8 +139,8 @@ def test_brackets_with_two_inner_terms():
     assert result.rhs.rhs == 4.0
 
 
-def test_brackets_with_three_inner_terms():
-    result, _, _ = parse_arithmetic("(1 + 2 + 3) / 4")
+def test_brackets_with_three_inner_terms() -> None:
+    result = parse_arithmetic_must_be_operation("(1 + 2 + 3) / 4")
     assert result.operator == "divide"
     assert isinstance(result.lhs, Operation)
     assert result.lhs.operator == "plus"
@@ -135,8 +151,8 @@ def test_brackets_with_three_inner_terms():
     assert result.rhs == 4.0
 
 
-def test_brackets_with_four_inner_terms():
-    result, _, _ = parse_arithmetic("(1 + 2 / 3 * 4)")
+def test_brackets_with_four_inner_terms() -> None:
+    result = parse_arithmetic_must_be_operation("(1 + 2 / 3 * 4)")
     assert result.operator == "plus"
     assert result.lhs == 1.0
     assert isinstance(result.rhs, Operation)
@@ -164,13 +180,13 @@ def test_brackets_with_four_inner_terms():
         ("12", "÷", "34", "*", "56", "÷", "78"),
     ],
 )
-def test_homogenous_four_terms(a, op1, b, op2, c, op3, d):
+def test_homogenous_four_terms(a, op1, b, op2, c, op3, d) -> None:
     """This basically tests flatten in the ArithmeticVisitor
 
     flatten only kicks in when its a chain of the same operator type
     """
     equation = f"{a}{op1}{b}{op2}{c}{op3}{d}"
-    result, _, _ = parse_arithmetic(equation)
+    result = parse_arithmetic_must_be_operation(equation)
     assert result.operator == op_map[op3.strip()], equation
     assert isinstance(result.lhs, Operation), equation
     assert result.lhs.operator == op_map[op2.strip()], equation
@@ -182,7 +198,7 @@ def test_homogenous_four_terms(a, op1, b, op2, c, op3, d):
     assert result.rhs == float(d), equation
 
 
-def test_max_operators():
+def test_max_operators() -> None:
     with pytest.raises(MaxOperatorError):
         parse_arithmetic("1 + 2 * 3 * 4", 2)
 
@@ -198,12 +214,13 @@ def test_max_operators():
         (3.1415, "+", "spans.resource"),
     ],
 )
-def test_field_values(a, op, b):
+def test_field_values(a, op, b) -> None:
     for with_brackets in [False, True]:
         equation = f"{a}{op}{b}"
         if with_brackets:
             equation = f"({equation}) + 5"
         result, fields, functions = parse_arithmetic(equation)
+        assert isinstance(result, Operation)
         if with_brackets:
             assert result.operator == "plus"
             assert isinstance(result.lhs, Operation)
@@ -220,7 +237,7 @@ def test_field_values(a, op, b):
 
 
 @pytest.mark.parametrize(
-    "a,op,b",
+    "lhs,op,rhs",
     [
         ("failure_count()", "/", "count()"),
         ("percentile(0.5, transaction.duration)", "/", "max(transaction.duration)"),
@@ -229,29 +246,45 @@ def test_field_values(a, op, b):
         ("p50(transaction.duration)", "/", "p100(transaction.duration)"),
         ("count_if(user.email,equals,test@example.com)", "/", 2),
         (100, "-", 'count_if(some_tag,notEquals,"something(really)annoying,like\\"this\\"")'),
+        ("p50_if(span.duration,is_transaction,equals,true)", "/", 2),
+        ("tpm()", "+", "failure_rate_if(is_transaction,equals,true)"),
+        ("avg_if(span.duration,is_transaction,equals,true)", "*", 100),
+        ("ttid_contribution_rate()", "+", "ttfd_contribution_rate()"),
+        (100, "*", "ttid_contribution_rate()"),
+        (
+            "performance_score(measurements.score.lcp)",
+            "+",
+            "performance_score(measurements.score.fcp)",
+        ),
+        (100, "*", "performance_score(measurements.score.cls)"),
+        (
+            "opportunity_score(measurements.score.lcp)",
+            "+",
+            "opportunity_score(measurements.score.fcp)",
+        ),
+        (100, "*", "opportunity_score(measurements.score.cls)"),
     ],
 )
-def test_function_values(a, op, b):
+def test_function_values(lhs, op, rhs) -> None:
     for with_brackets in [False, True]:
-        equation = f"{a}{op}{b}"
+        equation = f"{lhs}{op}{rhs}"
         if with_brackets:
             equation = f"({equation}) + 5"
         result, fields, functions = parse_arithmetic(equation)
+        assert isinstance(result, Operation)
         if with_brackets:
             assert result.operator == "plus"
             assert isinstance(result.lhs, Operation)
             assert result.rhs == 5.0
             result = result.lhs
         assert result.operator == op_map[op.strip()], equation
-        lhs = a if isinstance(a, int) else get_function_alias(a)
-        rhs = b if isinstance(b, int) else get_function_alias(b)
         assert result.lhs == lhs, equation
         assert result.rhs == rhs, equation
         assert len(fields) == 0
-        if isinstance(a, str):
-            assert a in functions, equation
-        if isinstance(b, str):
-            assert b in functions, equation
+        if isinstance(lhs, str):
+            assert lhs in functions, equation
+        if isinstance(rhs, str):
+            assert rhs in functions, equation
 
 
 @pytest.mark.parametrize(
@@ -267,7 +300,7 @@ def test_function_values(a, op, b):
         "+",
     ],
 )
-def test_unparseable_arithmetic(equation):
+def test_unparseable_arithmetic(equation) -> None:
     with pytest.raises(ArithmeticParseError):
         parse_arithmetic(equation)
 
@@ -287,8 +320,9 @@ def test_unparseable_arithmetic(equation):
         "12",
         "p50(transaction.duration)",
         "measurements.lcp",
+        "(measurements.lcp)",
     ],
 )
-def test_invalid_arithmetic(equation):
+def test_invalid_arithmetic(equation) -> None:
     with pytest.raises(ArithmeticValidationError):
-        parse_arithmetic(equation)
+        parse_arithmetic(equation, validate_single_operator=True)

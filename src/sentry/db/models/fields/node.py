@@ -1,20 +1,14 @@
-import logging
-import pickle
-from base64 import b64encode
-from collections.abc import MutableMapping
-from uuid import uuid4
+from __future__ import annotations
 
-from django.db.models.signals import post_delete
+import logging
+from collections.abc import MutableMapping
+from typing import Any
+
+from django.utils.functional import cached_property
 
 from sentry import nodestore
-from sentry.db.models.utils import Creator
-from sentry.utils.cache import memoize
-from sentry.utils.canonical import CANONICAL_TYPES, CanonicalKeyDict
-from sentry.utils.strings import compress, decompress
 
-from .gzippeddict import GzippedDictField
-
-__all__ = ("NodeField", "NodeData")
+__all__ = ("NodeData",)
 
 logger = logging.getLogger("sentry")
 
@@ -23,7 +17,7 @@ class NodeIntegrityFailure(Exception):
     pass
 
 
-class NodeData(MutableMapping):
+class NodeData(MutableMapping[str, Any]):
     """
     A wrapper for nodestore data that fetches the underlying data
     from nodestore.
@@ -48,21 +42,12 @@ class NodeData(MutableMapping):
 
     def __getstate__(self):
         data = dict(self.__dict__)
-        # downgrade this into a normal dict in case it's a shim dict.
-        # This is needed as older workers might not know about newer
-        # collection types.  For instance we have events where this is a
-        # CanonicalKeyDict
         data.pop("data", None)
-        data["_node_data_CANONICAL"] = isinstance(data["_node_data"], CANONICAL_TYPES)
+        # downgrade this into a normal dict in case it's a shim dict.
         data["_node_data"] = dict(data["_node_data"].items())
         return data
 
     def __setstate__(self, state):
-        # If there is a legacy pickled version that used to have data as a
-        # duplicate, reject it.
-        state.pop("data", None)
-        if state.pop("_node_data_CANONICAL", False):
-            state["_node_data"] = CanonicalKeyDict(state["_node_data"])
         self.__dict__ = state
 
     def __getitem__(self, key):
@@ -77,10 +62,10 @@ class NodeData(MutableMapping):
     def __iter__(self):
         return iter(self.data)
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.data)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         cls_name = type(self).__name__
         if self._node_data:
             return f"<{cls_name}: id={self.id} data={self._node_data!r}>"
@@ -94,7 +79,7 @@ class NodeData(MutableMapping):
     def copy(self):
         return self.data.copy()
 
-    @memoize
+    @cached_property
     def data(self):
         """
         Get the current data object, fetching from nodestore if necessary.
@@ -104,10 +89,10 @@ class NodeData(MutableMapping):
             return self._node_data
 
         elif self.id:
-            self.bind_data(nodestore.get(self.id) or {})
+            self.bind_data(nodestore.backend.get(self.id) or {})
             return self._node_data
 
-        rv = {}
+        rv: dict[str, Any] = {}
         if self.wrapper is not None:
             rv = self.wrapper(rv)
         return rv
@@ -146,94 +131,10 @@ class NodeData(MutableMapping):
         # We can't put our wrappers into the nodestore, so we need to
         # ensure that the data is converted into a plain old dict
         to_write = self._node_data
-        if isinstance(to_write, CANONICAL_TYPES):
+        if not isinstance(to_write, dict):
             to_write = dict(to_write.items())
 
         subkeys = subkeys or {}
         subkeys[None] = to_write
 
-        nodestore.set_subkeys(self.id, subkeys)
-
-
-class NodeField(GzippedDictField):
-    """
-    Similar to the gzippedictfield except that it stores a reference
-    to an external node.
-    """
-
-    def __init__(self, *args, **kwargs):
-        self.ref_func = kwargs.pop("ref_func", None)
-        self.ref_version = kwargs.pop("ref_version", None)
-        self.wrapper = kwargs.pop("wrapper", None)
-        self.id_func = kwargs.pop("id_func", lambda: b64encode(uuid4().bytes))
-        super().__init__(*args, **kwargs)
-
-    def contribute_to_class(self, cls, name):
-        super().contribute_to_class(cls, name)
-        setattr(cls, name, Creator(self))
-        post_delete.connect(self.on_delete, sender=self.model, weak=False)
-
-    def on_delete(self, instance, **kwargs):
-        value = getattr(instance, self.name)
-        if not value.id:
-            return
-
-        nodestore.delete(value.id)
-
-    def to_python(self, value):
-        node_id = None
-        # If value is a string, we assume this is a value we've loaded from the
-        # database, it should be decompressed/unpickled, and we should end up
-        # with a dict.
-        if value and isinstance(value, str):
-            try:
-                value = pickle.loads(decompress(value))
-            except Exception as e:
-                # TODO this is a bit dangerous as a failure to read/decode the
-                # node_id will end up with this record being replaced with an
-                # empty value under a new key, potentially orphaning an
-                # original value in nodestore. OTOH if we can't decode the info
-                # here, the node was already effectively orphaned.
-                logger.exception(e)
-                value = None
-
-        if value:
-            if "node_id" in value:
-                node_id = value.pop("node_id")
-                # If the value is now empty, that means that it only had the
-                # node_id in it, which means that we should be looking to *load*
-                # the event body from nodestore. If it does have other stuff in
-                # it, that means we got an event body with a precomputed id in
-                # it, and we want to *save* the rest of the body to nodestore.
-                if value == {}:
-                    value = None
-        else:
-            # Either we were passed a null/empty value in the constructor, or
-            # we failed to decode the value from the database so we have no id
-            # to load data from, and no data to save.
-            value = None
-
-        return NodeData(
-            node_id,
-            value,
-            wrapper=self.wrapper,
-            ref_version=self.ref_version,
-            ref_func=self.ref_func,
-        )
-
-    def get_prep_value(self, value):
-        """
-        Prepares the NodeData to be written in a Model.save() call.
-
-        Makes sure the event body is written to nodestore and
-        returns the node_id reference to be written to rowstore.
-        """
-        if not value and self.null:
-            # save ourselves some storage
-            return None
-
-        if value.id is None:
-            value.id = self.id_func()
-
-        value.save()
-        return compress(pickle.dumps({"node_id": value.id}))
+        nodestore.backend.set_subkeys(self.id, subkeys)

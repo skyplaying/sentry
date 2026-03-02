@@ -17,12 +17,8 @@ class InvalidOrigin(InvalidRequest):
     def __init__(self, origin):
         self.origin = origin
 
-    def __str__(self):
+    def __str__(self) -> str:
         return "Invalid origin: '%s'" % self.origin
-
-
-class CacheNotPopulated(Exception):
-    pass
 
 
 class InvalidConfiguration(Exception):
@@ -64,4 +60,34 @@ class ApiTokenLimitError(Exception):
 
 
 class InvalidSearchQuery(Exception):
+    pass
+
+
+class IncompatibleMetricsQuery(Exception):
+    # Tried to build a metrics enhanced performance query but it was incompatible
+    pass
+
+
+class UnableToAcceptMemberInvitationException(Exception):
+    pass
+
+
+class UnsupportedQuerySubscription(Exception):
+    pass
+
+
+class InvalidQuerySubscription(Exception):
+    pass
+
+
+class HashDiscarded(Exception):
+    def __init__(
+        self, message: str = "", reason: str | None = None, tombstone_id: int | None = None
+    ):
+        super().__init__(message)
+        self.reason = reason
+        self.tombstone_id = tombstone_id
+
+
+class InvalidParams(Exception):
     pass

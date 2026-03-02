@@ -1,20 +1,31 @@
+import orjson
 from django.db import models
 from django.utils import timezone
-from django.utils.translation import ugettext_lazy as _
-from sentry_relay import RelayError, parse_release
+from django.utils.translation import gettext_lazy as _
+from sentry_relay.exceptions import RelayError
 from sentry_relay.processing import compare_version as compare_version_relay
+from sentry_relay.processing import parse_release
 
-from sentry.db.models import BoundedPositiveIntegerField, FlexibleForeignKey, Model, sane_repr
-from sentry.models.release import DB_VERSION_LENGTH, Release, follows_semver_versioning_scheme
+from sentry.backup.scopes import RelocationScope
+from sentry.db.models import (
+    BoundedPositiveIntegerField,
+    FlexibleForeignKey,
+    Model,
+    region_silo_model,
+    sane_repr,
+)
+from sentry.models.release import Release, follows_semver_versioning_scheme
+from sentry.models.releases.constants import DB_VERSION_LENGTH
 from sentry.utils import metrics
 
 
+@region_silo_model
 class GroupResolution(Model):
     """
     Describes when a group was marked as resolved.
     """
 
-    __include_in_export__ = False
+    __relocation_scope__ = RelocationScope.Excluded
 
     class Type:
         in_release = 0
@@ -31,6 +42,9 @@ class GroupResolution(Model):
     # This release field represents the latest release version associated with a group when the
     # user chooses "resolve in next release", and is set for both semver and date ordered releases
     current_release_version = models.CharField(max_length=DB_VERSION_LENGTH, null=True, blank=True)
+    # This release field represents the future release version associated with a group when the
+    # user chooses "resolve in future release"
+    future_release_version = models.CharField(max_length=DB_VERSION_LENGTH, null=True, blank=True)
     type = BoundedPositiveIntegerField(
         choices=((Type.in_next_release, "in_next_release"), (Type.in_release, "in_release")),
         null=True,
@@ -45,6 +59,12 @@ class GroupResolution(Model):
     class Meta:
         db_table = "sentry_groupresolution"
         app_label = "sentry"
+        indexes = [
+            models.Index(
+                fields=["type", "status", "future_release_version"],
+                name="groupres_future_release_idx",
+            ),
+        ]
 
     __repr__ = sane_repr("group_id", "release_id")
 
@@ -106,8 +126,12 @@ class GroupResolution(Model):
                     # If current_release_version == release.version => 0
                     # If current_release_version < release.version => -1
                     # If current_release_version > release.version => 1
-                    current_release_raw = parse_release(current_release_version).get("version_raw")
-                    release_raw = parse_release(release.version).get("version_raw")
+                    current_release_raw = parse_release(
+                        current_release_version, json_loads=orjson.loads
+                    ).get("version_raw")
+                    release_raw = parse_release(release.version, json_loads=orjson.loads).get(
+                        "version_raw"
+                    )
                     return compare_version_relay(current_release_raw, release_raw) >= 0
                 except RelayError:
                     ...
@@ -147,8 +171,12 @@ class GroupResolution(Model):
                 try:
                     # A resolution only exists if the resolved release is greater (in semver
                     # terms) than the provided release
-                    res_release_raw = parse_release(res_release_version).get("version_raw")
-                    release_raw = parse_release(release.version).get("version_raw")
+                    res_release_raw = parse_release(
+                        res_release_version, json_loads=orjson.loads
+                    ).get("version_raw")
+                    release_raw = parse_release(release.version, json_loads=orjson.loads).get(
+                        "version_raw"
+                    )
                     return compare_version_relay(res_release_raw, release_raw) == 1
                 except RelayError:
                     ...

@@ -1,33 +1,56 @@
-import * as React from 'react';
+import type {Theme} from '@emotion/react';
 import styled from '@emotion/styled';
 
-import {Panel} from 'app/components/panels';
-import QuestionTooltip from 'app/components/questionTooltip';
-import TextOverflow from 'app/components/textOverflow';
-import overflowEllipsis from 'app/styles/overflowEllipsis';
-import space from 'app/styles/space';
-import {defined} from 'app/utils';
-import {Theme} from 'app/utils/theme';
+import {Flex, type FlexProps} from '@sentry/scraps/layout';
 
-type Props = {
+import Panel from 'sentry/components/panels/panel';
+import QuestionTooltip from 'sentry/components/questionTooltip';
+import TextOverflow from 'sentry/components/textOverflow';
+import {space} from 'sentry/styles/space';
+import {defined} from 'sentry/utils';
+
+type ScoreCardProps = {
   title: React.ReactNode;
-  score?: React.ReactNode;
+  className?: string;
   help?: React.ReactNode;
+  isTooltipHoverable?: boolean;
+  renderOpenButton?: () => React.ReactNode;
+  score?: React.ReactNode;
   trend?: React.ReactNode;
   trendStatus?: 'good' | 'bad';
-  className?: string;
 };
 
-function ScoreCard({title, score, help, trend, trendStatus, className}: Props) {
+export function ScoreCard({
+  title,
+  score,
+  help,
+  trend,
+  trendStatus,
+  className,
+  renderOpenButton,
+  isTooltipHoverable,
+}: ScoreCardProps) {
+  const displayScore = score ?? '\u2014';
+
   return (
     <ScorePanel className={className}>
-      <HeaderTitle>
-        <Title>{title}</Title>
-        {help && <QuestionTooltip title={help} size="sm" position="top" />}
-      </HeaderTitle>
+      <Flex wrap="wrap" align="center" justify="between">
+        <HeaderTitle>
+          <Title>{title}</Title>
+          {help && (
+            <QuestionTooltip
+              title={help}
+              size="sm"
+              position="top"
+              isHoverable={isTooltipHoverable}
+            />
+          )}
+        </HeaderTitle>
+        {renderOpenButton?.()}
+      </Flex>
 
       <ScoreWrapper>
-        <Score>{score ?? '\u2014'}</Score>
+        <Score>{displayScore}</Score>
         {defined(trend) && (
           <Trend trendStatus={trendStatus}>
             <TextOverflow>{trend}</TextOverflow>
@@ -41,11 +64,11 @@ function ScoreCard({title, score, help, trend, trendStatus, className}: Props) {
 function getTrendColor(p: TrendProps & {theme: Theme}) {
   switch (p.trendStatus) {
     case 'good':
-      return p.theme.green300;
+      return p.theme.tokens.content.success;
     case 'bad':
-      return p.theme.red300;
+      return p.theme.tokens.content.danger;
     default:
-      return p.theme.gray300;
+      return p.theme.tokens.content.secondary;
   }
 }
 
@@ -57,33 +80,38 @@ export const ScorePanel = styled(Panel)`
   min-height: 96px;
 `;
 
-export const HeaderTitle = styled('div')`
+const HeaderTitle = styled('div')`
   display: inline-grid;
   grid-auto-flow: column;
-  grid-gap: ${space(1)};
+  gap: ${space(1)};
   align-items: center;
   width: fit-content;
 `;
 
-const Title = styled('div')`
-  ${overflowEllipsis};
+export const Title = styled('div')`
+  font-size: ${p => p.theme.font.size.lg};
+  color: ${p => p.theme.tokens.content.primary};
+  display: block;
+  width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: ${p => p.theme.font.weight.sans.medium};
 `;
 
-export const ScoreWrapper = styled('div')`
-  display: flex;
-  flex-direction: row;
-  align-items: flex-end;
-  max-width: 100%;
-`;
+export const ScoreWrapper = styled((props: FlexProps<'div'>) => {
+  return <Flex align="baseline" maxWidth="100%" {...props} />;
+})``;
 
 export const Score = styled('span')`
   flex-shrink: 1;
   font-size: 32px;
   line-height: 1;
+  color: ${p => p.theme.tokens.content.primary};
   white-space: nowrap;
 `;
 
-type TrendProps = {trendStatus: Props['trendStatus']};
+type TrendProps = {trendStatus: ScoreCardProps['trendStatus']};
 
 export const Trend = styled('div')<TrendProps>`
   color: ${getTrendColor};
@@ -91,5 +119,3 @@ export const Trend = styled('div')<TrendProps>`
   line-height: 1;
   overflow: hidden;
 `;
-
-export default ScoreCard;

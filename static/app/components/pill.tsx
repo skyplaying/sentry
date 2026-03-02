@@ -1,21 +1,21 @@
-import * as React from 'react';
+import {memo} from 'react';
+import {css, type Theme} from '@emotion/react';
 import styled from '@emotion/styled';
 
-import space from 'app/styles/space';
-import {Theme} from 'app/utils/theme';
+import {space} from 'sentry/styles/space';
 
 type PillType = 'positive' | 'negative' | 'error';
 
 type Props = {
-  type?: PillType;
-  name?: React.ReactNode;
-  value?: number | string | boolean | null;
   children?: React.ReactNode;
   className?: string;
+  name?: React.ReactNode;
+  type?: PillType;
+  value?: number | string | boolean | null;
 };
 
-const Pill = React.memo(({name, value, children, type, className}: Props) => {
-  const getTypeAndValue = (): Partial<{valueType: PillType; renderValue: string}> => {
+const Pill = memo(({name, value, children, type, className}: Props) => {
+  const getTypeAndValue = (): Partial<{renderValue: string; valueType: PillType}> => {
     if (value === undefined) {
       return {};
     }
@@ -57,54 +57,46 @@ const Pill = React.memo(({name, value, children, type, className}: Props) => {
   );
 });
 
-const getPillStyle = ({type, theme}: {type?: PillType; theme: Theme}) => {
+const getPillStyle = ({type, theme}: {theme: Theme; type?: PillType}) => {
   switch (type) {
     case 'error':
-      return `
-        color: ${theme.black};
-        background: ${theme.red100};
-        background: ${theme.red100};
-        border: 1px solid ${theme.red300};
+      return css`
+        background: ${theme.colors.red100};
+        border: 1px solid ${theme.colors.red400};
       `;
     default:
-      return `
-        border: 1px solid ${theme.border};
+      return css`
+        border: 1px solid ${theme.tokens.border.primary};
       `;
   }
 };
 
-const getPillValueStyle = ({type, theme}: {type?: PillType; theme: Theme}) => {
+const getPillValueStyle = ({type, theme}: {theme: Theme; type?: PillType}) => {
   switch (type) {
     case 'positive':
-      return `
-        color: ${theme.black};
-        background: ${theme.green100};
-        border: 1px solid ${theme.green300};
-        border-left-color: ${theme.green300};
-        font-family: ${theme.text.familyMono};
+      return css`
+        background: ${theme.colors.green100};
+        border: 1px solid ${theme.colors.green400};
+        font-family: ${theme.font.family.mono};
         margin: -1px;
       `;
     case 'error':
-      return `
-        color: ${theme.black};
-        border-left-color: ${theme.red300};
-        background: ${theme.red100};
-        border: 1px solid ${theme.red300};
+      return css`
+        background: ${theme.colors.red100};
+        border: 1px solid ${theme.colors.red400};
         margin: -1px;
       `;
     case 'negative':
-      return `
-        color: ${theme.black};
-        border-left-color: ${theme.red300};
-        background: ${theme.red100};
-        border: 1px solid ${theme.red300};
-        font-family: ${theme.text.familyMono};
+      return css`
+        background: ${theme.colors.red100};
+        border: 1px solid ${theme.colors.red400};
+        font-family: ${theme.font.family.mono};
         margin: -1px;
       `;
     default:
-      return `
-        background: ${theme.backgroundSecondary};
-        font-family: ${theme.text.familyMono};
+      return css`
+        background: ${theme.tokens.background.secondary};
+        font-family: ${theme.font.family.mono};
       `;
   }
 };
@@ -118,9 +110,8 @@ const PillName = styled('span')`
 `;
 
 const PillValue = styled(PillName)`
-  border-left: 1px solid ${p => p.theme.border};
-  border-radius: ${p =>
-    `0 ${p.theme.button.borderRadius} ${p.theme.button.borderRadius} 0`};
+  border-left: 1px solid ${p => p.theme.tokens.border.primary};
+  border-radius: ${p => `0 ${p.theme.radius.md} ${p.theme.radius.md} 0`};
   max-width: 100%;
   display: flex;
   align-items: center;
@@ -138,9 +129,9 @@ const PillValue = styled(PillName)`
   .external-icon {
     display: inline;
     margin: 0 0 0 ${space(1)};
-    color: ${p => p.theme.gray300};
+    color: ${p => p.theme.tokens.content.secondary};
     &:hover {
-      color: ${p => p.theme.textColor};
+      color: ${p => p.theme.tokens.content.primary};
     }
   }
 `;
@@ -149,8 +140,8 @@ const StyledPill = styled('li')<{type?: PillType}>`
   white-space: nowrap;
   margin: 0 ${space(1)} ${space(1)} 0;
   display: flex;
-  border-radius: ${p => p.theme.button.borderRadius};
-  box-shadow: ${p => p.theme.dropShadowLightest};
+  border-radius: ${p => p.theme.radius.md};
+  box-shadow: ${p => p.theme.dropShadowLight};
   line-height: 1.2;
   max-width: 100%;
   :last-child {

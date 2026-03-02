@@ -1,6 +1,7 @@
-import {Client} from 'app/api';
+import type {Client} from 'sentry/api';
 
-import {Applications, MethodType, PiiConfig, Rule, RuleType} from './types';
+import type {Applications, PiiConfig, Rule} from './types';
+import {MethodType, RuleType} from './types';
 
 function getSubmitFormatRule(rule: Rule): PiiConfig {
   if (rule.type === RuleType.PATTERN && rule.method === MethodType.REPLACE) {
@@ -11,6 +12,7 @@ function getSubmitFormatRule(rule: Rule): PiiConfig {
         method: rule.method,
         text: rule?.placeholder,
       },
+      replaceGroups: rule.replaceCaptured ? [1] : undefined,
     };
   }
 
@@ -21,6 +23,7 @@ function getSubmitFormatRule(rule: Rule): PiiConfig {
       redaction: {
         method: rule.method,
       },
+      replaceGroups: rule.replaceCaptured ? [1] : undefined,
     };
   }
 
@@ -42,12 +45,12 @@ function getSubmitFormatRule(rule: Rule): PiiConfig {
   };
 }
 
-function submitRules(api: Client, endpoint: string, rules: Array<Rule>) {
+function submitRules(api: Client, endpoint: string, rules: Rule[]) {
   const applications: Applications = {};
   const submitFormatRules: Record<string, PiiConfig> = {};
 
   for (let i = 0; i < rules.length; i++) {
-    const rule = rules[i];
+    const rule = rules[i]!;
     const ruleId = String(i);
     submitFormatRules[ruleId] = getSubmitFormatRule(rule);
 
@@ -55,8 +58,8 @@ function submitRules(api: Client, endpoint: string, rules: Array<Rule>) {
       applications[rule.source] = [];
     }
 
-    if (!applications[rule.source].includes(ruleId)) {
-      applications[rule.source].push(ruleId);
+    if (!applications[rule.source]!.includes(ruleId)) {
+      applications[rule.source]!.push(ruleId);
     }
   }
 

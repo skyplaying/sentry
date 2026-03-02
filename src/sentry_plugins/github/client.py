@@ -3,11 +3,13 @@ import datetime
 import time
 
 from sentry import options
+from sentry.integrations.github.constants import GITHUB_API_ACCEPT_HEADER
+from sentry.integrations.services.integration.model import RpcIntegration
 from sentry.utils import jwt
 from sentry_plugins.client import ApiClient, AuthApiClient
 
 
-class GitHubClientMixin(AuthApiClient):
+class GithubPluginClientMixin(AuthApiClient):
     allow_redirects = True
 
     base_url = "https://api.github.com"
@@ -24,13 +26,8 @@ class GitHubClientMixin(AuthApiClient):
         # where start sha is oldest and end is most recent
         return self.get(f"/repos/{repo}/compare/{start_sha}...{end_sha}")
 
-    def get_pr_commits(self, repo, num):
-        # see https://developer.github.com/v3/pulls/#list-commits-on-a-pull-request
-        # Max: 250 Commits
-        return self.get(f"/repos/{repo}/pulls/{num}/commits")
 
-
-class GitHubClient(GitHubClientMixin, AuthApiClient):
+class GithubPluginClient(GithubPluginClientMixin, AuthApiClient):
     def __init__(self, url=None, auth=None):
         if url is not None:
             self.base_url = url.rstrip("/")
@@ -70,30 +67,31 @@ class GitHubClient(GitHubClientMixin, AuthApiClient):
         return self.delete(f"/repos/{repo}/hooks/{id}")
 
     def get_installations(self):
-        # TODO(jess): remove this whenever it's out of preview
-        headers = {"Accept": "application/vnd.github.machine-man-preview+json"}
+        headers = {"Accept": GITHUB_API_ACCEPT_HEADER}
 
         return self._request("GET", "/user/installations", headers=headers)
 
 
-class GitHubAppsClient(GitHubClientMixin, ApiClient):
-    def __init__(self, integration):
+class GithubPluginAppsClient(GithubPluginClientMixin, ApiClient):
+    def __init__(self, integration: RpcIntegration):
         self.integration = integration
-        self.token = None
-        self.expires_at = None
+        self.token: str | None = None
+        self.expires_at: datetime.datetime | None = None
         super().__init__()
 
     def get_token(self):
-        if not self.token or self.expires_at < datetime.datetime.utcnow():
+        if not self.token or (
+            self.expires_at is not None and self.expires_at < datetime.datetime.utcnow()
+        ):
             res = self.create_token()
             self.token = res["token"]
             self.expires_at = datetime.datetime.strptime(res["expires_at"], "%Y-%m-%dT%H:%M:%SZ")
 
         return self.token
 
-    def get_jwt(self):
-        exp = datetime.datetime.utcnow() + datetime.timedelta(minutes=10)
-        exp = calendar.timegm(exp.timetuple())
+    def get_jwt(self) -> str:
+        exp_dt = datetime.datetime.utcnow() + datetime.timedelta(minutes=10)
+        exp = calendar.timegm(exp_dt.timetuple())
         # Generate the JWT
         payload = {
             # issued at time
@@ -110,16 +108,12 @@ class GitHubAppsClient(GitHubClientMixin, ApiClient):
         if headers is None:
             headers = {
                 "Authorization": "token %s" % self.get_token(),
-                # TODO(jess): remove this whenever it's out of preview
-                "Accept": "application/vnd.github.machine-man-preview+json",
+                "Accept": GITHUB_API_ACCEPT_HEADER,
             }
         return self._request(method, path, headers=headers, data=data, params=params)
 
     def create_token(self):
-        headers = {
-            # TODO(jess): remove this whenever it's out of preview
-            "Accept": "application/vnd.github.machine-man-preview+json",
-        }
+        headers = {"Accept": GITHUB_API_ACCEPT_HEADER}
         headers.update(jwt.authorization_header(self.get_jwt()))
         return self.post(
             f"/app/installations/{self.integration.external_id}/access_tokens",

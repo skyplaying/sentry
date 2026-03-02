@@ -1,9 +1,11 @@
-import {Client, Request} from 'app/api';
-import parseLinkHeader from 'app/utils/parseLinkHeader';
+import type {Request} from 'sentry/api';
+import {Client} from 'sentry/api';
+import {defined} from 'sentry/utils';
+import parseLinkHeader from 'sentry/utils/parseLinkHeader';
 
 type Options = {
-  endpoint: string;
-  success: (data: any, link?: string | null) => void;
+  linkPreviousHref: string;
+  success: (data: any, headers: {queryCount: number}) => void;
 };
 
 const BASE_DELAY = 3000;
@@ -12,15 +14,15 @@ const MAX_DELAY = 60000;
 class CursorPoller {
   constructor(options: Options) {
     this.options = options;
-    this.pollingEndpoint = options.endpoint;
+    this.setEndpoint(options.linkPreviousHref);
   }
 
   api = new Client();
   options: Options;
-  pollingEndpoint: string;
+  pollingEndpoint = '';
   timeoutId: number | null = null;
   lastRequest: Request | null = null;
-  active: boolean = true;
+  active = true;
 
   reqsWithoutData = 0;
 
@@ -29,15 +31,28 @@ class CursorPoller {
     return Math.min(delay, MAX_DELAY);
   }
 
-  setEndpoint(url: string) {
-    this.pollingEndpoint = url;
+  setEndpoint(linkPreviousHref: string) {
+    if (!linkPreviousHref) {
+      this.pollingEndpoint = '';
+      return;
+    }
+
+    const issueEndpoint = new URL(linkPreviousHref, window.location.origin);
+
+    // Remove collapse stats
+    issueEndpoint.searchParams.delete('collapse');
+
+    this.pollingEndpoint = decodeURIComponent(
+      issueEndpoint.pathname + issueEndpoint.search
+    );
   }
 
   enable() {
+    // Proactively cleanup to prevent multiple setTimeout per class instance
+    this.disable();
+
     this.active = true;
-    if (!this.timeoutId) {
-      this.timeoutId = window.setTimeout(this.poll.bind(this), this.getDelay());
-    }
+    this.timeoutId = window.setTimeout(this.poll.bind(this), this.getDelay());
   }
 
   disable() {
@@ -61,7 +76,7 @@ class CursorPoller {
         }
 
         // if theres no data, nothing changes
-        if (!data || !data.length) {
+        if (!data?.length) {
           this.reqsWithoutData += 1;
           return;
         }
@@ -71,10 +86,12 @@ class CursorPoller {
         }
 
         const linksHeader = resp?.getResponseHeader('Link') ?? null;
+        const hitsHeader = resp?.getResponseHeader('X-Hits') ?? null;
+        const queryCount = defined(hitsHeader) ? parseInt(hitsHeader, 10) || 0 : 0;
         const links = parseLinkHeader(linksHeader);
-        this.pollingEndpoint = links.previous.href;
+        this.setEndpoint(links.previous!.href);
 
-        this.options.success(data, linksHeader);
+        this.options.success(data, {queryCount});
       },
       error: resp => {
         if (!resp) {

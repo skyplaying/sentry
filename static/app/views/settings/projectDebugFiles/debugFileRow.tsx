@@ -1,56 +1,53 @@
 import {Fragment} from 'react';
 import styled from '@emotion/styled';
 
-import Access from 'app/components/acl/access';
-import Role from 'app/components/acl/role';
-import Button from 'app/components/button';
-import ButtonBar from 'app/components/buttonBar';
-import Confirm from 'app/components/confirm';
-import FileSize from 'app/components/fileSize';
-import Tag from 'app/components/tag';
-import TimeSince from 'app/components/timeSince';
-import Tooltip from 'app/components/tooltip';
-import {IconClock, IconDelete, IconDownload} from 'app/icons';
-import {t} from 'app/locale';
-import overflowEllipsis from 'app/styles/overflowEllipsis';
-import space from 'app/styles/space';
-import {DebugFile} from 'app/types/debugFiles';
+import {Tag} from '@sentry/scraps/badge';
+import {Button, LinkButton} from '@sentry/scraps/button';
+import {Flex, Grid, Stack} from '@sentry/scraps/layout';
+import {Link} from '@sentry/scraps/link';
+import {Tooltip} from '@sentry/scraps/tooltip';
 
-import {getFeatureTooltip, getFileType} from './utils';
+import Access from 'sentry/components/acl/access';
+import {useRole} from 'sentry/components/acl/useRole';
+import Confirm from 'sentry/components/confirm';
+import FileSize from 'sentry/components/fileSize';
+import TimeSince from 'sentry/components/timeSince';
+import {IconClock, IconDelete, IconDownload} from 'sentry/icons';
+import {t, tct} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {DebugFile} from 'sentry/types/debugFiles';
+import type {Project} from 'sentry/types/project';
+
+import {getFeatureTooltip, getPrettyFileType} from './utils';
 
 type Props = {
   debugFile: DebugFile;
-  showDetails: boolean;
   downloadUrl: string;
-  downloadRole: string;
   onDelete: (id: string) => void;
+  orgSlug: string;
+  project: Project;
+  showDetails: boolean;
 };
 
-const DebugFileRow = ({
+function DebugFileRow({
   debugFile,
   showDetails,
   downloadUrl,
-  downloadRole,
   onDelete,
-}: Props) => {
-  const {
-    id,
-    data,
-    debugId,
-    uuid,
-    size,
-    dateCreated,
-    objectName,
-    cpuName,
-    symbolType,
-    codeId,
-  } = debugFile;
-  const fileType = getFileType(debugFile);
+  orgSlug,
+  project,
+}: Props) {
+  const {hasRole, roleRequired: downloadRole} = useRole({
+    role: 'debugFilesRole',
+    project,
+  });
+  const {id, data, debugId, uuid, size, dateCreated, objectName, symbolType, codeId} =
+    debugFile;
   const {features} = data || {};
 
   return (
     <Fragment>
-      <Column>
+      <Stack align="start">
         <div>
           <DebugId>{debugId || uuid}</DebugId>
         </div>
@@ -61,26 +58,22 @@ const DebugFileRow = ({
             <TimeSince date={dateCreated} />
           </TimeWrapper>
         </TimeAndSizeWrapper>
-      </Column>
-      <Column>
+      </Stack>
+      <Stack align="start">
         <Name>
           {symbolType === 'proguard' && objectName === 'proguard-mapping'
             ? '\u2015'
             : objectName}
         </Name>
         <Description>
-          <DescriptionText>
-            {symbolType === 'proguard' && cpuName === 'any'
-              ? t('proguard mapping')
-              : `${cpuName} (${symbolType}${fileType ? ` ${fileType}` : ''})`}
-          </DescriptionText>
+          <DescriptionText>{getPrettyFileType(debugFile)}</DescriptionText>
 
           {features && (
             <FeatureTags>
               {features.map(feature => (
-                <StyledTag key={feature} tooltipText={getFeatureTooltip(feature)}>
-                  {feature}
-                </StyledTag>
+                <Tooltip key={feature} title={getFeatureTooltip(feature)} skipWrapper>
+                  <StyledTag variant="muted">{feature}</StyledTag>
+                </Tooltip>
               ))}
             </FeatureTags>
           )}
@@ -95,27 +88,31 @@ const DebugFileRow = ({
             </div>
           )}
         </Description>
-      </Column>
-      <RightColumn>
-        <ButtonBar gap={0.5}>
-          <Role role={downloadRole}>
-            {({hasRole}) => (
-              <Tooltip
-                disabled={hasRole}
-                title={t('You do not have permission to download debug files.')}
-              >
-                <Button
-                  size="xsmall"
-                  icon={<IconDownload size="xs" />}
-                  href={downloadUrl}
-                  disabled={!hasRole}
-                >
-                  {t('Download')}
-                </Button>
-              </Tooltip>
+      </Stack>
+      <Flex justify="end" align="start" marginTop="md">
+        <Grid flow="column" align="center" gap="xs">
+          <Tooltip
+            disabled={hasRole}
+            title={tct(
+              'Debug files can only be downloaded by users with organization [downloadRole] role[orHigher]. This can be changed in [settingsLink:Debug Files Access] settings.',
+              {
+                downloadRole,
+                orHigher: downloadRole === 'owner' ? '' : ` ${t('or higher')}`,
+                settingsLink: <Link to={`/settings/${orgSlug}/#debugFilesRole`} />,
+              }
             )}
-          </Role>
-          <Access access={['project:write']}>
+            isHoverable
+          >
+            <LinkButton
+              size="xs"
+              icon={<IconDownload />}
+              href={downloadUrl}
+              disabled={!hasRole}
+            >
+              {t('Download')}
+            </LinkButton>
+          </Tooltip>
+          <Access access={['project:write']} project={project}>
             {({hasAccess}) => (
               <Tooltip
                 disabled={hasAccess}
@@ -129,20 +126,21 @@ const DebugFileRow = ({
                 >
                   <Button
                     priority="danger"
-                    icon={<IconDelete size="xs" />}
-                    size="xsmall"
+                    icon={<IconDelete />}
+                    size="xs"
                     disabled={!hasAccess}
                     data-test-id="delete-dif"
+                    aria-label={t('Delete')}
                   />
                 </Confirm>
               </Tooltip>
             )}
           </Access>
-        </ButtonBar>
-      </RightColumn>
+        </Grid>
+      </Flex>
     </Fragment>
   );
-};
+}
 
 const DescriptionText = styled('span')`
   display: inline-flex;
@@ -159,29 +157,16 @@ const StyledTag = styled(Tag)`
   padding: ${space(0.5)};
 `;
 
-const Column = styled('div')`
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-`;
-
-const RightColumn = styled('div')`
-  display: flex;
-  justify-content: flex-end;
-  align-items: flex-start;
-  margin-top: ${space(1)};
-`;
-
 const DebugId = styled('code')`
-  font-size: ${p => p.theme.fontSizeSmall};
+  font-size: ${p => p.theme.font.size.sm};
 `;
 
 const TimeAndSizeWrapper = styled('div')`
   width: 100%;
   display: flex;
-  font-size: ${p => p.theme.fontSizeSmall};
+  font-size: ${p => p.theme.font.size.sm};
   margin-top: ${space(1)};
-  color: ${p => p.theme.subText};
+  color: ${p => p.theme.tokens.content.secondary};
   align-items: center;
 `;
 
@@ -192,7 +177,7 @@ const StyledFileSize = styled(FileSize)`
 
 const TimeWrapper = styled('div')`
   display: grid;
-  grid-gap: ${space(0.5)};
+  gap: ${space(0.5)};
   grid-template-columns: min-content 1fr;
   flex: 2;
   align-items: center;
@@ -200,21 +185,25 @@ const TimeWrapper = styled('div')`
 `;
 
 const Name = styled('div')`
-  font-size: ${p => p.theme.fontSizeMedium};
+  font-size: ${p => p.theme.font.size.md};
   margin-bottom: ${space(1)};
 `;
 
 const Description = styled('div')`
-  font-size: ${p => p.theme.fontSizeSmall};
-  color: ${p => p.theme.subText};
-  @media (max-width: ${p => p.theme.breakpoints[2]}) {
+  font-size: ${p => p.theme.font.size.sm};
+  color: ${p => p.theme.tokens.content.secondary};
+  @media (max-width: ${p => p.theme.breakpoints.lg}) {
     line-height: 1.7;
   }
 `;
 
 const DetailsItem = styled('div')`
-  ${overflowEllipsis}
-  margin-top: ${space(1)}
+  display: block;
+  width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: ${space(1)};
 `;
 
 export default DebugFileRow;

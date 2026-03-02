@@ -1,6 +1,8 @@
 import {css} from '@emotion/react';
 import styled from '@emotion/styled';
 
+import Panel from 'sentry/components/panels/panel';
+
 type Props = {
   /**
    * Adds hover and focus states to the card
@@ -12,7 +14,6 @@ const hoverStyle = css`
   &:focus,
   &:hover {
     box-shadow: 0px 0px 0px 6px rgba(209, 202, 216, 0.2);
-    position: relative;
     outline: none;
   }
 
@@ -26,10 +27,7 @@ const hoverStyle = css`
   }
 `;
 
-const Card = styled('div')<Props>`
-  background: ${p => p.theme.background};
-  border: 1px solid ${p => p.theme.border};
-  border-radius: ${p => p.theme.borderRadius};
+const Card = styled(Panel)<Props>`
   display: flex;
   align-items: stretch;
   flex-direction: column;

@@ -1,22 +1,27 @@
-import * as React from 'react';
+import {Component, lazy, Suspense} from 'react';
 
-import {Client} from 'app/api';
-import EmptyStateWarning from 'app/components/emptyStateWarning';
-import LoadingIndicator from 'app/components/loadingIndicator';
-import Placeholder from 'app/components/placeholder';
-import {DEFAULT_QUERY} from 'app/constants';
-import {t} from 'app/locale';
-import {Organization, Project} from 'app/types';
+import type {Client} from 'sentry/api';
+import EmptyStateWarning from 'sentry/components/emptyStateWarning';
+import LoadingIndicator from 'sentry/components/loadingIndicator';
+import Placeholder from 'sentry/components/placeholder';
+import {t} from 'sentry/locale';
+import type {Organization} from 'sentry/types/organization';
+import type {Project} from 'sentry/types/project';
+import NoIssuesMatched from 'sentry/views/issueList/noGroupsHandler/noIssuesMatched';
+import {DEFAULT_QUERY, FOR_REVIEW_QUERIES} from 'sentry/views/issueList/utils';
 
 import NoUnresolvedIssues from './noUnresolvedIssues';
 
+const WaitingForEvents = lazy(() => import('sentry/components/waitingForEvents'));
+const UpdatedEmptyState = lazy(() => import('sentry/components/updatedEmptyState'));
+
 type Props = {
   api: Client;
+  groupIds: string[];
   organization: Organization;
   query: string;
-  selectedProjectIds?: number[];
-  groupIds: string[];
   emptyMessage?: React.ReactNode;
+  selectedProjectIds?: number[];
 };
 
 type State = {
@@ -31,7 +36,7 @@ type State = {
  * having no issues be returned from a query. This component will conditionally
  * render one of those states.
  */
-class NoGroupsHandler extends React.Component<Props, State> {
+class NoGroupsHandler extends Component<Props, State> {
   state: State = {
     fetchingSentFirstEvent: true,
     sentFirstEvent: false,
@@ -59,7 +64,7 @@ class NoGroupsHandler extends React.Component<Props, State> {
    *
    * This is something to revisit if we refactor API client
    */
-  private _isMounted: boolean = false;
+  private _isMounted = false;
 
   async fetchSentFirstEvent() {
     this.setState({
@@ -72,26 +77,35 @@ class NoGroupsHandler extends React.Component<Props, State> {
 
     // If no projects are selected, then we must check every project the user is a
     // member of and make sure there are no first events for all of the projects
-    let firstEventQuery = {};
+    // Set project to -1 for all projects
+    // Do not pass a project id for "my projects"
+    let firstEventQuery: {project?: number[]} = {};
     const projectsQuery: {per_page: number; query?: string} = {per_page: 1};
 
-    if (!selectedProjectIds || !selectedProjectIds.length) {
-      firstEventQuery = {is_member: true};
-    } else {
+    if (selectedProjectIds?.length && !selectedProjectIds.includes(-1)) {
       firstEventQuery = {project: selectedProjectIds};
       projectsQuery.query = selectedProjectIds.map(id => `id:${id}`).join(' ');
     }
 
-    [{sentFirstEvent}, projects] = await Promise.all([
-      // checks to see if selection has sent a first event
-      api.requestPromise(`/organizations/${organization.slug}/sent-first-event/`, {
-        query: firstEventQuery,
-      }),
-      // retrieves a single project to feed to the ErrorRobot from renderStreamBody
-      api.requestPromise(`/organizations/${organization.slug}/projects/`, {
-        query: projectsQuery,
-      }),
-    ]);
+    try {
+      [{sentFirstEvent}, projects] = await Promise.all([
+        // checks to see if selection has sent a first event
+        api.requestPromise(`/organizations/${organization.slug}/sent-first-event/`, {
+          query: firstEventQuery,
+        }),
+        // retrieves a single project to feed to WaitingForEvents from renderStreamBody
+        api.requestPromise(`/organizations/${organization.slug}/projects/`, {
+          query: projectsQuery,
+        }),
+      ]);
+    } catch {
+      this.setState({
+        fetchingSentFirstEvent: false,
+        sentFirstEvent: true,
+        firstEventProjects: undefined,
+      });
+      return;
+    }
 
     // See comment where this property is initialized
     // FIXME
@@ -112,31 +126,65 @@ class NoGroupsHandler extends React.Component<Props, State> {
 
   renderAwaitingEvents(projects: State['firstEventProjects']) {
     const {organization, groupIds} = this.props;
-
     const project = projects && projects.length > 0 ? projects[0] : undefined;
     const sampleIssueId = groupIds.length > 0 ? groupIds[0] : undefined;
 
-    const ErrorRobot = React.lazy(() => import('app/components/errorRobot'));
+    const updatedEmptyStatePlatforms = [
+      'python-django',
+      'node',
+      'javascript-nextjs',
+      'android',
+      'apple-ios',
+      'dotnet',
+      'dotnet-aspnetcore',
+      'flutter',
+      'go',
+      'java',
+      'java-spring-boot',
+      'javascript',
+      'javascript-angular',
+      'javascript-react',
+      'javascript-vue',
+      'node-express',
+      'node-nestjs',
+      'php',
+      'php-laravel',
+      'python',
+      'python-fastapi',
+      'python-flask',
+      'react-native',
+      'ruby',
+      'ruby-rails',
+      'unity',
+    ];
+
+    const hasUpdatedEmptyState =
+      project?.platform && updatedEmptyStatePlatforms.includes(project.platform);
 
     return (
-      <React.Suspense fallback={<Placeholder height="260px" />}>
-        <ErrorRobot
-          org={organization}
-          project={project}
-          sampleIssueId={sampleIssueId}
-          gradient
-        />
-      </React.Suspense>
+      <Suspense fallback={<Placeholder height="260px" />}>
+        {!hasUpdatedEmptyState && (
+          <WaitingForEvents
+            org={organization}
+            project={project}
+            sampleIssueId={sampleIssueId}
+          />
+        )}
+        {hasUpdatedEmptyState && <UpdatedEmptyState project={project} />}
+      </Suspense>
     );
   }
 
   renderEmpty() {
     const {emptyMessage} = this.props;
-    return (
-      <EmptyStateWarning>
-        <p>{emptyMessage ?? t('Sorry, no issues match your filters.')}</p>
-      </EmptyStateWarning>
-    );
+    if (emptyMessage) {
+      return (
+        <EmptyStateWarning>
+          <p>{emptyMessage}</p>
+        </EmptyStateWarning>
+      );
+    }
+    return <NoIssuesMatched />;
   }
 
   render() {
@@ -150,7 +198,23 @@ class NoGroupsHandler extends React.Component<Props, State> {
       return this.renderAwaitingEvents(firstEventProjects);
     }
     if (query === DEFAULT_QUERY) {
-      return <NoUnresolvedIssues />;
+      return (
+        <NoUnresolvedIssues
+          title={t("We couldn't find any issues that matched your filters.")}
+          subtitle={t('Get out there and write some broken code!')}
+        />
+      );
+    }
+
+    if (FOR_REVIEW_QUERIES.includes(query || '')) {
+      return (
+        <NoUnresolvedIssues
+          title={t('Well, would you look at that.')}
+          subtitle={t(
+            'No more issues to review. Better get back out there and write some broken code.'
+          )}
+        />
+      );
     }
 
     return this.renderEmpty();

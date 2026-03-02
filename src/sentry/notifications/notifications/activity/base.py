@@ -1,99 +1,118 @@
-import re
-from abc import ABC
-from typing import TYPE_CHECKING, Any, Mapping, MutableMapping, Optional, Tuple, Union
+from __future__ import annotations
+
+import abc
+from collections.abc import Mapping, MutableMapping
+from functools import cached_property
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse, urlunparse
 
-from django.utils.html import escape
-from django.utils.safestring import SafeString, mark_safe
+from django.utils.html import format_html
+from django.utils.safestring import SafeString
 
+from sentry.db.models import Model
+from sentry.integrations.types import ExternalProviders
 from sentry.notifications.helpers import get_reason_context
-from sentry.notifications.notifications.base import BaseNotification
-from sentry.notifications.utils import send_activity_notification
+from sentry.notifications.notifications.base import ProjectNotification
+from sentry.notifications.types import NotificationSettingEnum, UnsubscribeContext
+from sentry.notifications.utils import get_suspect_commits_by_group_id, send_activity_notification
 from sentry.notifications.utils.avatar import avatar_as_html
-from sentry.notifications.utils.participants import get_participants_for_group
-from sentry.types.integrations import ExternalProviders
+from sentry.notifications.utils.participants import ParticipantMap, get_participants_for_group
+from sentry.types.actor import Actor
+from sentry.users.services.user import RpcUser
+from sentry.users.services.user.service import user_service
 
 if TYPE_CHECKING:
-    from sentry.models import Activity, Team, User
+    from sentry.models.activity import Activity
 
 
-class ActivityNotification(BaseNotification, ABC):
-    fine_tuning_key = "workflow"
+class ActivityNotification(ProjectNotification, abc.ABC):
+    metrics_key = "activity"
+    notification_setting_type_enum = NotificationSettingEnum.WORKFLOW
+    template_path = "sentry/emails/activity/generic"
 
-    def __init__(self, activity: "Activity") -> None:
+    def __init__(self, activity: Activity) -> None:
         super().__init__(activity.project)
         self.activity = activity
 
-    def get_title(self) -> str:
-        raise NotImplementedError
-
-    def get_filename(self) -> str:
-        return "activity/generic"
+    @property
+    @abc.abstractmethod
+    def title(self) -> str:
+        """The header for Workflow notifications."""
 
     def get_base_context(self) -> MutableMapping[str, Any]:
         """The most basic context shared by every notification type."""
         return {
             "data": self.activity.data,
-            "author": self.activity.user,
-            "title": self.get_title(),
+            "title": self.title,
             "project": self.project,
             "project_link": self.get_project_link(),
+            **super().get_base_context(),
         }
 
     def get_recipient_context(
-        self, recipient: Union["Team", "User"], extra_context: Mapping[str, Any]
+        self, recipient: Actor, extra_context: Mapping[str, Any]
     ) -> MutableMapping[str, Any]:
-        return get_reason_context(extra_context)
+        context = super().get_recipient_context(recipient, extra_context)
+        return {**context, **get_reason_context(context)}
 
-    def get_reference(self) -> Any:
+    @property
+    def reference(self) -> Model | None:
         return self.activity
 
-    def get_type(self) -> str:
-        return f"notify.activity.{self.activity.get_type_display()}"
-
+    @abc.abstractmethod
     def get_context(self) -> MutableMapping[str, Any]:
-        raise NotImplementedError
+        pass
 
-    def get_participants_with_group_subscription_reason(
-        self,
-    ) -> Mapping[ExternalProviders, Mapping["User", int]]:
-        raise NotImplementedError
+    @abc.abstractmethod
+    def get_participants_with_group_subscription_reason(self) -> ParticipantMap:
+        pass
 
     def send(self) -> None:
         return send_activity_notification(self)
 
+    def get_log_params(self, recipient: Actor) -> Mapping[str, Any]:
+        return {"activity": self.activity, **super().get_log_params(recipient)}
 
-class GroupActivityNotification(ActivityNotification, ABC):
-    is_message_issue_unfurl = True
 
-    def __init__(self, activity: "Activity") -> None:
+class GroupActivityNotification(ActivityNotification, abc.ABC):
+    message_builder = "IssueNotificationMessageBuilder"
+
+    def __init__(self, activity: Activity) -> None:
         super().__init__(activity)
+        assert activity.group is not None
         self.group = activity.group
 
-    def get_activity_name(self) -> str:
+    def get_description(self) -> tuple[str, str | None, Mapping[str, Any]]:
         raise NotImplementedError
-
-    def get_description(self) -> Tuple[str, Mapping[str, Any], Mapping[str, Any]]:
-        raise NotImplementedError
-
-    def get_title(self) -> str:
-        return self.get_activity_name()
 
     def get_group_link(self) -> str:
-        referrer = re.sub("Notification$", "Email", self.__class__.__name__)
-        return str(self.group.get_absolute_url(params={"referrer": referrer}))
+        # method only used for emails
+        # TODO: pass in recipient so we can add that to the referrer
+        referrer = self.get_referrer(ExternalProviders.EMAIL)
+        return str(
+            self.group.get_absolute_url(
+                params={"referrer": referrer, "notification_uuid": self.notification_uuid}
+            )
+        )
 
-    def get_participants_with_group_subscription_reason(
-        self,
-    ) -> Mapping[ExternalProviders, Mapping["User", int]]:
+    @cached_property
+    def user(self) -> RpcUser | None:
+        return (
+            user_service.get_user(self.activity.user_id)
+            if self.activity.user_id is not None
+            else None
+        )
+
+    def get_participants_with_group_subscription_reason(self) -> ParticipantMap:
         """This is overridden by the activity subclasses."""
-        return get_participants_for_group(self.group, self.activity.user)
+        return get_participants_for_group(self.group, self.activity.user_id)
 
-    def get_reply_reference(self) -> Optional[Any]:
-        return self.group
-
-    def get_unsubscribe_key(self) -> Optional[Tuple[str, int, Optional[str]]]:
-        return "issue", self.group.id, None
+    def get_unsubscribe_key(self) -> UnsubscribeContext | None:
+        return UnsubscribeContext(
+            organization=self.group.organization,
+            key="issue",
+            resource_id=self.group.id,
+        )
 
     def get_base_context(self) -> MutableMapping[str, Any]:
         return {
@@ -101,19 +120,31 @@ class GroupActivityNotification(ActivityNotification, ABC):
             **self.get_group_context(),
         }
 
-    def get_context(self) -> MutableMapping[str, Any]:
+    def get_context(self, provider: ExternalProviders | None = None) -> MutableMapping[str, Any]:
         """
         Context shared by every recipient of this notification. This may contain
         expensive computation so it should only be called once. Override this
         method if the notification does not need HTML/text descriptions.
         """
-        description, params, html_params = self.get_description()
-        return {
+        text_template, html_template, params = self.get_description()
+        should_add_url = provider is not None
+        text_description = self.description_as_text(text_template, params, should_add_url, provider)
+        html_description = self.description_as_html(html_template or text_template, params)
+        enhanced_privacy = self.group.organization.flags.enhanced_privacy
+
+        context = {
             **self.get_base_context(),
-            "activity_name": self.get_activity_name(),
-            "text_description": self.description_as_text(description, params),
-            "html_description": self.description_as_html(description, html_params or params),
+            "text_description": text_description,
+            "html_description": html_description,
+            "enhanced_privacy": enhanced_privacy,
         }
+
+        if self.group:
+            context["commits"] = get_suspect_commits_by_group_id(
+                project=self.project, group_id=self.group.id
+            )
+
+        return context
 
     def get_group_context(self) -> MutableMapping[str, Any]:
         group_link = self.get_group_link()
@@ -129,26 +160,39 @@ class GroupActivityNotification(ActivityNotification, ABC):
             "referrer": self.__class__.__name__,
         }
 
-    def get_notification_title(self) -> str:
-        description, params, _ = self.get_description()
-        return self.description_as_text(description, params, True)
+    def get_notification_title(
+        self, provider: ExternalProviders, context: Mapping[str, Any] | None = None
+    ) -> str:
+        description, _, params = self.get_description()
+        return self.description_as_text(description, params, True, provider)
 
-    def get_subject(self, context: Optional[Mapping[str, Any]] = None) -> str:
-        return f"{self.group.qualified_short_id} - {self.group.title}"
+    def get_subject(self, context: Mapping[str, Any] | None = None) -> str:
+        subject = f"{self.group.qualified_short_id}"
+        if not self.group.organization.flags.enhanced_privacy:
+            subject += f" - {self.group.title}"
+        return subject
 
     def description_as_text(
-        self, description: str, params: Mapping[str, Any], url: Optional[bool] = False
+        self,
+        description: str,
+        params: Mapping[str, Any],
+        url: bool | None = False,
+        provider: ExternalProviders | None = None,
     ) -> str:
-        user = self.activity.user
-        if user:
-            name = user.name or user.email
+        if self.user:
+            name = self.user.name or self.user.email
         else:
             name = "Sentry"
 
         issue_name = self.group.qualified_short_id or "an issue"
-        if url and self.group.qualified_short_id:
-            group_url = self.group.get_absolute_url(params={"referrer": "activity_notification"})
-            issue_name = f"<{group_url}|{self.group.qualified_short_id}>"
+        if provider and url and self.group.qualified_short_id:
+            group_url = self.group.get_absolute_url(
+                params={
+                    "referrer": "activity_notification",
+                    "notification_uuid": self.notification_uuid,
+                }
+            )
+            issue_name = f"{self.format_url(text=self.group.qualified_short_id, url=group_url, provider=provider)}"
 
         context = {"author": name, "an issue": issue_name}
         context.update(params)
@@ -156,20 +200,32 @@ class GroupActivityNotification(ActivityNotification, ABC):
         return description.format(**context)
 
     def description_as_html(self, description: str, params: Mapping[str, Any]) -> SafeString:
-        user = self.activity.user
-        if user:
-            name = user.get_display_name()
+        if self.user:
+            name = self.user.get_display_name()
         else:
             name = "Sentry"
 
         fmt = '<span class="avatar-container">{}</span> <strong>{}</strong>'
 
-        author = mark_safe(fmt.format(avatar_as_html(user), escape(name)))
+        author = format_html(fmt, avatar_as_html(self.user), name)
 
-        issue_name = escape(self.group.qualified_short_id or "an issue")
-        an_issue = f'<a href="{escape(self.get_group_link())}">{issue_name}</a>'
+        issue_name = self.group.qualified_short_id or "an issue"
+        an_issue = format_html('<a href="{}">{}</a>', self.get_group_link(), issue_name)
 
         context = {"author": author, "an issue": an_issue}
         context.update(params)
 
-        return mark_safe(description.format(**context))
+        return format_html(description, **context)
+
+    def get_title_link(self, recipient: Actor, provider: ExternalProviders) -> str | None:
+        from sentry.integrations.messaging.message_builder import get_title_link
+
+        return get_title_link(self.group, None, False, True, self, provider)
+
+    def build_attachment_title(self, recipient: Actor) -> str:
+        from sentry.integrations.messaging.message_builder import build_attachment_title
+
+        return build_attachment_title(self.group)
+
+    def get_log_params(self, recipient: Actor, **kwargs: Any) -> Mapping[str, Any]:
+        return {"group": self.group.id, **super().get_log_params(recipient)}

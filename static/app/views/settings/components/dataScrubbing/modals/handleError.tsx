@@ -1,18 +1,21 @@
-import {t} from 'app/locale';
+import {t} from 'sentry/locale';
 
 export enum ErrorType {
-  Unknown = 'unknown',
-  InvalidSelector = 'invalid-selector',
-  RegexParse = 'regex-parse',
+  UNKNOWN = 'unknown',
+  INVALID_SELECTOR = 'invalid-selector',
+  REGEX_PARSE = 'regex-parse',
+  ATTRIBUTE_INVALID = 'attribute-invalid',
 }
 
 type Error = {
-  type: ErrorType;
   message: string;
+  type: ErrorType;
 };
 
+type ResponseFields = 'relayPiiConfig';
+
 type ResponseError = {
-  responseJSON?: Record<string, Array<string>>;
+  responseJSON?: Record<ResponseFields, string[]>;
 };
 
 function handleError(error: ResponseError): Error {
@@ -20,7 +23,7 @@ function handleError(error: ResponseError): Error {
 
   if (!errorMessage) {
     return {
-      type: ErrorType.Unknown,
+      type: ErrorType.UNKNOWN,
       message: t('Unknown error occurred while saving data scrubbing rule'),
     };
   }
@@ -30,7 +33,7 @@ function handleError(error: ResponseError): Error {
       if (line.startsWith('1 | ')) {
         const selector = line.slice(3);
         return {
-          type: ErrorType.InvalidSelector,
+          type: ErrorType.INVALID_SELECTOR,
           message: t('Invalid source value: %s', selector),
         };
       }
@@ -42,15 +45,22 @@ function handleError(error: ResponseError): Error {
       if (line.startsWith('error:')) {
         const regex = line.slice(6).replace(/at line \d+ column \d+/, '');
         return {
-          type: ErrorType.RegexParse,
+          type: ErrorType.REGEX_PARSE,
           message: t('Invalid regex: %s', regex),
         };
       }
     }
   }
 
+  if (errorMessage.startsWith('Compiled regex exceeds size limit')) {
+    return {
+      type: ErrorType.REGEX_PARSE,
+      message: t('Compiled regex is too large, simplify your regex'),
+    };
+  }
+
   return {
-    type: ErrorType.Unknown,
+    type: ErrorType.UNKNOWN,
     message: t('An unknown error occurred while saving data scrubbing rule'),
   };
 }

@@ -1,72 +1,66 @@
-import {ClassNames, css, withTheme} from '@emotion/react';
+import {ClassNames, css, useTheme} from '@emotion/react';
 import styled from '@emotion/styled';
 
-import {ModalRenderProps} from 'app/actionCreators/modal';
-import HelpSearch from 'app/components/helpSearch';
-import Hook from 'app/components/hook';
-import {t} from 'app/locale';
-import space from 'app/styles/space';
-import {Organization} from 'app/types';
-import {Theme} from 'app/utils/theme';
-import withOrganization from 'app/utils/withOrganization';
+import {Input} from '@sentry/scraps/input';
+
+import type {ModalRenderProps} from 'sentry/actionCreators/modal';
+import HelpSearch from 'sentry/components/helpSearch';
+import Hook from 'sentry/components/hook';
+import {t} from 'sentry/locale';
+import useOrganization from 'sentry/utils/useOrganization';
 
 type Props = ModalRenderProps & {
-  theme: Theme;
-  organization: Organization;
   placeholder?: string;
 };
 
-const HelpSearchModal = ({
+function HelpSearchModal({
   Body,
   closeModal,
-  theme,
-  organization,
   placeholder = t('Search for documentation, FAQs, blog posts...'),
   ...props
-}: Props) => (
-  <Body>
-    <ClassNames>
-      {({css: injectedCss}) => (
-        <HelpSearch
-          {...props}
-          entryPoint="sidebar_help"
-          dropdownStyle={injectedCss`
+}: Props) {
+  const organization = useOrganization();
+  const theme = useTheme();
+
+  return (
+    <Body>
+      <ClassNames>
+        {({css: injectedCss}) => (
+          <HelpSearch
+            {...props}
+            entryPoint="sidebar_help"
+            dropdownClassName={injectedCss`
                 width: 100%;
                 border: transparent;
                 border-top-left-radius: 0;
                 border-top-right-radius: 0;
                 position: initial;
                 box-shadow: none;
-                border-top: 1px solid ${theme.border};
+                border-top: 1px solid ${theme.tokens.border.primary};
               `}
-          renderInput={({getInputProps}) => (
-            <InputWrapper>
-              <Input
+            renderInput={({getInputProps}) => (
+              <InputWithoutFocusStyles
                 autoFocus
-                {...getInputProps({type: 'text', label: placeholder, placeholder})}
+                {...getInputProps({type: 'text', placeholder})}
               />
-            </InputWrapper>
-          )}
-          resultFooter={<Hook name="help-modal:footer" {...{organization, closeModal}} />}
-        />
-      )}
-    </ClassNames>
-  </Body>
-);
+            )}
+            resultFooter={
+              <Hook name="help-modal:footer" {...{organization, closeModal}} />
+            }
+          />
+        )}
+      </ClassNames>
+    </Body>
+  );
+}
 
-const InputWrapper = styled('div')`
-  padding: ${space(0.25)};
-`;
-
-const Input = styled('input')`
-  width: 100%;
-  padding: ${space(1)};
-  border: none;
-  border-radius: 8px;
-  outline: none;
-
-  &:focus {
+const InputWithoutFocusStyles = styled(Input)`
+  &:focus,
+  &:active,
+  &:hover {
     outline: none;
+    box-shadow: none;
+    border: none;
   }
 `;
 
@@ -76,4 +70,4 @@ export const modalCss = css`
   }
 `;
 
-export default withTheme(withOrganization(HelpSearchModal));
+export default HelpSearchModal;

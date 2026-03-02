@@ -1,16 +1,42 @@
+import {Fragment} from 'react';
 import styled from '@emotion/styled';
 
-import UserAvatar from 'app/components/avatar/userAvatar';
-import DateTime from 'app/components/dateTime';
-import SelectField from 'app/components/forms/selectField';
-import Pagination from 'app/components/pagination';
-import {Panel, PanelBody, PanelHeader, PanelItem} from 'app/components/panels';
-import Tooltip from 'app/components/tooltip';
-import {t} from 'app/locale';
-import overflowEllipsis from 'app/styles/overflowEllipsis';
-import space from 'app/styles/space';
-import EmptyMessage from 'app/views/settings/components/emptyMessage';
-import SettingsPageHeader from 'app/views/settings/components/settingsPageHeader';
+import {UserAvatar} from '@sentry/scraps/avatar';
+import {Tag} from '@sentry/scraps/badge';
+import {Flex, Grid, Stack} from '@sentry/scraps/layout';
+import {Link} from '@sentry/scraps/link';
+import {Select} from '@sentry/scraps/select';
+import {Tooltip} from '@sentry/scraps/tooltip';
+
+import {ActivityAvatar} from 'sentry/components/activity/item/avatar';
+import {DateTime} from 'sentry/components/dateTime';
+import type {CursorHandler} from 'sentry/components/pagination';
+import Pagination from 'sentry/components/pagination';
+import {PanelTable} from 'sentry/components/panels/panelTable';
+import {
+  TimeRangeSelector,
+  TimeRangeSelectTrigger,
+  type ChangeData,
+} from 'sentry/components/timeRangeSelector';
+import {
+  getAbsoluteSummary,
+  getArbitraryRelativePeriod,
+} from 'sentry/components/timeRangeSelector/utils';
+import {t, tct} from 'sentry/locale';
+import {space} from 'sentry/styles/space';
+import type {DateString} from 'sentry/types/core';
+import type {AuditLog, Organization} from 'sentry/types/organization';
+import type {User} from 'sentry/types/user';
+import {getInternalDate} from 'sentry/utils/dates';
+import getDaysSinceDate from 'sentry/utils/getDaysSinceDate';
+import useOrganization from 'sentry/utils/useOrganization';
+import useProjects from 'sentry/utils/useProjects';
+import {useUser} from 'sentry/utils/useUser';
+import SettingsPageHeader from 'sentry/views/settings/components/settingsPageHeader';
+import {
+  projectDetectorSettingsId,
+  retentionPrioritiesLabels,
+} from 'sentry/views/settings/projectPerformance/projectPerformance';
 
 const avatarStyle = {
   width: 36,
@@ -18,144 +44,412 @@ const avatarStyle = {
   marginRight: 8,
 };
 
-type Props = {
-  entries: any[];
-  pageLinks: string;
-  eventType: string;
-  eventTypes: string[];
-  onEventSelect: (value: string) => void;
+const getAvatarDisplay = (logEntryUser: User | undefined) => {
+  // Display Sentry's avatar for system or superuser-initiated events
+  if (
+    logEntryUser?.isSuperuser ||
+    (logEntryUser?.name === 'Sentry' && logEntryUser?.email === undefined)
+  ) {
+    return <SentryAvatar type="system" size={36} />;
+  }
+  // Display user's avatar for non-superusers-initiated events
+  if (logEntryUser !== undefined) {
+    return <UserAvatar style={avatarStyle} user={logEntryUser} />;
+  }
+  return null;
 };
 
-const AuditLogList = ({
-  pageLinks,
+const addUsernameDisplay = (logEntryUser: User | undefined) => {
+  if (logEntryUser?.isSuperuser) {
+    return (
+      <Name data-test-id="actor-name">
+        <Flex align="center" gap="md">
+          {logEntryUser.name}
+          <Tag variant="muted">{t('Sentry Staff')}</Tag>
+        </Flex>
+      </Name>
+    );
+  }
+  if (logEntryUser !== undefined) {
+    return <Name data-test-id="actor-name">{logEntryUser.name}</Name>;
+  }
+  return null;
+};
+
+const getTypeDisplay = (event: string) => {
+  if (event.startsWith('rule.')) {
+    return event.replace('rule.', 'issue-alert.');
+  }
+  if (event.startsWith('alertrule.')) {
+    return event.replace('alertrule.', 'metric-alert.');
+  }
+  return event;
+};
+
+const getEventOptions = (eventTypes: string[] | null) =>
+  eventTypes
+    ?.map(type => {
+      // Having both rule.x and alertrule.x may be confusing, so we'll replace their labels to be more descriptive.
+      // We need to maintain the values here so we still fetch the correct audit log events from the backend should we want
+      // to filter.
+      // See https://github.com/getsentry/sentry/issues/46997
+      if (type.startsWith('rule.')) {
+        return {
+          label: type.replace('rule.', 'issue-alert.'),
+          value: type,
+        };
+      }
+      if (type.startsWith('alertrule.')) {
+        return {
+          label: type.replace('alertrule.', 'metric-alert.'),
+          value: type,
+        };
+      }
+      return {
+        label: type,
+        value: type,
+      };
+    })
+    .sort((a, b) => a.label.localeCompare(b.label));
+
+function AuditNote({
+  entry,
+  orgSlug,
+}: {
+  entry: NonNullable<AuditLog>;
+  orgSlug: Organization['slug'];
+}) {
+  const {projects} = useProjects();
+  const project = projects.find(p => p.id === String(entry.data.id));
+
+  if (entry.event.startsWith('rule.')) {
+    return <Note>{entry.note.replace('rule', 'issue alert rule')}</Note>;
+  }
+
+  if (!project) {
+    return <Note>{entry.note}</Note>;
+  }
+
+  if (entry.event === 'project.create') {
+    return (
+      <Note>
+        {tct('Created project [projectSettingsLink]', {
+          projectSettingsLink: (
+            <Link to={`/settings/${orgSlug}/projects/${project.slug}/`}>
+              {entry.data.slug}
+            </Link>
+          ),
+        })}
+      </Note>
+    );
+  }
+
+  if (entry.event === 'project.edit') {
+    if (entry.data.old_slug && entry.data.new_slug) {
+      return (
+        <Note>
+          {tct('Renamed project slug from [old-slug] to [new-slug]', {
+            'old-slug': entry.data.old_slug,
+            'new-slug': (
+              <Link to={`/settings/${orgSlug}/projects/${entry.data.new_slug}/`}>
+                {entry.data.new_slug}
+              </Link>
+            ),
+          })}
+        </Note>
+      );
+    }
+
+    return (
+      <Note>
+        {tct('Edited project [projectSettingsLink] [note]', {
+          projectSettingsLink: (
+            <Link to={`/settings/${orgSlug}/projects/${project.slug}/`}>
+              {entry.data.slug}
+            </Link>
+          ),
+          note: entry.note.replace('edited project settings ', ''),
+        })}
+      </Note>
+    );
+  }
+
+  if (entry.event === 'project.change-performance-issue-detection') {
+    return (
+      <Note>
+        {tct('Edited project [projectSettingsLink] [note]', {
+          projectSettingsLink: (
+            <Link
+              to={`/settings/${orgSlug}/projects/${project.slug}/performance/#${projectDetectorSettingsId}`}
+            >
+              {entry.data.slug} performance issue detector settings
+            </Link>
+          ),
+          note: entry.note.replace(
+            'edited project performance issue detector settings ',
+            ''
+          ),
+        })}
+      </Note>
+    );
+  }
+
+  if (entry.event === 'sampling_priority.enabled') {
+    return (
+      <Note>
+        {tct(
+          'Enabled retention priority "[biasLabel]" in project [samplingInProjectSettingsLink]',
+          {
+            samplingInProjectSettingsLink: (
+              <Link to={`/settings/${orgSlug}/projects/${project.slug}/performance/`}>
+                {entry.data.slug}
+              </Link>
+            ),
+            // @ts-expect-error TS(7053): Element implicitly has an 'any' type because expre... Remove this comment to see the full error message
+            biasLabel: retentionPrioritiesLabels[entry.data.name],
+          }
+        )}
+      </Note>
+    );
+  }
+
+  if (entry.event === 'sampling_priority.disabled') {
+    return (
+      <Note>
+        {tct(
+          'Disabled retention priority "[biasLabel]" in project [samplingInProjectSettingsLink]',
+          {
+            samplingInProjectSettingsLink: (
+              <Link to={`/settings/${orgSlug}/projects/${project.slug}/performance/`}>
+                {entry.data.slug}
+              </Link>
+            ),
+            // @ts-expect-error TS(7053): Element implicitly has an 'any' type because expre... Remove this comment to see the full error message
+            biasLabel: retentionPrioritiesLabels[entry.data.name],
+          }
+        )}
+      </Note>
+    );
+  }
+
+  if (entry.event === 'project.ownership-rule.edit') {
+    return (
+      <Note>
+        {tct('Modified ownership rules in project [projectSettingsLink]', {
+          projectSettingsLink: (
+            <Link to={`/settings/${orgSlug}/projects/${project.slug}/`}>
+              {entry.data.slug}
+            </Link>
+          ),
+        })}
+      </Note>
+    );
+  }
+
+  return <Note>{entry.note}</Note>;
+}
+
+type Props = {
+  entries: AuditLog[] | null;
+  eventType: string | undefined;
+  eventTypes: string[] | null;
+  isLoading: boolean;
+  onCursor: CursorHandler;
+  onDateSelect: (data: ChangeData) => void;
+  onEventSelect: (value: string) => void;
+  pageLinks: string | null;
+  statsPeriod: string | null;
+  end?: DateString;
+  start?: DateString;
+  utc?: boolean;
+};
+
+function AuditLogList({
   entries,
   eventType,
   eventTypes,
+  isLoading,
+  onCursor,
+  onDateSelect,
   onEventSelect,
-}: Props) => {
+  pageLinks,
+  start,
+  end,
+  statsPeriod,
+  utc = false,
+}: Props) {
+  const is24Hours = useUser().options?.clock24Hours;
+  const organization = useOrganization();
   const hasEntries = entries && entries.length > 0;
   const ipv4Length = 15;
-  const options = [
-    {value: '', label: t('Any action'), clearableVaue: false},
-    ...eventTypes.map(type => ({label: type, value: type, clearableValue: false})),
-  ];
+  const allTime = t('All time');
 
-  const action = (
-    <form>
-      <SelectField
-        name="event"
-        onChange={onEventSelect as SelectField['props']['onChange']}
-        value={eventType}
-        style={{width: 250}}
-        options={options}
+  // Calculate display values for the dropdown - convert UTC timestamps back to user's intended timezone
+  const getDisplayValues = () => {
+    if (!start || !end) {
+      return {displayStart: start, displayEnd: end};
+    }
+
+    // Convert UTC timestamps to display format based on user's UTC preference
+    const displayStart = getInternalDate(start, utc);
+    const displayEnd = getInternalDate(end, utc);
+
+    return {
+      displayStart: displayStart.toISOString(),
+      displayEnd: displayEnd.toISOString(),
+    };
+  };
+
+  const {displayStart, displayEnd} = getDisplayValues();
+
+  const currentValue = statsPeriod || allTime;
+  const arbitraryRelativePeriods = getArbitraryRelativePeriod(currentValue);
+  let displayLabel: React.ReactNode;
+
+  if (displayStart && displayEnd) {
+    // Show formatted absolute date range using display values (user's intended timezone)
+    displayLabel = getAbsoluteSummary(displayStart, displayEnd, utc);
+  } else if (start && end) {
+    // Fallback to regular start/end if display values not available
+    displayLabel = getAbsoluteSummary(start, end, utc);
+  } else if (currentValue === allTime) {
+    displayLabel = allTime;
+  } else {
+    displayLabel = arbitraryRelativePeriods[currentValue];
+  }
+
+  const headerActions = (
+    <Grid flow="column" align="center" gap="xl">
+      <TimeRangeSelector
+        start={start}
+        end={end}
+        relative={statsPeriod || allTime}
+        onChange={onDateSelect}
+        relativeOptions={{
+          allTime,
+          ...arbitraryRelativePeriods,
+        }}
+        utc={utc}
+        maxPickableDays={getDaysSinceDate(organization.dateCreated)}
+        trigger={triggerProps => (
+          <TimeRangeSelectTrigger {...triggerProps}>
+            {displayLabel ?? triggerProps.children}
+          </TimeRangeSelectTrigger>
+        )}
       />
-    </form>
+      <EventSelector
+        clearable
+        isDisabled={isLoading}
+        name="eventFilter"
+        value={eventType}
+        placeholder={t('Select Action: ')}
+        options={getEventOptions(eventTypes)}
+        onChange={(options: any) => {
+          onEventSelect(options?.value);
+        }}
+      />
+    </Grid>
   );
 
   return (
     <div>
-      <SettingsPageHeader title={t('Audit Log')} action={action} />
-      <Panel>
-        <StyledPanelHeader disablePadding>
-          <div>{t('Member')}</div>
-          <div>{t('Action')}</div>
-          <div>{t('IP')}</div>
-          <div>{t('Time')}</div>
-        </StyledPanelHeader>
-
-        <PanelBody>
-          {!hasEntries && <EmptyMessage>{t('No audit entries available')}</EmptyMessage>}
-
-          {hasEntries &&
-            entries.map(entry => (
-              <StyledPanelItem center key={entry.id}>
-                <UserInfo>
-                  <div>
-                    {entry.actor.email && (
-                      <UserAvatar style={avatarStyle} user={entry.actor} />
-                    )}
-                  </div>
-                  <NameContainer>
-                    <Name data-test-id="actor-name">
-                      {entry.actor.isSuperuser
-                        ? t('%s (Sentry Staff)', entry.actor.name)
-                        : entry.actor.name}
-                    </Name>
-                    <Note>{entry.note}</Note>
-                  </NameContainer>
-                </UserInfo>
-                <div>
-                  <MonoDetail>{entry.event}</MonoDetail>
-                </div>
-                <TimestampOverflow>
-                  <Tooltip
-                    title={entry.ipAddress}
-                    disabled={entry.ipAddress && entry.ipAddress.length <= ipv4Length}
-                  >
-                    <MonoDetail>{entry.ipAddress}</MonoDetail>
-                  </Tooltip>
-                </TimestampOverflow>
-                <TimestampInfo>
-                  <DateTime dateOnly date={entry.dateCreated} />
-                  <DateTime timeOnly format="LT zz" date={entry.dateCreated} />
-                </TimestampInfo>
-              </StyledPanelItem>
-            ))}
-        </PanelBody>
-      </Panel>
-      {pageLinks && <Pagination pageLinks={pageLinks} />}
+      <SettingsPageHeader title={t('Audit Log')} action={headerActions} />
+      <PanelTable
+        headers={[t('Member'), t('Action'), t('IP'), t('Time')]}
+        isEmpty={!hasEntries && entries?.length === 0}
+        emptyMessage={t('No audit entries available')}
+        isLoading={isLoading}
+      >
+        {(entries ?? []).map(entry => {
+          if (!entry) {
+            return null;
+          }
+          return (
+            <Fragment key={entry.id}>
+              <UserInfo>
+                <div>{getAvatarDisplay(entry.actor)}</div>
+                <Stack justify="center">
+                  {addUsernameDisplay(entry.actor)}
+                  <AuditNote entry={entry} orgSlug={organization.slug} />
+                </Stack>
+              </UserInfo>
+              <Flex align="center">
+                <MonoDetail>{getTypeDisplay(entry.event)}</MonoDetail>
+              </Flex>
+              <Flex align="center">
+                {entry.ipAddress && (
+                  <IpAddressOverflow>
+                    <Tooltip
+                      title={entry.ipAddress}
+                      disabled={entry.ipAddress.length <= ipv4Length}
+                    >
+                      <MonoDetail>{entry.ipAddress}</MonoDetail>
+                    </Tooltip>
+                  </IpAddressOverflow>
+                )}
+              </Flex>
+              <TimestampInfo>
+                <DateTime dateOnly date={entry.dateCreated} />
+                <DateTime
+                  timeOnly
+                  format={is24Hours ? 'HH:mm z' : 'LT z'}
+                  date={entry.dateCreated}
+                />
+              </TimestampInfo>
+            </Fragment>
+          );
+        })}
+      </PanelTable>
+      {pageLinks && <Pagination pageLinks={pageLinks} onCursor={onCursor} />}
     </div>
   );
-};
+}
+
+const SentryAvatar = styled(ActivityAvatar)`
+  margin-right: ${space(1)};
+`;
+
+const Name = styled('strong')`
+  font-size: ${p => p.theme.font.size.md};
+`;
+
+const EventSelector = styled(Select)`
+  width: 250px;
+`;
 
 const UserInfo = styled('div')`
   display: flex;
+  align-items: center;
   line-height: 1.2;
-  font-size: 13px;
-  flex: 1;
+  font-size: ${p => p.theme.font.size.sm};
+  min-width: 250px;
 `;
 
-const NameContainer = styled('div')`
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-`;
-
-const Name = styled('div')`
-  font-weight: 600;
-  font-size: 15px;
-`;
 const Note = styled('div')`
-  font-size: 13px;
+  font-size: ${p => p.theme.font.size.sm};
   word-break: break-word;
+  margin-top: ${space(0.5)};
 `;
-const TimestampOverflow = styled('div')`
-  ${overflowEllipsis};
+
+const IpAddressOverflow = styled('div')`
+  display: block;
+  width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 90px;
 `;
 
 const MonoDetail = styled('code')`
-  font-size: ${p => p.theme.fontSizeMedium};
-`;
-
-const StyledPanelHeader = styled(PanelHeader)`
-  display: grid;
-  grid-template-columns: 1fr max-content 130px 150px;
-  grid-column-gap: ${space(2)};
-  padding: ${space(2)};
-`;
-
-const StyledPanelItem = styled(PanelItem)`
-  display: grid;
-  grid-template-columns: 1fr max-content 130px 150px;
-  grid-column-gap: ${space(2)};
-  padding: ${space(2)};
+  font-size: ${p => p.theme.font.size.md};
+  white-space: no-wrap;
 `;
 
 const TimestampInfo = styled('div')`
   display: grid;
   grid-template-rows: auto auto;
-  grid-gap: ${space(1)};
-  font-size: ${p => p.theme.fontSizeMedium};
+  gap: ${space(1)};
+  font-size: ${p => p.theme.font.size.md};
 `;
 
 export default AuditLogList;

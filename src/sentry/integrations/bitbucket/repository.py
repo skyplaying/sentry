@@ -1,27 +1,20 @@
-import logging
+from typing import Any
 
-from sentry.app import locks
-from sentry.models import Integration, OrganizationOption
+from sentry.integrations.types import IntegrationProviderSlug
+from sentry.locks import locks
 from sentry.models.apitoken import generate_token
-from sentry.plugins import providers
-from sentry.shared_integrations.exceptions import ApiError, IntegrationError
+from sentry.models.options.organization_option import OrganizationOption
+from sentry.organizations.services.organization.model import RpcOrganization
+from sentry.plugins.providers import IntegrationRepositoryProvider
+from sentry.plugins.providers.integration_repository import RepositoryConfig
+from sentry.shared_integrations.exceptions import ApiError
+from sentry.utils.email import parse_email, parse_user_name
 from sentry.utils.http import absolute_uri
 
-from .webhook import parse_raw_user_email, parse_raw_user_name
 
-
-class BitbucketRepositoryProvider(providers.IntegrationRepositoryProvider):
+class BitbucketRepositoryProvider(IntegrationRepositoryProvider):
     name = "Bitbucket"
-    logger = logging.getLogger("sentry.integrations.bitbucket")
-
-    def get_installation(self, integration_id, organization_id):
-        if integration_id is None:
-            raise IntegrationError("Bitbucket requires an integration id.")
-        integration_model = Integration.objects.get(
-            id=integration_id, organizations=organization_id, provider="bitbucket"
-        )
-
-        return integration_model.get_installation(organization_id)
+    repo_provider = IntegrationProviderSlug.BITBUCKET.value
 
     def get_repository_data(self, organization, config):
         installation = self.get_installation(config.get("installation"), organization.id)
@@ -37,7 +30,11 @@ class BitbucketRepositoryProvider(providers.IntegrationRepositoryProvider):
 
     def get_webhook_secret(self, organization):
         # TODO(LB): Revisit whether Integrations V3 should be using OrganizationOption for storage
-        lock = locks.get(f"bitbucket:webhook-secret:{organization.id}", duration=60)
+        lock = locks.get(
+            f"bitbucket:webhook-secret:{organization.id}",
+            duration=60,
+            name="bitbucket_webhook_secret",
+        )
         with lock.acquire():
             secret = OrganizationOption.objects.get_value(
                 organization=organization, key="bitbucket:webhook_secret"
@@ -49,10 +46,13 @@ class BitbucketRepositoryProvider(providers.IntegrationRepositoryProvider):
                 )
         return secret
 
-    def build_repository_config(self, organization, data):
+    def build_repository_config(
+        self, organization: RpcOrganization, data: dict[str, Any]
+    ) -> RepositoryConfig:
         installation = self.get_installation(data.get("installation"), organization.id)
         client = installation.get_client()
         try:
+            secret = installation.model.metadata.get("webhook_secret", "")
             resp = client.create_hook(
                 data["identifier"],
                 {
@@ -61,6 +61,7 @@ class BitbucketRepositoryProvider(providers.IntegrationRepositoryProvider):
                         f"/extensions/bitbucket/organizations/{organization.id}/webhook/"
                     ),
                     "active": True,
+                    "secret": secret,
                     "events": ["repo:push", "pullrequest:fulfilled"],
                 },
             )
@@ -91,8 +92,8 @@ class BitbucketRepositoryProvider(providers.IntegrationRepositoryProvider):
             {
                 "id": c["hash"],
                 "repository": repo.name,
-                "author_email": parse_raw_user_email(c["author"]["raw"]),
-                "author_name": parse_raw_user_name(c["author"]["raw"]),
+                "author_email": parse_email(c["author"]["raw"]),
+                "author_name": parse_user_name(c["author"]["raw"]),
                 "message": c["message"],
                 "timestamp": self.format_date(c["date"]),
                 "patch_set": c.get("patch_set"),

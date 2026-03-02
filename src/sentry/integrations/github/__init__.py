@@ -1,3 +1,6 @@
-from sentry.utils.imports import import_submodules
+from sentry.rules import rules
 
-import_submodules(globals(), __name__, __path__)
+from .actions.create_ticket import GitHubCreateTicketAction
+from .handlers import GithubActionHandler  # noqa: F401,F403
+
+rules.add(GitHubCreateTicketAction)

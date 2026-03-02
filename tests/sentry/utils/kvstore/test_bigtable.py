@@ -1,38 +1,27 @@
+from __future__ import annotations
+
 import functools
 import os
-from typing import Optional
+from collections.abc import Callable
+from unittest import mock
 
 import pytest
-from google.oauth2.credentials import Credentials
 
 from sentry.utils.kvstore.bigtable import BigtableKVStorage
 
 
-def get_credentials() -> Credentials:
+def create_store(
+    request: pytest.FixtureRequest, compression: str | None = None
+) -> BigtableKVStorage:
     if "BIGTABLE_EMULATOR_HOST" not in os.environ:
         pytest.skip(
             "Bigtable is not available, set BIGTABLE_EMULATOR_HOST environment variable to enable"
         )
-
-    # The bigtable emulator requires _something_ to be passed as credentials,
-    # even if they're totally bogus ones.
-    return Credentials.from_authorized_user_info(
-        {key: "invalid" for key in ["client_id", "refresh_token", "client_secret"]}
-    )
-
-
-credentials = pytest.fixture(get_credentials)
-
-
-def create_store(
-    request, credentials: Credentials, compression: Optional[str] = None
-) -> BigtableKVStorage:
     store = BigtableKVStorage(
         project="test",
         instance="test",
         table_name="test",
         compression=compression,
-        client_options={"credentials": credentials},
     )
     store.bootstrap()
     request.addfinalizer(store.destroy)
@@ -40,8 +29,8 @@ def create_store(
 
 
 @pytest.fixture
-def store_factory(request, credentials: Credentials):
-    return functools.partial(create_store, request, credentials)
+def store_factory(request: pytest.FixtureRequest) -> Callable[[str | None], BigtableKVStorage]:
+    return functools.partial(create_store, request)
 
 
 @pytest.mark.parametrize(
@@ -54,11 +43,11 @@ def store_factory(request, credentials: Credentials):
     ids=["zlib", "ident", "zstd"],
 )
 def test_compression_raw_values(
-    compression: Optional[str],
-    flag: BigtableKVStorage.Flags,
-    expected_prefix: bytes,
-    request,
-    store_factory,
+    compression: str | None,
+    flag: BigtableKVStorage.Flags | None,
+    expected_prefix: bytes | tuple[bytes, ...],
+    request: pytest.FixtureRequest,
+    store_factory: Callable[[str | None], BigtableKVStorage],
 ) -> None:
     store = store_factory(compression)
 
@@ -81,7 +70,9 @@ def test_compression_raw_values(
         assert store.flags_column not in columns
 
 
-def test_compression_compatibility(request, store_factory) -> None:
+def test_compression_compatibility(
+    request: pytest.FixtureRequest, store_factory: Callable[[str | None], BigtableKVStorage]
+) -> None:
     stores = {
         compression: store_factory(compression)
         for compression in BigtableKVStorage.compression_strategies.keys() | {None}
@@ -95,3 +86,21 @@ def test_compression_compatibility(request, store_factory) -> None:
 
         for reader in stores.values():
             assert reader.get(key) == value
+
+
+def test_get_uses_5s_timeout_for_retry() -> None:
+    store = BigtableKVStorage("test", "test", "test")
+    mock_table = mock.Mock()
+    with (
+        mock.patch.object(store, "_get_table", return_value=mock_table),
+        mock.patch("sentry_sdk.start_span"),
+    ):
+        mock_table.read_row.return_value = None
+
+        store.get("some-key")
+
+        # Check the retry argument
+        _, kwargs = mock_table.read_row.call_args
+        retry_arg = kwargs["retry"]
+        assert hasattr(retry_arg, "_timeout")
+        assert retry_arg._timeout == 5.0

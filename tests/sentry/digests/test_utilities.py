@@ -1,160 +1,154 @@
-from sentry.digests.notifications import build_digest, event_to_record
-from sentry.digests.utilities import (
-    build_events_by_actor,
-    convert_actors_to_users,
+from __future__ import annotations
+
+from collections.abc import Collection, Iterable, Mapping, Sequence
+
+from sentry.digests.notifications import Digest, DigestInfo, build_digest, event_to_record
+from sentry.digests.types import IdentifierKey, Record
+from sentry.digests.utils import (
     get_event_from_groups_in_digest,
+    get_participants_by_event,
     get_personalized_digests,
-    team_actors_to_user_ids,
+    sort_records,
 )
-from sentry.models import ActorTuple, OrganizationMemberTeam, ProjectOwnership, Team, User
-from sentry.notifications.types import ActionTargetType
-from sentry.ownership.grammar import Matcher, Owner, Rule, dump_schema
-from sentry.testutils import SnubaTestCase, TestCase
-from sentry.testutils.helpers.datetime import before_now, iso_format
+from sentry.issues.ownership.grammar import Matcher, Owner, Rule, dump_schema
+from sentry.models.project import Project
+from sentry.models.projectownership import ProjectOwnership
+from sentry.models.rule import Rule as RuleModel
+from sentry.notifications.types import ActionTargetType, FallthroughChoiceType
+from sentry.notifications.utils.rules import split_rules_by_rule_workflow_id
+from sentry.services.eventstore.models import Event
+from sentry.testutils.cases import SnubaTestCase, TestCase
+from sentry.testutils.helpers.datetime import before_now
+from sentry.types.actor import ActorType
 
 
-def sort_records(records):
-    """
-    Sorts records for fetch_state method
-    fetch_state is expecting these records to be ordered from newest to oldest
-    """
-    return sorted(records, key=lambda r: r.value.event.datetime, reverse=True)
+def _get_records(project: Project, rules: Collection[RuleModel], event: Event) -> list[Record]:
+    rules_and_workflows = split_rules_by_rule_workflow_id(list(rules))
+    rules_by_identifier_key = {
+        IdentifierKey.RULE: rules_and_workflows.rules,
+        IdentifierKey.WORKFLOW: rules_and_workflows.workflow_rules,
+    }
+    return [
+        event_to_record(event, parsed_rules, identifier_key=identifier_key)
+        for identifier_key, parsed_rules in rules_by_identifier_key.items()
+        if parsed_rules
+    ]
 
 
 class UtilitiesHelpersTestCase(TestCase, SnubaTestCase):
-    def create_event(self, project_id):
-        return (
-            self.store_event(
-                data={"timestamp": iso_format(before_now(minutes=1))}, project_id=project_id
-            ),
-        )
-
-    def test_get_event_from_groups_in_digest(self):
+    def test_get_event_from_groups_in_digest(self) -> None:
         project = self.create_project(fire_project_created=True)
-        rule = project.rule_set.all()[0]
+        rule = project.rule_set.all().order_by("id")[0]
 
         events = [
             self.store_event(
-                data={"fingerprint": ["group1"], "timestamp": iso_format(before_now(minutes=2))},
+                data={"fingerprint": ["group1"], "timestamp": before_now(minutes=2).isoformat()},
                 project_id=project.id,
             ),
             self.store_event(
-                data={"fingerprint": ["group1"], "timestamp": iso_format(before_now(minutes=1))},
+                data={"fingerprint": ["group1"], "timestamp": before_now(minutes=1).isoformat()},
                 project_id=project.id,
             ),
             self.store_event(
-                data={"fingerprint": ["group2"], "timestamp": iso_format(before_now(minutes=1))},
+                data={"fingerprint": ["group2"], "timestamp": before_now(minutes=1).isoformat()},
                 project_id=project.id,
             ),
             self.store_event(
-                data={"fingerprint": ["group3"], "timestamp": iso_format(before_now(minutes=1))},
+                data={"fingerprint": ["group3"], "timestamp": before_now(minutes=1).isoformat()},
                 project_id=project.id,
             ),
             self.store_event(
-                data={"fingerprint": ["group4"], "timestamp": iso_format(before_now(minutes=1))},
+                data={"fingerprint": ["group4"], "timestamp": before_now(minutes=1).isoformat()},
                 project_id=project.id,
             ),
             self.store_event(
-                data={"fingerprint": ["group5"], "timestamp": iso_format(before_now(minutes=1))},
+                data={"fingerprint": ["group5"], "timestamp": before_now(minutes=1).isoformat()},
                 project_id=project.id,
             ),
         ]
 
-        digest = build_digest(
-            project, sort_records([event_to_record(event, (rule,)) for event in events])
-        )
+        records = [event_to_record(event, (rule,)) for event in events]
+
+        digest = build_digest(project, sort_records(records))[0]
 
         events.pop(0)  # remove event with same group
         assert {e.event_id for e in get_event_from_groups_in_digest(digest)} == {
             e.event_id for e in events
         }
 
-    def test_team_actors_to_user_ids(self):
-        team1 = self.create_team()
-        team2 = self.create_team()
-        team3 = self.create_team()  # team with no active members
-        users = [self.create_user() for i in range(0, 8)]
+        # Make sure that the target_identifier = RULE
+        assert {record.value.identifier_key == IdentifierKey.RULE for record in records}
 
-        self.create_member(user=users[0], organization=self.organization, teams=[team1])
-        self.create_member(user=users[1], organization=self.organization, teams=[team1])
-        self.create_member(user=users[2], organization=self.organization, teams=[team1])
-        self.create_member(user=users[3], organization=self.organization, teams=[team1, team2])
-        self.create_member(user=users[4], organization=self.organization, teams=[team2, self.team])
-        self.create_member(user=users[5], organization=self.organization, teams=[team2])
+    def test_event_to_record_with_workflow_id(self) -> None:
+        project = self.create_project(fire_project_created=True)
+        rule = self.create_project_rule(project, include_legacy_rule_id=False)
 
-        # Inactive member
-        member6 = self.create_member(
-            user=users[6], organization=self.organization, teams=[team2, team3]
+        event = self.store_event(
+            data={"fingerprint": ["group1"], "timestamp": before_now(minutes=2).isoformat()},
+            project_id=project.id,
         )
-        team_member6 = OrganizationMemberTeam.objects.filter(organizationmember_id=member6.id)
-        for team_member in team_member6:
-            team_member.update(is_active=False)
-        # Member without teams
-        self.create_member(user=users[7], organization=self.organization, teams=[])
 
-        team_actors = [
-            ActorTuple(team1.id, Team),
-            ActorTuple(team2.id, Team),
-            ActorTuple(team3.id, Team),
-        ]
-        user_ids = [user.id for user in users]
+        records = _get_records(project, (rule,), event)
+        assert len(records) == 1
+        record = records[0]
+        assert record.value.identifier_key == IdentifierKey.WORKFLOW
+        assert record.value.rules == [rule.data["actions"][0]["workflow_id"]]
 
-        assert team_actors_to_user_ids(team_actors, user_ids) == {
-            team1.id: {users[0].id, users[1].id, users[2].id, users[3].id},
-            team2.id: {users[3].id, users[4].id, users[5].id},
+    def test_event_to_record_with_legacy_rule_id(self) -> None:
+        project = self.create_project(fire_project_created=True)
+        rule = self.create_project_rule(project, include_workflow_id=False)
+
+        event = self.store_event(
+            data={"fingerprint": ["group1"], "timestamp": before_now(minutes=2).isoformat()},
+            project_id=project.id,
+        )
+
+        records = _get_records(project, (rule,), event)
+        assert len(records) == 1
+        record = records[0]
+        assert record.value.identifier_key == IdentifierKey.RULE
+        assert record.value.rules == [rule.data["actions"][0]["legacy_rule_id"]]
+
+
+def assert_rule_ids(digest: Digest, expected_rule_ids: list[int]) -> None:
+    for rule, groups in digest.items():
+        assert rule.id in expected_rule_ids
+
+
+def assert_get_personalized_digests(
+    project: Project,
+    digest: Digest,
+    expected_result: Mapping[int, Iterable[Event]],
+    target_type: ActionTargetType = ActionTargetType.ISSUE_OWNERS,
+    target_identifier: int | None = None,
+) -> None:
+    result_user_ids = []
+    participants_by_provider_by_event = get_participants_by_event(
+        digest,
+        project,
+        target_type,
+        target_identifier,
+        fallthrough_choice=FallthroughChoiceType.ACTIVE_MEMBERS,
+    )
+    personalized_digests = get_personalized_digests(digest, participants_by_provider_by_event)
+    for actor, user_digest in personalized_digests.items():
+        assert actor.actor_type == ActorType.USER and actor.id in expected_result
+        assert {e.event_id for e in get_event_from_groups_in_digest(user_digest)} == {
+            e.event_id for e in expected_result[actor.id]
         }
+        result_user_ids.append(actor.id)
 
-    def test_convert_actors_to_user_set(self):
-        user1 = self.create_user()
-        user2 = self.create_user()
-        user3 = self.create_user()
-        user4 = self.create_user()
-
-        team1 = self.create_team()
-        team2 = self.create_team()
-
-        self.create_member(user=user1, organization=self.organization, teams=[team1])
-        self.create_member(user=user2, organization=self.organization, teams=[team2])
-        self.create_member(user=user3, organization=self.organization, teams=[team1, team2])
-        self.create_member(user=user4, organization=self.organization, teams=[])
-
-        team1_events = {
-            self.create_event(self.project.id),
-            self.create_event(self.project.id),
-            self.create_event(self.project.id),
-            self.create_event(self.project.id),
-        }
-        team2_events = {
-            self.create_event(self.project.id),
-            self.create_event(self.project.id),
-            self.create_event(self.project.id),
-            self.create_event(self.project.id),
-        }
-        user4_events = {self.create_event(self.project.id), self.create_event(self.project.id)}
-        events_by_actor = {
-            ActorTuple(team1.id, Team): team1_events,
-            ActorTuple(team2.id, Team): team2_events,
-            ActorTuple(user3.id, User): team1_events.union(team2_events),
-            ActorTuple(user4.id, User): user4_events,
-        }
-        user_by_events = {
-            user1.id: team1_events,
-            user2.id: team2_events,
-            user3.id: team1_events.union(team2_events),
-            user4.id: user4_events,
-        }
-        assert convert_actors_to_users(events_by_actor, user_by_events.keys()) == user_by_events
+    assert sorted(expected_result.keys()) == sorted(result_user_ids)
 
 
 class GetPersonalizedDigestsTestCase(TestCase, SnubaTestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         super().setUp()
         self.user1 = self.create_user()
         self.user2 = self.create_user()
         self.user3 = self.create_user()
         self.user4 = self.create_user()
         self.user5 = self.create_user()  # this user has no events
-        self.user_ids = [self.user1.id, self.user2.id, self.user3.id, self.user4.id, self.user5.id]
 
         self.team1 = self.create_team()
         self.team2 = self.create_team()
@@ -184,7 +178,7 @@ class GetPersonalizedDigestsTestCase(TestCase, SnubaTestCase):
                 data={
                     "stacktrace": {"frames": [{"lineno": 1, "filename": "foo.bar"}]},
                     "request": {"url": "helloworld.org"},
-                    "timestamp": iso_format(before_now(minutes=1)),
+                    "timestamp": before_now(minutes=1).isoformat(),
                     "fingerprint": ["user4group1"],
                 },
                 project_id=self.project.id,
@@ -193,7 +187,7 @@ class GetPersonalizedDigestsTestCase(TestCase, SnubaTestCase):
                 data={
                     "stacktrace": {"frames": [{"lineno": 1, "filename": "bar.foo"}]},
                     "request": {"url": "helloworld.org"},
-                    "timestamp": iso_format(before_now(minutes=1)),
+                    "timestamp": before_now(minutes=1).isoformat(),
                     "fingerprint": ["user4group2"],
                 },
                 project_id=self.project.id,
@@ -218,72 +212,139 @@ class GetPersonalizedDigestsTestCase(TestCase, SnubaTestCase):
             fallthrough=True,
         )
 
-    def create_events_from_filenames(self, project, filenames=None):
-        events = []
-        for index, label in enumerate(filenames):
-            event_data = {
-                "stacktrace": {"frames": [{"filename": label}]},
-                "fingerprint": [label],
-                "timestamp": iso_format(before_now(minutes=1)),
-            }
-            event = self.store_event(data=event_data, project_id=project.id, assert_no_errors=False)
-            events.append(event)
-        return events
+        self.rule = self.create_project_rule()
 
-    def assert_get_personalized_digests(
-        self, project, digest, user_ids, expected_result, target_type=ActionTargetType.ISSUE_OWNERS
-    ):
-        result_user_ids = []
-        for user_id, user_digest in get_personalized_digests(
-            target_type, project.id, digest, user_ids
-        ):
-            assert user_id in expected_result
-            assert {e.event_id for e in get_event_from_groups_in_digest(user_digest)} == {
-                e.event_id for e in expected_result[user_id]
-            }
-            result_user_ids.append(user_id)
+        self.rule_with_workflow_id = self.create_project_rule(include_legacy_rule_id=False)
+        self.rule_with_legacy_rule_id = self.create_project_rule(include_workflow_id=False)
 
-        assert sorted(expected_result.keys()) == sorted(result_user_ids)
+    def create_events_from_filenames(
+        self, project: Project, filenames: Sequence[str] | None = None
+    ) -> list[Event]:
+        return [
+            self.store_event(
+                data={
+                    "stacktrace": {"frames": [{"filename": label}]},
+                    "fingerprint": [label],
+                    "timestamp": before_now(minutes=1).isoformat(),
+                },
+                project_id=project.id,
+                assert_no_errors=False,
+            )
+            for index, label in enumerate(filenames or [])
+        ]
 
-    def test_build_events_by_actor(self):
-        events = self.team1_events + self.team2_events + self.user4_events
-
-        events_by_actor = {
-            ActorTuple(self.team1.id, Team): set(self.team1_events),
-            ActorTuple(self.team2.id, Team): set(self.team2_events),
-            ActorTuple(self.user3.id, User): set(self.team1_events),
-            ActorTuple(self.user4.id, User): set(self.user4_events),
-        }
-        assert build_events_by_actor(self.project.id, events, self.user_ids) == events_by_actor
-
-    def test_simple(self):
-        rule = self.project.rule_set.all()[0]
+    def test_simple(self) -> None:
         records = [
-            event_to_record(event, (rule,))
+            event_to_record(event, (self.rule,))
             for event in self.team1_events + self.team2_events + self.user4_events
         ]
-        digest = build_digest(self.project, sort_records(records))
+        digest = build_digest(self.project, sort_records(records))[0]
 
         expected_result = {
-            self.user1.id: set(self.team1_events),
             self.user2.id: set(self.team2_events),
             self.user3.id: set(self.team1_events + self.team2_events),
             self.user4.id: set(self.user4_events),
         }
-        self.assert_get_personalized_digests(self.project, digest, self.user_ids, expected_result)
 
-    def test_direct_email(self):
-        self.project_ownership.update(fallthrough=False)
-        rule = self.project.rule_set.all()[0]
-        records = [event_to_record(event, (rule,)) for event in self.team1_events]
-        digest = build_digest(self.project, sort_records(records))
+        assert_get_personalized_digests(self.project, digest, expected_result)
 
-        expected_result = {self.user1.id: set(self.team1_events)}
-        self.assert_get_personalized_digests(
-            self.project, digest, [self.user1.id], expected_result, ActionTargetType.MEMBER
+    def test_simple_with_workflow_id(self) -> None:
+        records = []
+        for event in self.team1_events + self.team2_events + self.user4_events:
+            records.extend(_get_records(self.project, (self.rule_with_workflow_id,), event))
+
+        digest = build_digest(self.project, sort_records(records))[0]
+
+        expected_result = {
+            self.user2.id: set(self.team2_events),
+            self.user3.id: set(self.team1_events + self.team2_events),
+            self.user4.id: set(self.user4_events),
+        }
+
+        assert_get_personalized_digests(self.project, digest, expected_result)
+
+    def test_simple_with_legacy_rule_id(self) -> None:
+        records = []
+        for event in self.team1_events + self.team2_events + self.user4_events:
+            records.extend(_get_records(self.project, (self.rule_with_legacy_rule_id,), event))
+
+        digest = build_digest(self.project, sort_records(records))[0]
+
+        expected_result = {
+            self.user2.id: set(self.team2_events),
+            self.user3.id: set(self.team1_events + self.team2_events),
+            self.user4.id: set(self.user4_events),
+        }
+
+        assert_get_personalized_digests(self.project, digest, expected_result)
+        assert_rule_ids(
+            digest, [self.rule_with_legacy_rule_id.data["actions"][0]["legacy_rule_id"]]
         )
 
-    def test_team_without_members(self):
+    def test_direct_email(self) -> None:
+        """When the action type is not Issue Owners, then the target actor gets a digest."""
+        self.project_ownership.update(fallthrough=False)
+        records = [event_to_record(event, (self.rule,)) for event in self.team1_events]
+        digest = build_digest(self.project, sort_records(records))[0]
+
+        expected_result = {self.user1.id: set(self.team1_events)}
+        assert_get_personalized_digests(
+            self.project, digest, expected_result, ActionTargetType.MEMBER, self.user1.id
+        )
+
+    def test_direct_email_with_workflow_id(self) -> None:
+        """When the action type is not Issue Owners, then the target actor gets a digest. - Workflow ID"""
+        self.project_ownership.update(fallthrough=False)
+        records = []
+        for event in self.team1_events:
+            records.extend(_get_records(self.project, (self.rule_with_workflow_id,), event))
+        digest = build_digest(self.project, sort_records(records))[0]
+
+        expected_result = {self.user1.id: set(self.team1_events)}
+        assert_get_personalized_digests(
+            self.project, digest, expected_result, ActionTargetType.MEMBER, self.user1.id
+        )
+
+    def test_direct_email_with_legacy_rule_id(self) -> None:
+        """When the action type is not Issue Owners, then the target actor gets a digest."""
+        self.project_ownership.update(fallthrough=False)
+        records = []
+        for event in self.team1_events:
+            records.extend(_get_records(self.project, (self.rule_with_legacy_rule_id,), event))
+
+        digest = build_digest(self.project, sort_records(records))[0]
+
+        expected_result = {self.user1.id: set(self.team1_events)}
+        assert_get_personalized_digests(
+            self.project, digest, expected_result, ActionTargetType.MEMBER, self.user1.id
+        )
+        assert_rule_ids(
+            digest, [self.rule_with_legacy_rule_id.data["actions"][0]["legacy_rule_id"]]
+        )
+
+    def test_team_without_members(self) -> None:
+        team = self.create_team()
+        project = self.create_project(teams=[team], fire_project_created=True)
+        rule = self.create_project_rule(project)
+        ProjectOwnership.objects.create(
+            project_id=project.id,
+            schema=dump_schema([Rule(Matcher("path", "*.cpp"), [Owner("team", team.slug)])]),
+            fallthrough=True,
+        )
+        records = []
+        for event in self.create_events_from_filenames(
+            project, ["hello.py", "goodbye.py", "hola.py", "adios.py"]
+        ):
+            records.extend(_get_records(project, (rule,), event))
+        digest = build_digest(project, sort_records(records))[0]
+        user_ids = [member.user_id for member in team.member_set]
+        assert not user_ids
+        participants_by_provider_by_event = get_participants_by_event(digest, project)
+        assert not {
+            actor for actors in participants_by_provider_by_event.values() for actor in actors
+        }  # no users in this team no digests should be processed
+
+    def test_team_without_members_with_workflow_id(self) -> None:
         team = self.create_team()
         project = self.create_project(teams=[team], fire_project_created=True)
         ProjectOwnership.objects.create(
@@ -291,28 +352,51 @@ class GetPersonalizedDigestsTestCase(TestCase, SnubaTestCase):
             schema=dump_schema([Rule(Matcher("path", "*.cpp"), [Owner("team", team.slug)])]),
             fallthrough=True,
         )
-        rule = project.rule_set.all()[0]
-        records = [
-            event_to_record(event, (rule,))
-            for event in self.create_events_from_filenames(
-                project, ["hello.py", "goodbye.py", "hola.py", "adios.py"]
-            )
-        ]
-        digest = build_digest(project, sort_records(records))
+        records = []
+        for event in self.create_events_from_filenames(
+            project, ["hello.py", "goodbye.py", "hola.py", "adios.py"]
+        ):
+            records.extend(_get_records(project, (self.rule_with_workflow_id,), event))
+        digest = build_digest(project, sort_records(records))[0]
         user_ids = [member.user_id for member in team.member_set]
         assert not user_ids
-        for user_id, user_digest in get_personalized_digests(
-            ActionTargetType.ISSUE_OWNERS, project.id, digest, user_ids
-        ):
-            assert False  # no users in this team no digests should be processed
+        participants_by_provider_by_event = get_participants_by_event(digest, project)
+        assert not {
+            actor for actors in participants_by_provider_by_event.values() for actor in actors
+        }  # no users in this team no digests should be processed
 
-    def test_only_everyone(self):
-        rule = self.project.rule_set.all()[0]
+    def test_team_without_members_with_legacy_rule_id(self) -> None:
+        team = self.create_team()
+        project = self.create_project(teams=[team], fire_project_created=True)
+        rule = self.create_project_rule(project, include_workflow_id=False)
+        ProjectOwnership.objects.create(
+            project_id=project.id,
+            schema=dump_schema([Rule(Matcher("path", "*.cpp"), [Owner("team", team.slug)])]),
+            fallthrough=True,
+        )
+        records = []
+        for event in self.create_events_from_filenames(
+            project, ["hello.py", "goodbye.py", "hola.py", "adios.py"]
+        ):
+            records.extend(_get_records(project, (rule,), event))
+
+        digest = build_digest(project, sort_records(records))[0]
+        user_ids = [member.user_id for member in team.member_set]
+        assert not user_ids
+        participants_by_provider_by_event = get_participants_by_event(digest, project)
+        assert not {
+            actor for actors in participants_by_provider_by_event.values() for actor in actors
+        }  # no users in this team no digests should be processed
+        assert_rule_ids(digest, [rule.data["actions"][0]["legacy_rule_id"]])
+
+    def test_only_everyone(self) -> None:
         events = self.create_events_from_filenames(
             self.project, ["hello.moz", "goodbye.moz", "hola.moz", "adios.moz"]
         )
-        records = [event_to_record(event, (rule,)) for event in events]
-        digest = build_digest(self.project, sort_records(records))
+        records = []
+        for event in events:
+            records.extend(_get_records(self.project, (self.rule,), event))
+        digest = build_digest(self.project, sort_records(records))[0]
         expected_result = {
             self.user1.id: set(events),
             self.user2.id: set(events),
@@ -320,20 +404,56 @@ class GetPersonalizedDigestsTestCase(TestCase, SnubaTestCase):
             self.user4.id: set(events),
             self.user5.id: set(events),
         }
-        self.assert_get_personalized_digests(self.project, digest, self.user_ids, expected_result)
+        assert_get_personalized_digests(self.project, digest, expected_result)
 
-    def test_everyone_with_owners(self):
-        rule = self.project.rule_set.all()[0]
+    def test_everyone_with_owners(self) -> None:
         events = self.create_events_from_filenames(
             self.project, ["hello.moz", "goodbye.moz", "hola.moz", "adios.moz"]
         )
-        records = [event_to_record(event, (rule,)) for event in events + self.team1_events]
-        digest = build_digest(self.project, sort_records(records))
+        records = [event_to_record(event, (self.rule,)) for event in events + self.team1_events]
+        digest = build_digest(self.project, sort_records(records))[0]
         expected_result = {
-            self.user1.id: set(events + self.team1_events),
+            self.user1.id: set(events),
             self.user2.id: set(events),
             self.user3.id: set(events + self.team1_events),
             self.user4.id: set(events),
             self.user5.id: set(events),
         }
-        self.assert_get_personalized_digests(self.project, digest, self.user_ids, expected_result)
+        assert_get_personalized_digests(self.project, digest, expected_result)
+
+    def test_everyone_with_owners_with_workflow_id(self) -> None:
+        events = self.create_events_from_filenames(
+            self.project, ["hello.moz", "goodbye.moz", "hola.moz", "adios.moz"]
+        )
+        records = []
+        for event in events + self.team1_events:
+            records.extend(_get_records(self.project, (self.rule_with_workflow_id,), event))
+        digest = build_digest(self.project, sort_records(records))[0]
+        expected_result = {
+            self.user1.id: set(events),
+            self.user2.id: set(events),
+            self.user3.id: set(events + self.team1_events),
+            self.user4.id: set(events),
+            self.user5.id: set(events),
+        }
+        assert_get_personalized_digests(self.project, digest, expected_result)
+
+    def test_everyone_with_owners_with_legacy_rule_id(self) -> None:
+        events = self.create_events_from_filenames(
+            self.project, ["hello.moz", "goodbye.moz", "hola.moz", "adios.moz"]
+        )
+        records = []
+        for event in events + self.team1_events:
+            records.extend(_get_records(self.project, (self.rule_with_legacy_rule_id,), event))
+        digest = build_digest(self.project, sort_records(records))[0]
+        expected_result = {
+            self.user1.id: set(events),
+            self.user2.id: set(events),
+            self.user3.id: set(events + self.team1_events),
+            self.user4.id: set(events),
+            self.user5.id: set(events),
+        }
+        assert_get_personalized_digests(self.project, digest, expected_result)
+
+    def test_empty_records(self) -> None:
+        assert build_digest(self.project, []) == DigestInfo({}, {}, {})

@@ -1,18 +1,19 @@
+from functools import cached_property
 from urllib.parse import parse_qs, urlparse
 
 import responses
 from django.urls import reverse
-from exam import fixture
 
-from sentry.models import Integration
-from sentry.testutils import APITestCase
-from tests.fixtures.integrations.mock_service import StubService
+from fixtures.integrations.stub_service import StubService
+from sentry.testutils.cases import APITestCase
+from sentry.testutils.silo import control_silo_test
 
 
+@control_silo_test
 class JiraSearchEndpointTest(APITestCase):
-    @fixture
+    @cached_property
     def integration(self):
-        integration = Integration.objects.create(
+        integration = self.create_provider_integration(
             provider="jira",
             name="Jira Cloud",
             metadata={
@@ -26,13 +27,12 @@ class JiraSearchEndpointTest(APITestCase):
         return integration
 
     @responses.activate
-    def test_issue_search_text(self):
+    def test_issue_search_text(self) -> None:
         responses.add(
             responses.GET,
-            "https://example.atlassian.net/rest/api/2/search/",
+            "https://example.atlassian.net/rest/api/2/search/jql/",
             body=StubService.get_stub_json("jira", "search_response.json"),
             content_type="json",
-            match_querystring=False,
         )
         org = self.organization
         self.login_as(self.user)
@@ -44,7 +44,7 @@ class JiraSearchEndpointTest(APITestCase):
         assert resp.data == [{"label": "(HSP-1) this is a test issue summary", "value": "HSP-1"}]
 
     @responses.activate
-    def test_issue_search_id(self):
+    def test_issue_search_id(self) -> None:
         def responder(request):
             query = parse_qs(urlparse(request.url).query)
             assert 'id="hsp-1"' == query["jql"][0]
@@ -53,9 +53,8 @@ class JiraSearchEndpointTest(APITestCase):
 
         responses.add_callback(
             responses.GET,
-            "https://example.atlassian.net/rest/api/2/search/",
+            "https://example.atlassian.net/rest/api/2/search/jql/",
             callback=responder,
-            match_querystring=False,
         )
         org = self.organization
         self.login_as(self.user)
@@ -71,13 +70,12 @@ class JiraSearchEndpointTest(APITestCase):
             ]
 
     @responses.activate
-    def test_issue_search_error(self):
+    def test_issue_search_error(self) -> None:
         responses.add(
             responses.GET,
-            "https://example.atlassian.net/rest/api/2/search/",
+            "https://example.atlassian.net/rest/api/2/search/jql/",
             status=500,
             body="Totally broken",
-            match_querystring=False,
         )
         org = self.organization
         self.login_as(self.user)
@@ -87,17 +85,14 @@ class JiraSearchEndpointTest(APITestCase):
         for field in ("externalIssue", "parent"):
             resp = self.client.get(f"{path}?field={field}&query=test")
             assert resp.status_code == 400
-            assert resp.data == {
-                "detail": "Error Communicating with Jira (HTTP 500): unknown error"
-            }
+            assert resp.data == {"detail": "Something went wrong while communicating with Jira"}
 
     @responses.activate
-    def test_assignee_search(self):
+    def test_assignee_search(self) -> None:
         responses.add(
             responses.GET,
             "https://example.atlassian.net/rest/api/2/project",
             json=[{"key": "HSP", "id": "10000"}],
-            match_querystring=False,
         )
 
         def responder(request):
@@ -112,7 +107,6 @@ class JiraSearchEndpointTest(APITestCase):
             "https://example.atlassian.net/rest/api/2/user/assignable/search",
             callback=responder,
             content_type="json",
-            match_querystring=False,
         )
         org = self.organization
         self.login_as(self.user)
@@ -124,19 +118,17 @@ class JiraSearchEndpointTest(APITestCase):
         assert resp.data == [{"value": "deadbeef123", "label": "Bobby - bob@example.org"}]
 
     @responses.activate
-    def test_assignee_search_error(self):
+    def test_assignee_search_error(self) -> None:
         responses.add(
             responses.GET,
             "https://example.atlassian.net/rest/api/2/project",
             json=[{"key": "HSP", "id": "10000"}],
-            match_querystring=False,
         )
         responses.add(
             responses.GET,
             "https://example.atlassian.net/rest/api/2/user/assignable/search",
             status=500,
             body="Bad things",
-            match_querystring=False,
         )
         org = self.organization
         self.login_as(self.user)
@@ -147,7 +139,7 @@ class JiraSearchEndpointTest(APITestCase):
         assert resp.status_code == 400
 
     @responses.activate
-    def test_customfield_search(self):
+    def test_customfield_search(self) -> None:
         def responder(request):
             query = parse_qs(urlparse(request.url).query)
             assert "cf[0123]" == query["fieldName"][0]
@@ -159,7 +151,6 @@ class JiraSearchEndpointTest(APITestCase):
             "https://example.atlassian.net/rest/api/2/jql/autocompletedata/suggestions",
             callback=responder,
             content_type="application/json",
-            match_querystring=False,
         )
         org = self.organization
         self.login_as(self.user)
@@ -171,13 +162,12 @@ class JiraSearchEndpointTest(APITestCase):
         assert resp.data == [{"label": "Sprint 1 (1)", "value": "1"}]
 
     @responses.activate
-    def test_customfield_search_error(self):
+    def test_customfield_search_error(self) -> None:
         responses.add(
             responses.GET,
             "https://example.atlassian.net/rest/api/2/jql/autocompletedata/suggestions",
             status=500,
             body="Totally broken",
-            match_querystring=False,
         )
         org = self.organization
         self.login_as(self.user)
@@ -189,3 +179,47 @@ class JiraSearchEndpointTest(APITestCase):
         assert resp.data == {
             "detail": "Unable to fetch autocomplete for customfield_0123 from Jira"
         }
+
+    @responses.activate
+    def test_project_search_with_pagination(self) -> None:
+        responses.add(
+            responses.GET,
+            "https://example.atlassian.net/rest/api/2/project/search",
+            json={
+                "values": [
+                    {"id": "10000", "key": "EX", "name": "Example"},
+                ],
+                "total": 2,
+            },
+        )
+
+        self.login_as(self.user)
+
+        path = reverse(
+            "sentry-extensions-jira-search", args=[self.organization.slug, self.integration.id]
+        )
+
+        resp = self.client.get(f"{path}?field=project&query=example")
+        assert resp.status_code == 200
+        assert resp.data == [
+            {"label": "EX - Example", "value": "10000"},
+        ]
+
+    @responses.activate
+    def test_project_search_error_with_pagination(self) -> None:
+        responses.add(
+            responses.GET,
+            "https://example.atlassian.net/rest/api/2/project/search",
+            status=500,
+            body="susge",
+        )
+
+        self.login_as(self.user)
+
+        path = reverse(
+            "sentry-extensions-jira-search", args=[self.organization.slug, self.integration.id]
+        )
+
+        resp = self.client.get(f"{path}?field=project&query=example")
+        assert resp.status_code == 400
+        assert resp.data == {"detail": "Unable to fetch projects from Jira"}
